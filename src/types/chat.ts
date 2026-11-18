@@ -2,13 +2,16 @@ export type ThemeSkin = 'obsidian' | 'claude' | 'aurora' | 'paper';
 
 export interface Attachment {
   id: string;
-  kind: 'image' | 'text';
+  kind: 'image' | 'video' | 'audio' | 'pdf' | 'text';
   name: string;
   mimeType: string;
   size: number;
   data?: string;
   textContent?: string;
   previewUrl?: string;
+  durationSec?: number;
+  tokenCount?: number;
+  tokenStatus?: 'counting' | 'exact' | 'estimated';
 }
 
 export interface VisualTarget {
@@ -70,7 +73,7 @@ export interface Conversation {
 }
 
 export interface AppSettings {
-  apiKey: string; // Mendukung single atau multi-key (1 key per baris / koma)
+  apiKey: string;
   systemInstruction: string;
   temperature: number;
   maxOutputTokens: number;

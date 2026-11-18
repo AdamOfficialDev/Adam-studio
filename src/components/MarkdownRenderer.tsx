@@ -25,20 +25,27 @@ import { cn, formatBytes } from '@/lib/utils';
 
 const CodeBlockContext = createContext(false);
 
-interface CodeBlockProps {
+export interface CodeBlockProps {
   language: string;
   code: string;
   isStreaming?: boolean;
+  defaultCollapsed?: boolean;
   onOpenArtifact?: (artifact: ArtifactItem) => void;
 }
 
-function CodeBlock({ language, code, isStreaming, onOpenArtifact }: CodeBlockProps) {
+export function CodeBlock({
+  language,
+  code,
+  isStreaming,
+  defaultCollapsed = false,
+  onOpenArtifact,
+}: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
   const [wrapLines, setWrapLines] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth < 640 : false
   );
   const [showLines, setShowLines] = useState(true);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
 
   const lines = useMemo(() => code.split('\n'), [code]);
   const lineCount = lines.length;
@@ -98,7 +105,7 @@ function CodeBlock({ language, code, isStreaming, onOpenArtifact }: CodeBlockPro
   };
 
   return (
-    <div className="my-4 w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-zinc-800/90 bg-[#0b0d12] text-zinc-100 shadow-xl">
+    <div className="my-3 w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-zinc-800/90 bg-[#0b0d12] text-zinc-100 shadow-xl">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 bg-zinc-900/90 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="hidden items-center gap-1.5 sm:flex">
@@ -190,7 +197,7 @@ function CodeBlock({ language, code, isStreaming, onOpenArtifact }: CodeBlockPro
             )}
           </Button>
 
-          {lineCount > 16 && (
+          {lineCount > 10 && (
             <Button
               type="button"
               variant="ghost"
@@ -215,7 +222,7 @@ function CodeBlock({ language, code, isStreaming, onOpenArtifact }: CodeBlockPro
           onClick={() => setCollapsed(false)}
           className="flex w-full items-center justify-center gap-2 py-3 text-xs text-zinc-400 hover:bg-zinc-900/60 hover:text-zinc-200"
         >
-          <span>{lineCount} baris disembunyikan — klik untuk perluas</span>
+          <span>{lineCount} baris kode — klik untuk lihat isi</span>
           <ChevronDown className="h-3.5 w-3.5" />
         </button>
       ) : (

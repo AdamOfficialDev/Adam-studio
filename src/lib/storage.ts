@@ -48,8 +48,25 @@ export function loadConversations(): Conversation[] {
 }
 
 export function saveConversations(conversations: Conversation[]): void {
+  // Hindari menyimpan base64 media besar (>250KB) ke localStorage agar UI tetap kencang & bebas quota error
+  const sanitized = conversations.map((conv) => ({
+    ...conv,
+    messages: conv.messages.map((msg) => ({
+      ...msg,
+      attachments: msg.attachments?.map((att) =>
+        att.size > 250_000
+          ? {
+              ...att,
+              data: undefined,
+              previewUrl: undefined,
+            }
+          : att
+      ),
+    })),
+  }));
+
   try {
-    localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(conversations));
+    localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(sanitized));
   } catch {
     try {
       const stripped = conversations.map((conv) => ({

@@ -3,7 +3,11 @@ import {
   AlertCircle,
   Check,
   Copy,
+  Crosshair,
+  FileAudio,
   FileCode2,
+  FileText,
+  Film,
   GitBranch,
   Layers,
   Pencil,
@@ -21,7 +25,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { MarkdownRenderer } from '@/components/MarkdownRenderer';
+import { CodeBlock, MarkdownRenderer } from '@/components/MarkdownRenderer';
 import { extractArtifactsFromMarkdown } from '@/lib/artifacts';
 import { estimateCostUsd } from '@/lib/models';
 import type { ArtifactItem, ChatMessage as ChatMessageType } from '@/types/chat';
@@ -39,6 +43,51 @@ interface ChatMessageProps {
   onToggleStar?: (messageId: string) => void;
   onOpenArtifact: (artifact: ArtifactItem) => void;
   onPreviewImage: (url: string) => void;
+}
+
+type UserSegment =
+  | { type: 'text'; text: string }
+  | { type: 'target'; selector: string }
+  | { type: 'code'; language: string; code: string };
+
+function parseUserMessageSegments(content: string): UserSegment[] {
+  const segments: UserSegment[] = [];
+  const codeRegex = /```([\w-]*)\n([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  const pushTextWithTarget = (rawChunk: string) => {
+    const targetMatch = rawChunk.match(/^\[Visual Target Element:\s*`([^`]+)`\]\s*/);
+    if (targetMatch) {
+      segments.push({ type: 'target', selector: targetMatch[1] });
+      const rest = rawChunk.slice(targetMatch[0].length).trim();
+      if (rest) segments.push({ type: 'text', text: rest });
+    } else if (rawChunk.trim().length > 0) {
+      segments.push({ type: 'text', text: rawChunk.replace(/^\n+|\n+$/g, '') });
+    }
+  };
+
+  while ((match = codeRegex.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      pushTextWithTarget(content.slice(lastIndex, match.index));
+    }
+    segments.push({
+      type: 'code',
+      language: match[1] || 'text',
+      code: match[2].replace(/\n$/, ''),
+    });
+    lastIndex = codeRegex.lastIndex;
+  }
+
+  if (lastIndex < content.length) {
+    pushTextWithTarget(content.slice(lastIndex));
+  }
+
+  if (segments.length === 0 && content) {
+    segments.push({ type: 'text', text: content });
+  }
+
+  return segments;
 }
 
 export const ChatMessage = memo(function ChatMessage({
@@ -61,6 +110,16 @@ export const ChatMessage = memo(function ChatMessage({
 
   const isUser = message.role === 'user';
   const costLabel = estimateCostUsd(message.model || 'gemini-4-hydrogen', message.usage);
+
+  const userSegments = useMemo(() => {
+    if (!isUser) return [];
+    return parseUserMessageSegments(message.content);
+  }, [isUser, message.content]);
+
+  const userHasCodeBlock = useMemo(
+    () => userSegments.some((s) => s.type === 'code'),
+    [userSegments]
+  );
 
   const artifacts = useMemo(() => {
     if (isUser || message.isStreaming || !message.content) return [];
@@ -109,26 +168,54 @@ export const ChatMessage = memo(function ChatMessage({
   if (isUser) {
     return (
       <div className="group flex w-full min-w-0 justify-end gap-2.5 sm:gap-3">
-        <div className="min-w-0 max-w-[88%] space-y-2 sm:max-w-[76%]">
+        <div
+          className={cn(
+            'min-w-0 space-y-2',
+            userHasCodeBlock ? 'w-full max-w-[92%] sm:max-w-[84%]' : 'max-w-[88%] sm:max-w-[76%]'
+          )}
+        >
           {message.attachments && message.attachments.length > 0 && (
             <div className="flex flex-wrap justify-end gap-2">
               {message.attachments.map((att) =>
                 att.kind === 'image' && att.previewUrl ? (
-                  <button
-                    key={att.id}
-                    type="button"
-                    onClick={() => onPreviewImage(att.previewUrl!)}
-                    className="overflow-hidden rounded-xl border shadow-sm transition-transform hover:scale-[1.02]"
-                  >
-                    <img src={att.previewUrl} alt={att.name} className="max-h-48 object-cover" />
-                  </button>
+                  <div key={att.id} className="relative overflow-hidden rounded-xl border shadow-sm">
+                    <button
+                      type="button"
+                      onClick={() => onPreviewImage(att.previewUrl!)}
+                      className="block transition-transform hover:scale-[1.02]"
+                    >
+                      <img src={att.previewUrl} alt={att.name} className="max-h-48 object-cover" />
+                    </button>
+                    {typeof att.tokenCount === 'number' && (
+                      <span className="absolute bottom-1.5 right-1.5 rounded-md bg-black/75 px-1.5 py-0.5 font-mono text-[10px] text-white backdrop-blur-sm">
+                        {att.tokenStatus === 'estimated' ? '~' : ''}
+                        {att.tokenCount.toLocaleString()} tok
+                      </span>
+                    )}
+                  </div>
                 ) : (
                   <div
                     key={att.id}
-                    className="inline-flex max-w-full items-center gap-1.5 rounded-lg border bg-card px-2.5 py-1.5 text-xs text-muted-foreground"
+                    className="inline-flex max-w-full items-center gap-1.5 rounded-xl border bg-card px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm"
                   >
-                    <FileCode2 className="h-3.5 w-3.5 shrink-0 text-primary" />
-                    <span className="truncate font-mono">{att.name}</span>
+                    {att.kind === 'video' ? (
+                      <Film className="h-3.5 w-3.5 shrink-0 text-primary" />
+                    ) : att.kind === 'audio' ? (
+                      <FileAudio className="h-3.5 w-3.5 shrink-0 text-primary" />
+                    ) : att.kind === 'pdf' ? (
+                      <FileText className="h-3.5 w-3.5 shrink-0 text-rose-400" />
+                    ) : (
+                      <FileCode2 className="h-3.5 w-3.5 shrink-0 text-primary" />
+                    )}
+                    <span className="max-w-[140px] truncate font-mono text-foreground">
+                      {att.name}
+                    </span>
+                    {typeof att.tokenCount === 'number' && (
+                      <span className="rounded bg-primary/15 px-1.5 py-0.5 font-mono text-[10px] text-primary">
+                        {att.tokenStatus === 'estimated' ? '~' : ''}
+                        {att.tokenCount.toLocaleString()} tok
+                      </span>
+                    )}
                   </div>
                 )
               )}
@@ -139,7 +226,7 @@ export const ChatMessage = memo(function ChatMessage({
             <div className="w-full min-w-[240px] space-y-2 rounded-2xl border bg-card p-3 shadow-lg sm:min-w-[420px]">
               <Textarea
                 autoFocus
-                rows={3}
+                rows={4}
                 value={editDraft}
                 onChange={(e) => setEditDraft(e.target.value)}
                 className="text-sm"
@@ -169,10 +256,41 @@ export const ChatMessage = memo(function ChatMessage({
                   compact ? 'py-2.5' : 'py-3'
                 )}
               >
-                <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-                  {message.content}
-                </p>
+                <div className="space-y-2.5">
+                  {userSegments.map((seg, idx) => {
+                    if (seg.type === 'target') {
+                      return (
+                        <div
+                          key={idx}
+                          className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/15 px-2.5 py-1 text-xs font-medium text-primary"
+                        >
+                          <Crosshair className="h-3.5 w-3.5 shrink-0" />
+                          <span className="truncate font-mono">Target: &lt;{seg.selector}&gt;</span>
+                        </div>
+                      );
+                    }
+                    if (seg.type === 'code') {
+                      return (
+                        <CodeBlock
+                          key={idx}
+                          language={seg.language}
+                          code={seg.code}
+                          defaultCollapsed={false}
+                        />
+                      );
+                    }
+                    return (
+                      <p
+                        key={idx}
+                        className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+                      >
+                        {seg.text}
+                      </p>
+                    );
+                  })}
+                </div>
               </div>
+
               {onEditUserMessage && (
                 <div className="mt-1 flex justify-end gap-1 opacity-80 transition-opacity md:opacity-0 md:group-hover:opacity-100">
                   <Button
@@ -304,9 +422,8 @@ export const ChatMessage = memo(function ChatMessage({
                 <p className="break-words leading-relaxed opacity-90">{message.error}</p>
                 {isCapacityError && (
                   <p className="pt-1 text-[11px] leading-relaxed text-muted-foreground">
-                    Server Google Developer API sedang mengalami lonjakan trafik (503/429) setelah
-                    3x percobaan ulang otomatis. Web <code>aistudio.google.com</code> memakai pool
-                    konsol terpisah.
+                    Server Google Developer API sedang padat (503/429). Web{' '}
+                    <code>aistudio.google.com</code> memakai pool konsol internal terpisah.
                   </p>
                 )}
               </div>

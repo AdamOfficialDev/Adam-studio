@@ -26,7 +26,7 @@ if (extractedFiles.length === 0) {
   process.exit(1);
 }
 
-console.log(`🚀 Menerapkan Adam Studio v5.0 (Auto-Rotate Keys + Visual Inspector + Time-Machine Diff) (${extractedFiles.length} file)...\n`);
+console.log(`🔧 Menerapkan Patch v5.1 (Inspector Code Block + Per-File Token Counter) (${extractedFiles.length} file)...\n`);
 
 for (const file of extractedFiles) {
   const target = path.resolve(cwd, file.relativePath);
@@ -39,5 +39,5 @@ for (const file of extractedFiles) {
   console.log(`  ✓ ${file.relativePath}`);
 }
 
-console.log('\n✅ Adam Studio v5.0 berhasil diterapkan! Tidak perlu install library baru.');
+console.log('\n✅ Patch v5.1 selesai! Tidak perlu install library baru.');
 console.log('   Jalankan `pnpm build` untuk verifikasi atau `pnpm dev` untuk langsung mencobanya.\n');

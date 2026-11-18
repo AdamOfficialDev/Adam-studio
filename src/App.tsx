@@ -266,10 +266,11 @@ export default function App() {
 
   const contextTokenEstimate = useMemo(() => {
     if (!activeConversation) return estimateTokens(settings.systemInstruction);
-    const textSum = activeConversation.messages.reduce(
-      (acc, m) => acc + estimateTokens(m.content) + estimateTokens(m.thought || ''),
-      0
-    );
+    const textSum = activeConversation.messages.reduce((acc, m) => {
+      const attTokens =
+        m.attachments?.reduce((s, a) => s + (a.tokenCount ?? 0), 0) ?? 0;
+      return acc + estimateTokens(m.content) + estimateTokens(m.thought || '') + attTokens;
+    }, 0);
     return textSum + estimateTokens(settings.systemInstruction);
   }, [activeConversation, settings.systemInstruction]);
 
@@ -1224,7 +1225,7 @@ export default function App() {
                     </h1>
                     <p className="mt-2.5 max-w-lg text-sm leading-relaxed text-muted-foreground">
                       Platform AI dengan Live Thinking, Auto-Rotate Key Pool, Visual Element
-                      Inspector, Artifact Time-Machine Diff, Mermaid, & KaTeX.
+                      Inspector, Token Counter per file, & Artifact Time-Machine Diff.
                     </p>
 
                     {activeKeyPoolCount === 0 && !settings.demoMode && (
@@ -1358,7 +1359,6 @@ export default function App() {
                 )}
               </StudioScroll>
 
-              {/* Dynamic Live Pill saat scroll ke atas, atau ArrowDown saat idle */}
               {showScrollBottom && (
                 <button
                   type="button"

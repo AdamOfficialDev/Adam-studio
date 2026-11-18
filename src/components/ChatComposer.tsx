@@ -13,8 +13,12 @@ import {
   ArrowUp,
   Brain,
   Crosshair,
+  FileAudio,
   FileCode2,
+  FileText,
+  Film,
   ImagePlus,
+  Loader2,
   Mic,
   MicOff,
   Slash,
@@ -33,6 +37,13 @@ import { StudioScroll, type StudioScrollHandle } from '@/components/ui/studio-sc
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { PERSONA_PRESETS, SLASH_PROMPTS } from '@/lib/personas';
+import {
+  countAttachmentTokensExact,
+  estimateAttachmentTokensLocal,
+  estimatePdfPages,
+  getImageDimensions,
+  getMediaDuration,
+} from '@/lib/tokens';
 import { estimateTokens, formatBytes, generateId } from '@/lib/utils';
 import type { AppSettings, Attachment, VisualTarget } from '@/types/chat';
 import { cn } from '@/lib/utils';
@@ -87,6 +98,7 @@ const TEXT_EXTENSIONS = new Set([
   'yaml',
   'yml',
   'sh',
+  'csv',
 ]);
 
 const THINKING_BUDGET_OPTIONS = [
@@ -96,6 +108,14 @@ const THINKING_BUDGET_OPTIONS = [
   { label: '8K', value: 8192 },
   { label: '16K', value: 16384 },
 ];
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(file);
+  });
+}
 
 export function ChatComposer({
   model,
@@ -173,42 +193,153 @@ export function ChatComposer({
 
   const ingestFiles = async (files: File[]) => {
     const loaded: Attachment[] = [];
+
     for (const file of files.slice(0, 5)) {
-      if (file.type.startsWith('image/')) {
-        const dataUrl = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result || ''));
-          reader.readAsDataURL(file);
-        });
+      if (file.size > 18_000_000) {
+        toast.error(`File ${file.name} terlalu besar (>18MB).`);
+        continue;
+      }
+
+      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+      const isImage = file.type.startsWith('image/');
+      const isVideo = file.type.startsWith('video/') || ['mp4', 'webm', 'mov'].includes(ext);
+      const isAudio =
+        file.type.startsWith('audio/') || ['mp3', 'wav', 'ogg', 'm4a'].includes(ext);
+      const isPdf = file.type === 'application/pdf' || ext === 'pdf';
+      const isText = file.type.startsWith('text/') || TEXT_EXTENSIONS.has(ext);
+
+      if (isImage) {
+        const dataUrl = await readFileAsDataUrl(file);
         const base64 = dataUrl.split(',')[1] || '';
         if (!base64) continue;
+        const dims = await getImageDimensions(dataUrl);
+        const localEst = estimateAttachmentTokensLocal({
+          kind: 'image',
+          size: file.size,
+          width: dims?.width,
+          height: dims?.height,
+        });
         loaded.push({
           id: generateId(),
           kind: 'image',
           name: file.name,
-          mimeType: file.type,
+          mimeType: file.type || 'image/png',
           size: file.size,
           data: base64,
           previewUrl: dataUrl,
+          tokenCount: localEst,
+          tokenStatus: settings.demoMode ? 'estimated' : 'counting',
+        });
+      } else if (isVideo) {
+        const durationSec = await getMediaDuration(file, 'video');
+        const dataUrl = await readFileAsDataUrl(file);
+        const base64 = dataUrl.split(',')[1] || '';
+        if (!base64) continue;
+        const localEst = estimateAttachmentTokensLocal({
+          kind: 'video',
+          size: file.size,
+          durationSec,
+        });
+        loaded.push({
+          id: generateId(),
+          kind: 'video',
+          name: file.name,
+          mimeType: file.type || 'video/mp4',
+          size: file.size,
+          data: base64,
+          durationSec,
+          tokenCount: localEst,
+          tokenStatus: settings.demoMode ? 'estimated' : 'counting',
+        });
+      } else if (isAudio) {
+        const durationSec = await getMediaDuration(file, 'audio');
+        const dataUrl = await readFileAsDataUrl(file);
+        const base64 = dataUrl.split(',')[1] || '';
+        if (!base64) continue;
+        const localEst = estimateAttachmentTokensLocal({
+          kind: 'audio',
+          size: file.size,
+          durationSec,
+        });
+        loaded.push({
+          id: generateId(),
+          kind: 'audio',
+          name: file.name,
+          mimeType: file.type || 'audio/mpeg',
+          size: file.size,
+          data: base64,
+          durationSec,
+          tokenCount: localEst,
+          tokenStatus: settings.demoMode ? 'estimated' : 'counting',
+        });
+      } else if (isPdf) {
+        const pages = await estimatePdfPages(file);
+        const dataUrl = await readFileAsDataUrl(file);
+        const base64 = dataUrl.split(',')[1] || '';
+        if (!base64) continue;
+        const localEst = estimateAttachmentTokensLocal({
+          kind: 'pdf',
+          size: file.size,
+          pdfPages: pages,
+        });
+        loaded.push({
+          id: generateId(),
+          kind: 'pdf',
+          name: file.name,
+          mimeType: 'application/pdf',
+          size: file.size,
+          data: base64,
+          tokenCount: localEst,
+          tokenStatus: settings.demoMode ? 'estimated' : 'counting',
+        });
+      } else if (isText) {
+        const textContent = (await file.text()).slice(0, 120_000);
+        const localEst = estimateAttachmentTokensLocal({
+          kind: 'text',
+          size: file.size,
+          textContent,
+        });
+        loaded.push({
+          id: generateId(),
+          kind: 'text',
+          name: file.name,
+          mimeType: file.type || 'text/plain',
+          size: file.size,
+          textContent,
+          tokenCount: localEst,
+          tokenStatus: settings.demoMode ? 'estimated' : 'counting',
         });
       } else {
-        const ext = file.name.split('.').pop()?.toLowerCase() || '';
-        if (file.type.startsWith('text/') || TEXT_EXTENSIONS.has(ext)) {
-          const textContent = await file.text();
-          loaded.push({
-            id: generateId(),
-            kind: 'text',
-            name: file.name,
-            mimeType: file.type || 'text/plain',
-            size: file.size,
-            textContent: textContent.slice(0, 60000),
-          });
-        }
+        toast.error(`Format ${file.name} belum didukung.`);
       }
     }
-    if (loaded.length > 0) {
-      setAttachments((prev) => [...prev, ...loaded]);
-      toast.success(`${loaded.length} lampiran ditambahkan`);
+
+    if (loaded.length === 0) return;
+
+    setAttachments((prev) => [...prev, ...loaded]);
+    if (loaded.some((a) => a.size > 3_500_000)) {
+      toast.info('Catatan Vercel: file >3.5MB bisa melebihi batas payload 4.5MB serverless.');
+    }
+
+    if (settings.demoMode) return;
+
+    // Hitung token resmi per file lewat Gemini :countTokens API secara paralel
+    for (const item of loaded) {
+      void countAttachmentTokensExact({
+        model,
+        apiKey: settings.apiKey,
+        attachment: item,
+      }).then((exactCount) => {
+        setAttachments((prev) =>
+          prev.map((att) => {
+            if (att.id !== item.id) return att;
+            if (exactCount !== null) {
+              return { ...att, tokenCount: exactCount, tokenStatus: 'exact' };
+            }
+            return { ...att, tokenStatus: 'estimated' };
+          })
+        );
+      });
     }
   };
 
@@ -338,6 +469,8 @@ export function ChatComposer({
 
   const activePersona = PERSONA_PRESETS.find((p) => p.id === settings.activePersonaId);
   const draftTokens = estimateTokens(input);
+  const attachmentsTokens = attachments.reduce((sum, a) => sum + (a.tokenCount ?? 0), 0);
+  const totalComposerTokens = draftTokens + attachmentsTokens;
   const thinkingOn = settings.includeThoughts && settings.thinkingBudget !== 0;
 
   return (
@@ -403,7 +536,7 @@ export function ChatComposer({
       >
         {isDragging && (
           <div className="mb-2 rounded-xl border border-dashed border-primary bg-primary/10 py-3 text-center text-xs font-medium text-primary">
-            Lepaskan gambar atau file kode (.ts, .py, .json, .md) di sini
+            Lepaskan gambar, video, audio, PDF, atau file kode di sini
           </div>
         )}
 
@@ -435,53 +568,80 @@ export function ChatComposer({
 
         {attachments.length > 0 && (
           <div className="mb-2.5 flex flex-wrap gap-2 px-1">
-            {attachments.map((att) =>
-              att.kind === 'image' && att.previewUrl ? (
-                <div key={att.id} className="group relative">
+            {attachments.map((att) => (
+              <div
+                key={att.id}
+                className="group relative flex items-center gap-2 rounded-xl border bg-muted/50 p-1.5 pr-2.5 text-xs"
+              >
+                {att.kind === 'image' && att.previewUrl ? (
                   <button
                     type="button"
                     onClick={() => onPreviewImage(att.previewUrl!)}
-                    className="overflow-hidden rounded-xl border"
+                    className="overflow-hidden rounded-lg border"
                   >
                     <img
                       src={att.previewUrl}
                       alt={att.name}
-                      className="h-14 w-14 object-cover transition-transform hover:scale-105 sm:h-16 sm:w-16"
+                      className="h-10 w-10 object-cover transition-transform hover:scale-105"
                     />
                   </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setAttachments((prev) => prev.filter((item) => item.id !== att.id))
-                    }
-                    className="absolute -right-1.5 -top-1.5 rounded-full bg-background p-0.5 shadow ring-1 ring-border hover:bg-destructive hover:text-destructive-foreground"
-                    aria-label="Hapus lampiran"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
+                ) : (
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
+                    {att.kind === 'video' ? (
+                      <Film className="h-4 w-4" />
+                    ) : att.kind === 'audio' ? (
+                      <FileAudio className="h-4 w-4" />
+                    ) : att.kind === 'pdf' ? (
+                      <FileText className="h-4 w-4 text-rose-400" />
+                    ) : (
+                      <FileCode2 className="h-4 w-4" />
+                    )}
+                  </div>
+                )}
+
+                <div className="min-w-0">
+                  <div className="max-w-[140px] truncate font-mono text-[11px] font-medium text-foreground">
+                    {att.name}
+                  </div>
+                  <div className="mt-0.5 flex items-center gap-1.5 text-[10px]">
+                    <span className="text-muted-foreground">
+                      {formatBytes(att.size)}
+                      {att.durationSec ? ` • ${Math.round(att.durationSec)}s` : ''}
+                    </span>
+                    <span
+                      className={cn(
+                        'inline-flex items-center gap-1 rounded px-1.5 py-0 font-mono font-semibold',
+                        att.tokenStatus === 'exact'
+                          ? 'bg-emerald-500/15 text-emerald-400'
+                          : 'bg-primary/15 text-primary'
+                      )}
+                      title={
+                        att.tokenStatus === 'exact'
+                          ? 'Jumlah token resmi dari Gemini countTokens API'
+                          : 'Estimasi lokal berdasarkan resolusi/durasi/teks'
+                      }
+                    >
+                      {att.tokenStatus === 'counting' && (
+                        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                      )}
+                      {att.tokenStatus !== 'exact' && '~'}
+                      {(att.tokenCount ?? 0).toLocaleString()} tok
+                    </span>
+                  </div>
                 </div>
-              ) : (
-                <div
-                  key={att.id}
-                  className="flex items-center gap-2 rounded-xl border bg-muted/60 px-2.5 py-1.5 text-xs"
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAttachments((prev) => prev.filter((item) => item.id !== att.id))
+                  }
+                  className="ml-1 rounded-full p-1 text-muted-foreground hover:bg-destructive hover:text-destructive-foreground"
+                  aria-label="Hapus lampiran"
                 >
-                  <FileCode2 className="h-3.5 w-3.5 text-primary" />
-                  <span className="max-w-[120px] truncate font-mono">{att.name}</span>
-                  <span className="text-[10px] text-muted-foreground">
-                    {formatBytes(att.size)}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setAttachments((prev) => prev.filter((item) => item.id !== att.id))
-                    }
-                    className="rounded p-0.5 hover:text-destructive"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              )
-            )}
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
           </div>
         )}
 
@@ -510,7 +670,7 @@ export function ChatComposer({
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.ts,.tsx,.js,.jsx,.json,.py,.css,.html,.sql"
+              accept="image/*,video/*,audio/*,application/pdf,.txt,.md,.ts,.tsx,.js,.jsx,.json,.py,.css,.html,.sql,.yaml,.yml,.sh,.csv"
               multiple
               className="hidden"
               onChange={handleFileChange}
@@ -523,7 +683,7 @@ export function ChatComposer({
               onClick={() => fileInputRef.current?.click()}
               disabled={isStreaming}
               className="h-8 w-8 rounded-xl text-muted-foreground hover:text-foreground sm:w-auto sm:px-2.5"
-              title="Upload Gambar atau File Kode"
+              title="Upload Gambar, Video, Audio, PDF, atau Kode"
             >
               <ImagePlus className="h-4 w-4" />
               <span className="hidden text-xs sm:inline">Lampiran</span>
@@ -718,8 +878,10 @@ export function ChatComposer({
           </div>
 
           <div className="flex items-center gap-2">
-            {draftTokens > 0 && (
-              <span className="font-mono text-[10px] text-muted-foreground">~{draftTokens} tok</span>
+            {totalComposerTokens > 0 && (
+              <span className="font-mono text-[10px] text-muted-foreground">
+                {totalComposerTokens.toLocaleString()} tok
+              </span>
             )}
 
             {isStreaming ? (

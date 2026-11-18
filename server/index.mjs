@@ -14,7 +14,6 @@ const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gemini-4-hydrogen';
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 const ROTATE_IMMEDIATELY_STATUSES = new Set([401, 403, 429]);
 
-// Pool state untuk round-robin dan cooldown API key
 let roundRobinCursor = 0;
 const keyCooldownMap = new Map();
 
@@ -54,6 +53,75 @@ app.get('/api/health', (_req, res) => {
     serverKeyCount: envKeys.length,
     demoModeEnv: process.env.DEMO_MODE === 'true',
   });
+});
+
+app.post('/api/count-tokens', async (req, res) => {
+  const { model = DEFAULT_MODEL, attachment } = req.body || {};
+  const headerKeys = parseKeyPool(
+    typeof req.headers['x-gemini-api-keys'] === 'string' ? req.headers['x-gemini-api-keys'] : '',
+    typeof req.headers['x-gemini-api-key'] === 'string' ? req.headers['x-gemini-api-key'] : ''
+  );
+  const apiKeys = headerKeys.length > 0 ? headerKeys : getServerEnvKeys();
+
+  if (apiKeys.length === 0 || !attachment) {
+    res.status(400).json({ error: 'API key atau attachment tidak tersedia.' });
+    return;
+  }
+
+  const parts = [];
+  if (attachment.kind === 'text' && typeof attachment.textContent === 'string') {
+    parts.push({
+      text: `[Attached File: ${attachment.name}]\n\`\`\`\n${attachment.textContent}\n\`\`\``,
+    });
+  } else if (attachment.mimeType && attachment.data) {
+    parts.push({
+      inlineData: {
+        mimeType: attachment.mimeType,
+        data: attachment.data,
+      },
+    });
+  }
+
+  if (parts.length === 0) {
+    res.status(400).json({ error: 'Konten file kosong.' });
+    return;
+  }
+
+  const ordered = buildOrderedCandidateKeys(apiKeys);
+  const candidateModels = [model, 'gemini-2.5-flash'].filter((v, i, a) => a.indexOf(v) === i);
+
+  for (const targetModel of candidateModels) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      targetModel
+    )}:countTokens`;
+
+    for (const candidate of ordered.slice(0, 3)) {
+      try {
+        const upstream = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': candidate.key,
+          },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts }],
+          }),
+        });
+
+        if (upstream.ok) {
+          const data = await upstream.json();
+          if (typeof data?.totalTokens === 'number') {
+            res.json({ totalTokens: data.totalTokens, model: targetModel });
+            return;
+          }
+        }
+      } catch {
+        // Coba key atau model berikutnya
+      }
+    }
+  }
+
+  res.status(502).json({ error: 'Gagal menghitung token via countTokens API.' });
 });
 
 function writeSseEvent(res, event, data) {
@@ -100,8 +168,8 @@ async function runDemoSse({ res, model, messages, includeThoughts = true, signal
   }
 
   const demoReply = [
-    `Berikut hasil **Adam Studio v5.0 (Demo SSE Mode)** pada model \`${model}\`.\n\n`,
-    `> **Tips Uji:** Klik **Run Preview**, lalu aktifkan tombol **Inspect (Crosshair)** dan klik tombol biru di dalam kartu untuk menandai elemen!\n\n`,
+    `Berikut hasil **Adam Studio v5.1 (Demo SSE Mode)** pada model \`${model}\`.\n\n`,
+    `> **Tips Uji:** Klik **Run Preview**, aktifkan **Inspect (Crosshair)**, dan klik tombol biru di dalam kartu.\n\n`,
     '```html\n',
     '<!doctype html>\n',
     '<html>\n',
@@ -119,7 +187,7 @@ async function runDemoSse({ res, model, messages, includeThoughts = true, signal
     '</head>\n',
     '<body>\n',
     '  <div class="card">\n',
-    '    <span class="badge">Adam Studio v5.0</span>\n',
+    '    <span class="badge">Adam Studio v5.1</span>\n',
     '    <h2>Visual Inspector Target</h2>\n',
     '    <p>Aktifkan ikon Crosshair di atas preview ini, lalu klik tombol di bawah untuk mengeditnya langsung.</p>\n',
     '    <button class="action-btn" id="main-cta">Tombol Utama</button>\n',
@@ -306,7 +374,6 @@ async function fetchGeminiWithRotationAndRetry({
     lastStatus = upstream.status;
     lastErrorMessage = extractGeminiError(errBody, upstream.status);
 
-    // Fallback jika model menolak parameter thinkingConfig
     if (upstream.status === 400 && wantsThinking && /thinking/i.test(errBody)) {
       wantsThinking = false;
       onInfo(`Model ${targetModel} tidak mendukung thinkingConfig; melanjutkan tanpa thinking summaries.`);
@@ -323,7 +390,6 @@ async function fetchGeminiWithRotationAndRetry({
     const isRetryable = RETRYABLE_STATUSES.has(upstream.status) || (isBadKey && canRotateToAnotherKey);
 
     if (isRetryable && attempt + 1 < maxAttempts) {
-      // Tandai cooldown untuk key yang baru gagal
       const coolMs = isBadKey ? 120_000 : upstream.status === 429 ? 60_000 : 12_000;
       keyCooldownMap.set(current.key, Date.now() + coolMs);
 
@@ -340,7 +406,6 @@ async function fetchGeminiWithRotationAndRetry({
         continue;
       }
 
-      // Single-key exponential backoff
       const retryAfterSec = Number(upstream.headers.get('retry-after'));
       const baseDelay =
         Number.isFinite(retryAfterSec) && retryAfterSec > 0 && retryAfterSec <= 15
@@ -574,6 +639,6 @@ if (process.env.NODE_ENV === 'production') {
 
 app.listen(PORT, () => {
   const envKeys = getServerEnvKeys();
-  console.log(`⚡ Adam Studio v5.0 SSE Server aktif di http://localhost:${PORT}`);
+  console.log(`⚡ Adam Studio v5.1 SSE Server aktif di http://localhost:${PORT}`);
   console.log(`   Default model: ${DEFAULT_MODEL} | Server API Keys: ${envKeys.length}`);
 });
