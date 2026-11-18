@@ -10,6 +10,10 @@ export interface StreamChatPayload {
   systemInstruction: string;
   temperature: number;
   maxOutputTokens: number;
+  includeThoughts: boolean;
+  thinkingBudget: number;
+  autoFallbackOnOverload: boolean;
+  fallbackModel: string;
   demoMode: boolean;
   apiKey?: string;
 }
@@ -19,6 +23,8 @@ export interface StreamHandlers {
   onThought: (text: string) => void;
   onDelta: (text: string) => void;
   onUsage: (usage: TokenUsage) => void;
+  onStatus?: (message: string) => void;
+  onInfo?: (message: string) => void;
   onDone: (meta: { model: string; finishReason?: string; isDemo?: boolean }) => void;
   onError: (message: string) => void;
 }
@@ -54,6 +60,10 @@ export async function streamChatCompletion(
       systemInstruction: payload.systemInstruction,
       temperature: payload.temperature,
       maxOutputTokens: payload.maxOutputTokens,
+      includeThoughts: payload.includeThoughts,
+      thinkingBudget: payload.thinkingBudget,
+      autoFallbackOnOverload: payload.autoFallbackOnOverload,
+      fallbackModel: payload.fallbackModel,
       demoMode: payload.demoMode,
     }),
     signal: handlers.signal,
@@ -113,6 +123,10 @@ export async function streamChatCompletion(
         handlers.onDelta(parsed.text);
       } else if (eventName === 'usage') {
         handlers.onUsage(parsed as TokenUsage);
+      } else if (eventName === 'status' && typeof parsed.message === 'string') {
+        handlers.onStatus?.(parsed.message);
+      } else if (eventName === 'info' && typeof parsed.message === 'string') {
+        handlers.onInfo?.(parsed.message);
       } else if (eventName === 'done') {
         handlers.onDone({
           model: String(parsed.model ?? payload.model),

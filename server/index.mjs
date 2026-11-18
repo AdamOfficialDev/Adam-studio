@@ -11,6 +11,8 @@ const rootDir = path.resolve(__dirname, '..');
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
 const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gemini-4-hydrogen';
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+const MAX_RETRIES = 3;
 
 app.use(express.json({ limit: '25mb' }));
 
@@ -46,80 +48,40 @@ function sleep(ms, signal) {
   });
 }
 
-async function runDemoSse({ res, model, messages, signal }) {
+async function runDemoSse({ res, model, messages, includeThoughts = true, signal }) {
   const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
   const userText = lastUserMsg?.content?.trim() || 'Showcase Studio';
 
-  const thoughtChunks = [
-    `Menginisialisasi konteks Adam Studio pada profil ${model}... `,
-    'Menyusun arsitektur respons: ringkasan teknis, diagram Mermaid, formula KaTeX, serta HTML Artifact interaktif.',
-  ];
+  if (includeThoughts) {
+    const demoThought = [
+      `**1. Memahami Intent Prompt**\n`,
+      `Pengguna meminta: "${userText.slice(0, 100)}". Saya perlu menyusun jawaban yang terstruktur dan langsung dapat dieksekusi.\n\n`,
+      `**2. Merencanakan Struktur Respons (${model})**\n`,
+      `- Menyiapkan diagram arsitektur Mermaid.\n`,
+      `- Menyertakan formula estimasi token menggunakan LaTeX.\n`,
+      `- Membuat komponen Artifact HTML mandiri yang aman di sandbox preview.`,
+    ].join('');
 
-  for (const t of thoughtChunks) {
-    await sleep(130, signal);
-    writeSseEvent(res, 'thought', { text: t });
+    const thoughtTokens = demoThought.match(/\S+\s*/g) || [demoThought];
+    for (const chunk of thoughtTokens) {
+      await sleep(24, signal);
+      writeSseEvent(res, 'thought', { text: chunk });
+    }
   }
 
   const demoReply = [
-    `Berikut simulasi **Real-Time SSE Adam Studio** pada model \`${model}\`.\n\n`,
+    `Berikut hasil dari **Real-Time SSE Adam Studio** pada model \`${model}\`.\n\n`,
     `> **Prompt diterima:** ${userText.replace(/\n/g, ' ')}\n\n`,
-    `### 1. Alur Arsitektur SSE & Canvas\n`,
+    `### 1. Alur Arsitektur SSE & Resilience\n`,
     '```mermaid\n',
     'flowchart LR\n',
-    '  A[User Composer] -->|POST + Attachments| B[SSE Proxy]\n',
-    '  B -->|streamGenerateContent?alt=sse| C[(Gemini 4 Hydrogen)]\n',
-    '  C -->|Token Deltas| B\n',
-    '  B -->|60fps Stream| D[Markdown + Mermaid + KaTeX]\n',
-    '  D -->|Auto Extract| E[Artifact IDE Canvas]\n',
+    '  A[User Composer] -->|includeThoughts: true| B[SSE Proxy + Retry 3x]\n',
+    '  B -->|streamGenerateContent?alt=sse| C[(Gemini API)]\n',
+    '  C -->|part.thought| D[Live Thinking Card]\n',
+    '  C -->|part.text| E[Answer + Artifact Canvas]\n',
     '```\n\n',
     `### 2. Rumus Estimasi Biaya Token\n`,
-    `$$\n\\text{Cost} = \\frac{T_{\\text{in}}}{10^6} \\times 1.50 + \\frac{T_{\\text{out}}}{10^6} \\times 7.50\n$$\n\n`,
-    `### 3. Live Interactive Artifact\n`,
-    '```html\n',
-    '<!doctype html>\n',
-    '<html>\n',
-    '<head>\n',
-    '  <meta charset="utf-8" />\n',
-    '  <style>\n',
-    '    * { box-sizing: border-box; }\n',
-    '    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #09090b; color: #fafafa; min-height: 100vh; display: grid; place-items: center; padding: 20px; }\n',
-    '    .panel { width: 100%; max-width: 380px; border-radius: 20px; padding: 24px; background: #18181b; border: 1px solid rgba(255,255,255,0.12); box-shadow: 0 25px 60px rgba(0,0,0,0.6); }\n',
-    '    .tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 11px; background: rgba(59,130,246,0.16); color: #93c5fd; border: 1px solid rgba(59,130,246,0.3); }\n',
-    '    .dot { width: 6px; height: 6px; border-radius: 50%; background: #34d399; }\n',
-    '    h2 { margin: 14px 0 6px; font-size: 20px; letter-spacing: -0.02em; }\n',
-    '    p { margin: 0 0 18px; font-size: 13px; color: #a1a1aa; line-height: 1.5; }\n',
-    '    .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }\n',
-    '    .stat { padding: 12px; border-radius: 12px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07); }\n',
-    '    .stat label { display: block; font-size: 10px; text-transform: uppercase; color: #71717a; }\n',
-    '    .stat strong { font-size: 18px; color: #f4f4f5; }\n',
-    '    button { width: 100%; padding: 11px; border-radius: 12px; border: 0; font-weight: 600; font-size: 13px; cursor: pointer; background: #3b82f6; color: white; transition: transform .15s, opacity .15s; }\n',
-    '    button:hover { opacity: 0.92; }\n',
-    '    button:active { transform: scale(0.98); }\n',
-    '  </style>\n',
-    '</head>\n',
-    '<body>\n',
-    '  <div class="panel">\n',
-    `    <span class="tag"><span class="dot"></span>${model}</span>\n`,
-    '    <h2>Adam Studio Widget</h2>\n',
-    '    <p>Edit kode HTML ini di tab <b>IDE Editor</b> untuk melihat Live Preview berubah seketika.</p>\n',
-    '    <div class="metrics">\n',
-    '      <div class="stat"><label>FPS Stream</label><strong id="fps">60 fps</strong></div>\n',
-    '      <div class="stat"><label>Interaksi</label><strong id="clicks">0x</strong></div>\n',
-    '    </div>\n',
-    '    <button id="boost">Simulasikan Boost Token</button>\n',
-    '  </div>\n',
-    '  <script>\n',
-    '    let count = 0;\n',
-    '    const btn = document.getElementById("boost");\n',
-    '    const clicks = document.getElementById("clicks");\n',
-    '    btn.addEventListener("click", () => {\n',
-    '      count += 1;\n',
-    '      clicks.textContent = count + "x";\n',
-    '    });\n',
-    '  </script>\n',
-    '</body>\n',
-    '</html>\n',
-    '```\n',
+    `$$\n\\text{Cost} = \\frac{T_{\\text{in}}}{10^6} \\times 1.50 + \\frac{T_{\\text{out}}}{10^6} \\times 7.50\n$$\n`,
   ].join('');
 
   const tokens = demoReply.match(/\S+\s*/g) || [demoReply];
@@ -132,7 +94,8 @@ async function runDemoSse({ res, model, messages, signal }) {
   writeSseEvent(res, 'usage', {
     promptTokenCount: promptTokens,
     candidatesTokenCount: tokens.length,
-    totalTokenCount: promptTokens + tokens.length,
+    thoughtsTokenCount: includeThoughts ? 56 : 0,
+    totalTokenCount: promptTokens + tokens.length + (includeThoughts ? 56 : 0),
   });
   writeSseEvent(res, 'done', { model, finishReason: 'STOP', isDemo: true });
 }
@@ -169,6 +132,135 @@ function buildGeminiContents(messages) {
   });
 }
 
+function buildGeminiPayload({
+  messages,
+  systemInstruction,
+  temperature,
+  maxOutputTokens,
+  includeThoughts,
+  thinkingBudget,
+  withThinkingConfig,
+}) {
+  const generationConfig = {
+    temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.7,
+    maxOutputTokens: Number.isFinite(Number(maxOutputTokens))
+      ? Number(maxOutputTokens)
+      : 8192,
+  };
+
+  if (withThinkingConfig && includeThoughts && Number(thinkingBudget) !== 0) {
+    const thinkingConfig = { includeThoughts: true };
+    if (Number(thinkingBudget) > 0) {
+      thinkingConfig.thinkingBudget = Number(thinkingBudget);
+    }
+    generationConfig.thinkingConfig = thinkingConfig;
+  }
+
+  const payload = {
+    contents: buildGeminiContents(messages),
+    generationConfig,
+  };
+
+  if (typeof systemInstruction === 'string' && systemInstruction.trim().length > 0) {
+    payload.systemInstruction = {
+      parts: [{ text: systemInstruction.trim() }],
+    };
+  }
+
+  return payload;
+}
+
+function extractGeminiError(rawText, status) {
+  let msg = `Gemini API error (${status})`;
+  try {
+    const parsed = JSON.parse(rawText);
+    if (parsed?.error?.message) msg = parsed.error.message;
+  } catch {
+    if (rawText) msg = rawText;
+  }
+  return msg;
+}
+
+async function fetchGeminiWithRetry({
+  targetModel,
+  apiKey,
+  messages,
+  systemInstruction,
+  temperature,
+  maxOutputTokens,
+  includeThoughts,
+  thinkingBudget,
+  signal,
+  onStatus,
+  onInfo,
+}) {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    targetModel
+  )}:streamGenerateContent?alt=sse`;
+
+  let wantsThinking = Boolean(includeThoughts) && Number(thinkingBudget) !== 0;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const upstream = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify(
+        buildGeminiPayload({
+          messages,
+          systemInstruction,
+          temperature,
+          maxOutputTokens,
+          includeThoughts,
+          thinkingBudget,
+          withThinkingConfig: wantsThinking,
+        })
+      ),
+      signal,
+    });
+
+    if (upstream.ok) {
+      return { ok: true, response: upstream, usedModel: targetModel };
+    }
+
+    const errBody = await upstream.text();
+
+    // Fallback jika model menolak parameter thinkingConfig
+    if (upstream.status === 400 && wantsThinking && /thinking/i.test(errBody)) {
+      wantsThinking = false;
+      onInfo(`Model ${targetModel} tidak mendukung thinkingConfig; melanjutkan tanpa thinking summaries.`);
+      attempt -= 1;
+      continue;
+    }
+
+    if (RETRYABLE_STATUSES.has(upstream.status) && attempt < MAX_RETRIES) {
+      const retryAfterSec = Number(upstream.headers.get('retry-after'));
+      const baseDelay =
+        Number.isFinite(retryAfterSec) && retryAfterSec > 0 && retryAfterSec <= 15
+          ? retryAfterSec * 1000
+          : 1200 * Math.pow(2, attempt) + Math.round(Math.random() * 450);
+
+      onStatus(
+        `Server ${targetModel} sedang padat (${upstream.status}). Mencoba ulang otomatis (${attempt + 1}/${MAX_RETRIES}) dalam ${(
+          baseDelay / 1000
+        ).toFixed(1)}s...`
+      );
+      await sleep(baseDelay, signal);
+      continue;
+    }
+
+    return {
+      ok: false,
+      status: upstream.status,
+      message: extractGeminiError(errBody, upstream.status),
+    };
+  }
+
+  return { ok: false, status: 503, message: 'Server Gemini sedang sibuk.' };
+}
+
 app.post('/api/chat', async (req, res) => {
   const {
     model = DEFAULT_MODEL,
@@ -176,6 +268,10 @@ app.post('/api/chat', async (req, res) => {
     systemInstruction = '',
     temperature = 0.7,
     maxOutputTokens = 8192,
+    includeThoughts = true,
+    thinkingBudget = -1,
+    autoFallbackOnOverload = false,
+    fallbackModel = 'gemini-2.5-pro',
     demoMode = false,
   } = req.body || {};
 
@@ -207,10 +303,7 @@ app.post('/api/chat', async (req, res) => {
 
   try {
     if (!Array.isArray(messages) || messages.length === 0) {
-      writeSseEvent(res, 'error', {
-        status: 400,
-        message: 'Pesan tidak boleh kosong.',
-      });
+      writeSseEvent(res, 'error', { status: 400, message: 'Pesan tidak boleh kosong.' });
       return;
     }
 
@@ -219,6 +312,7 @@ app.post('/api/chat', async (req, res) => {
         res,
         model,
         messages,
+        includeThoughts: Boolean(includeThoughts) && Number(thinkingBudget) !== 0,
         signal: abortController.signal,
       });
       return;
@@ -228,59 +322,63 @@ app.post('/api/chat', async (req, res) => {
       writeSseEvent(res, 'error', {
         status: 401,
         message:
-          'GEMINI_API_KEY belum diatur. Isi pada .env, masukkan lewat Settings, atau aktifkan Demo SSE Mode untuk mencoba seluruh fitur Adam Studio.',
+          'GEMINI_API_KEY belum diatur. Isi pada .env, masukkan lewat Settings, atau aktifkan Demo SSE Mode.',
       });
       return;
     }
 
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      model
-    )}:streamGenerateContent?alt=sse`;
-
-    const payload = {
-      contents: buildGeminiContents(messages),
-      generationConfig: {
-        temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.7,
-        maxOutputTokens: Number.isFinite(Number(maxOutputTokens))
-          ? Number(maxOutputTokens)
-          : 8192,
-      },
-    };
-
-    if (typeof systemInstruction === 'string' && systemInstruction.trim().length > 0) {
-      payload.systemInstruction = {
-        parts: [{ text: systemInstruction.trim() }],
-      };
-    }
-
-    const upstream = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify(payload),
+    let result = await fetchGeminiWithRetry({
+      targetModel: model,
+      apiKey,
+      messages,
+      systemInstruction,
+      temperature,
+      maxOutputTokens,
+      includeThoughts,
+      thinkingBudget,
       signal: abortController.signal,
+      onStatus: (message) => writeSseEvent(res, 'status', { message }),
+      onInfo: (message) => writeSseEvent(res, 'info', { message }),
     });
 
-    if (!upstream.ok) {
-      const errorBody = await upstream.text();
-      let errorMessage = `Gemini API error (${upstream.status})`;
-      try {
-        const parsed = JSON.parse(errorBody);
-        if (parsed?.error?.message) {
-          errorMessage = parsed.error.message;
-        }
-      } catch {
-        if (errorBody) errorMessage = errorBody;
-      }
+    if (
+      !result.ok &&
+      RETRYABLE_STATUSES.has(result.status) &&
+      autoFallbackOnOverload &&
+      fallbackModel &&
+      fallbackModel !== model
+    ) {
+      writeSseEvent(res, 'status', {
+        message: `${model} masih penuh (${result.status}). Beralih otomatis ke ${fallbackModel}...`,
+      });
+      writeSseEvent(res, 'info', {
+        message: `Fallback otomatis ke ${fallbackModel} karena ${model} mengalami high demand.`,
+      });
+      result = await fetchGeminiWithRetry({
+        targetModel: fallbackModel,
+        apiKey,
+        messages,
+        systemInstruction,
+        temperature,
+        maxOutputTokens,
+        includeThoughts,
+        thinkingBudget,
+        signal: abortController.signal,
+        onStatus: (message) => writeSseEvent(res, 'status', { message }),
+        onInfo: (message) => writeSseEvent(res, 'info', { message }),
+      });
+    }
 
+    if (!result.ok) {
       writeSseEvent(res, 'error', {
-        status: upstream.status,
-        message: errorMessage,
+        status: result.status,
+        message: result.message,
       });
       return;
     }
+
+    const upstream = result.response;
+    const activeModel = result.usedModel;
 
     if (!upstream.body) {
       writeSseEvent(res, 'error', {
@@ -330,13 +428,8 @@ app.post('/api/chat', async (req, res) => {
             }
           }
 
-          if (candidate?.finishReason) {
-            lastFinishReason = candidate.finishReason;
-          }
-
-          if (chunk?.usageMetadata) {
-            writeSseEvent(res, 'usage', chunk.usageMetadata);
-          }
+          if (candidate?.finishReason) lastFinishReason = candidate.finishReason;
+          if (chunk?.usageMetadata) writeSseEvent(res, 'usage', chunk.usageMetadata);
         } catch {
           // Abaikan JSON parsial
         }
@@ -344,14 +437,12 @@ app.post('/api/chat', async (req, res) => {
     }
 
     writeSseEvent(res, 'done', {
-      model,
+      model: activeModel,
       finishReason: lastFinishReason || 'STOP',
       isDemo: false,
     });
   } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      return;
-    }
+    if (err instanceof Error && err.name === 'AbortError') return;
     writeSseEvent(res, 'error', {
       status: 500,
       message: err instanceof Error ? err.message : 'Terjadi kesalahan internal server.',

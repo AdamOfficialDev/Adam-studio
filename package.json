@@ -1,7 +1,7 @@
 {
   "name": "adam-studio",
   "private": true,
-  "version": "4.3.0",
+  "version": "4.4.0",
   "type": "module",
   "scripts": {
     "dev:client": "vite",
@@ -63,6 +63,6 @@
     "typescript": "^5.7.2",
     "vite": "^6.0.7",
     "vite-plugin-pwa": "^0.21.1",
-    "workbox-window": "^7.4.1"
+    "workbox-window": "^7.3.0"
   }
 }

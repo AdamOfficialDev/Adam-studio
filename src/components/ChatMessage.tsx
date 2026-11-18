@@ -1,10 +1,7 @@
 import { memo, useMemo, useState } from 'react';
 import {
   AlertCircle,
-  Brain,
   Check,
-  ChevronDown,
-  ChevronRight,
   Copy,
   FileCode2,
   GitBranch,
@@ -19,6 +16,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { BrandLogoMark } from '@/components/BrandLogo';
+import { ThinkingCard } from '@/components/ThinkingCard';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -33,7 +31,9 @@ interface ChatMessageProps {
   message: ChatMessageType;
   isLastAssistant: boolean;
   compact: boolean;
+  thinkingEnabled?: boolean;
   onRegenerate?: () => void;
+  onRetryWithModel?: (modelId: string) => void;
   onEditUserMessage?: (messageId: string, newContent: string) => void;
   onForkFromMessage?: (messageId: string) => void;
   onToggleStar?: (messageId: string) => void;
@@ -45,7 +45,9 @@ export const ChatMessage = memo(function ChatMessage({
   message,
   isLastAssistant,
   compact,
+  thinkingEnabled = true,
   onRegenerate,
+  onRetryWithModel,
   onEditUserMessage,
   onForkFromMessage,
   onToggleStar,
@@ -53,7 +55,6 @@ export const ChatMessage = memo(function ChatMessage({
   onPreviewImage,
 }: ChatMessageProps) {
   const [copied, setCopied] = useState(false);
-  const [thoughtOpen, setThoughtOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.content);
   const [speaking, setSpeaking] = useState(false);
@@ -211,6 +212,11 @@ export const ChatMessage = memo(function ChatMessage({
     );
   }
 
+  const hasAnswerStarted = Boolean(message.content && message.content.length > 0);
+  const isCapacityError = Boolean(
+    message.error && /high demand|503|429|quota|rate limit|overloaded/i.test(message.error)
+  );
+
   return (
     <div className="group flex w-full min-w-0 items-start gap-2.5 sm:gap-3.5">
       <Avatar className="mt-0.5 h-7 w-7 shrink-0 border border-primary/25 bg-primary shadow-sm sm:h-8 sm:w-8">
@@ -234,37 +240,19 @@ export const ChatMessage = memo(function ChatMessage({
           {message.isStreaming && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
               <span className="h-1.5 w-1.5 animate-ping rounded-full bg-primary" />
-              Streaming
+              {hasAnswerStarted ? 'Streaming' : 'Thinking'}
             </span>
           )}
         </div>
 
-        {message.thought && message.thought.trim().length > 0 && (
-          <div className="overflow-hidden rounded-xl border bg-muted/35">
-            <button
-              type="button"
-              onClick={() => setThoughtOpen((prev) => !prev)}
-              className="flex w-full items-center justify-between px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-            >
-              <span className="flex items-center gap-2">
-                <Brain
-                  className={cn('h-3.5 w-3.5 text-primary', message.isStreaming && 'animate-pulse')}
-                />
-                Thinking Process
-              </span>
-              {thoughtOpen ? (
-                <ChevronDown className="h-3.5 w-3.5" />
-              ) : (
-                <ChevronRight className="h-3.5 w-3.5" />
-              )}
-            </button>
-            {thoughtOpen && (
-              <div className="border-t px-3.5 py-2.5 text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap break-words">
-                {message.thought}
-              </div>
-            )}
-          </div>
-        )}
+        <ThinkingCard
+          thought={message.thought}
+          statusText={message.statusText}
+          isStreaming={message.isStreaming}
+          hasAnswerStarted={hasAnswerStarted}
+          thinkingDurationMs={message.metrics?.thinkingDurationMs}
+          thinkingEnabled={thinkingEnabled}
+        />
 
         {message.content ? (
           <div className="relative w-full min-w-0">
@@ -278,7 +266,8 @@ export const ChatMessage = memo(function ChatMessage({
             )}
           </div>
         ) : (
-          message.isStreaming && (
+          message.isStreaming &&
+          !thinkingEnabled && (
             <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
               <span className="h-2 w-2 animate-bounce rounded-full bg-primary [animation-delay:-0.3s]" />
               <span className="h-2 w-2 animate-bounce rounded-full bg-primary [animation-delay:-0.15s]" />
@@ -307,12 +296,60 @@ export const ChatMessage = memo(function ChatMessage({
         )}
 
         {message.error && (
-          <div className="flex items-start gap-2.5 rounded-xl border border-destructive/40 bg-destructive/10 p-3.5 text-xs text-destructive">
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <div className="min-w-0 space-y-1">
-              <div className="font-semibold">Gagal menerima stream SSE</div>
-              <p className="break-words leading-relaxed opacity-90">{message.error}</p>
+          <div className="space-y-2.5 rounded-2xl border border-destructive/40 bg-destructive/10 p-3.5 text-xs text-destructive">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="min-w-0 space-y-1">
+                <div className="font-semibold">Gagal menerima stream SSE</div>
+                <p className="break-words leading-relaxed opacity-90">{message.error}</p>
+                {isCapacityError && (
+                  <p className="pt-1 text-[11px] leading-relaxed text-muted-foreground">
+                    Server Google Developer API sedang mengalami lonjakan trafik (503/429) setelah
+                    3x percobaan ulang otomatis. Web <code>aistudio.google.com</code> memakai pool
+                    konsol terpisah.
+                  </p>
+                )}
+              </div>
             </div>
+
+            {isLastAssistant && (
+              <div className="flex flex-wrap gap-2 pt-1">
+                {onRegenerate && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={onRegenerate}
+                    className="h-7 gap-1.5 rounded-lg border-destructive/30 bg-background/60 px-2.5 text-[11px] text-foreground hover:bg-background"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    Coba Lagi
+                  </Button>
+                )}
+                {isCapacityError && onRetryWithModel && (
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onRetryWithModel('gemini-2.5-pro')}
+                      className="h-7 rounded-lg border-primary/30 bg-background/60 px-2.5 text-[11px] text-foreground hover:bg-background"
+                    >
+                      Coba Gemini 2.5 Pro
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onRetryWithModel('gemini-2.5-flash')}
+                      className="h-7 rounded-lg border-primary/30 bg-background/60 px-2.5 text-[11px] text-foreground hover:bg-background"
+                    >
+                      Coba Gemini 2.5 Flash
+                    </Button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
 

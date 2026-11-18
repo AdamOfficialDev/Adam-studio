@@ -78,7 +78,9 @@ interface ActiveStreamState {
   msgId: string;
   content: string;
   thought: string;
+  statusText?: string;
   tps: number;
+  thinkingDurationMs?: number;
   usage?: TokenUsage;
 }
 
@@ -235,6 +237,7 @@ export default function App() {
   const currentModelId = activeConversation?.model ?? selectedModel;
   const currentModelInfo = getModelInfo(currentModelId);
   const isStreamingActive = activeStream !== null;
+  const thinkingEnabled = settings.includeThoughts && settings.thinkingBudget !== 0;
 
   const conversationArtifacts = useMemo(() => {
     if (!activeConversation) return [];
@@ -274,7 +277,12 @@ export default function App() {
     if (autoScrollEnabledRef.current) {
       scrollToBottom(false);
     }
-  }, [activeConversation?.messages.length, activeStream?.content, scrollToBottom]);
+  }, [
+    activeConversation?.messages.length,
+    activeStream?.content,
+    activeStream?.thought,
+    scrollToBottom,
+  ]);
 
   const handleViewportScroll = useCallback((el: HTMLElement) => {
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -309,7 +317,11 @@ export default function App() {
                         ...m,
                         content: current.content,
                         thought: current.thought || m.thought,
+                        statusText: undefined,
                         usage: current.usage ?? m.usage,
+                        metrics: current.thinkingDurationMs
+                          ? { ...m.metrics, thinkingDurationMs: current.thinkingDurationMs }
+                          : m.metrics,
                         isStreaming: false,
                       }
                     : m
@@ -388,10 +400,18 @@ export default function App() {
       abortControllerRef.current = controller;
       autoScrollEnabledRef.current = true;
 
+      const trimmedHistory =
+        settings.maxHistoryMessages > 0 && historyMessages.length > settings.maxHistoryMessages
+          ? historyMessages.slice(-settings.maxHistoryMessages)
+          : historyMessages;
+
       const startedAt = performance.now();
-      let firstTokenAt: number | null = null;
+      let firstThoughtAt: number | null = null;
+      let firstAnswerAt: number | null = null;
+      let thinkingDurationMs: number | undefined = undefined;
       let accContent = '';
       let accThought = '';
+      let currentStatus: string | undefined = undefined;
       let accUsage: TokenUsage | undefined = undefined;
       let chunkCount = 0;
 
@@ -408,15 +428,17 @@ export default function App() {
       const commitStreamSnapshot = () => {
         flushTimerRef.current = null;
         if (!activeStreamRef.current) return;
-        const elapsed = Math.max(100, performance.now() - startedAt);
+        const elapsed = Math.max(100, performance.now() - (firstAnswerAt ?? startedAt));
         const estTok = Math.max(chunkCount, Math.round(accContent.length / 4));
-        const tps = Number(((estTok / elapsed) * 1000).toFixed(1));
+        const tps = firstAnswerAt ? Number(((estTok / elapsed) * 1000).toFixed(1)) : 0;
         const snapshot: ActiveStreamState = {
           convId,
           msgId: assistantMessageId,
           content: accContent,
           thought: accThought,
+          statusText: currentStatus,
           tps,
+          thinkingDurationMs,
           usage: accUsage,
         };
         activeStreamRef.current = snapshot;
@@ -433,7 +455,7 @@ export default function App() {
         await streamChatCompletion(
           {
             model: modelId,
-            messages: historyMessages.map((m) => ({
+            messages: trimmedHistory.map((m) => ({
               role: m.role,
               content: m.content,
               attachments: m.attachments,
@@ -441,18 +463,32 @@ export default function App() {
             systemInstruction: settings.systemInstruction,
             temperature: settings.temperature,
             maxOutputTokens: settings.maxOutputTokens,
+            includeThoughts: settings.includeThoughts,
+            thinkingBudget: settings.thinkingBudget,
+            autoFallbackOnOverload: settings.autoFallbackOnOverload,
+            fallbackModel: settings.fallbackModel,
             demoMode: settings.demoMode,
             apiKey: settings.apiKey,
           },
           {
             signal: controller.signal,
+            onStatus: (statusMessage) => {
+              currentStatus = statusMessage;
+              commitStreamSnapshot();
+            },
             onThought: (thoughtChunk) => {
-              if (firstTokenAt === null) firstTokenAt = performance.now();
+              currentStatus = undefined;
+              if (firstThoughtAt === null) firstThoughtAt = performance.now();
               accThought += thoughtChunk;
               scheduleFlush();
             },
             onDelta: (textChunk) => {
-              if (firstTokenAt === null) firstTokenAt = performance.now();
+              currentStatus = undefined;
+              if (firstAnswerAt === null) {
+                firstAnswerAt = performance.now();
+                const thinkOrigin = firstThoughtAt ?? startedAt;
+                thinkingDurationMs = Math.max(100, Math.round(firstAnswerAt - thinkOrigin));
+              }
               accContent += textChunk;
               chunkCount += 1;
               scheduleFlush();
@@ -460,7 +496,10 @@ export default function App() {
             onUsage: (usage) => {
               accUsage = usage;
             },
-            onDone: ({ isDemo }) => {
+            onInfo: (infoMsg) => {
+              toast.info(infoMsg);
+            },
+            onDone: ({ model: resolvedModel, isDemo }) => {
               if (flushTimerRef.current !== null) {
                 window.clearTimeout(flushTimerRef.current);
                 flushTimerRef.current = null;
@@ -470,10 +509,19 @@ export default function App() {
 
               const finishedAt = performance.now();
               const durationMs = Math.max(1, Math.round(finishedAt - startedAt));
-              const ttftMs =
-                firstTokenAt !== null ? Math.round(firstTokenAt - startedAt) : durationMs;
+              const firstAny = firstAnswerAt ?? firstThoughtAt;
+              const ttftMs = firstAny !== null ? Math.round(firstAny - startedAt) : durationMs;
+
+              if (thinkingDurationMs === undefined && accThought) {
+                thinkingDurationMs = Math.max(
+                  100,
+                  Math.round(finishedAt - (firstThoughtAt ?? startedAt))
+                );
+              }
+
+              const answerWindow = Math.max(1, finishedAt - (firstAnswerAt ?? startedAt));
               const estTokens = Math.max(chunkCount, Math.round(accContent.length / 4));
-              const tokensPerSec = Number(((estTokens / durationMs) * 1000).toFixed(1));
+              const tokensPerSec = Number(((estTokens / answerWindow) * 1000).toFixed(1));
 
               setConversations((prev) =>
                 prev.map((conv) =>
@@ -486,12 +534,19 @@ export default function App() {
                           m.id === assistantMessageId
                             ? {
                                 ...m,
+                                model: resolvedModel || m.model,
                                 content: accContent,
                                 thought: accThought || undefined,
+                                statusText: undefined,
                                 usage: accUsage,
                                 isStreaming: false,
                                 isDemo,
-                                metrics: { ttftMs, durationMs, tokensPerSec },
+                                metrics: {
+                                  ttftMs,
+                                  thinkingDurationMs,
+                                  durationMs,
+                                  tokensPerSec,
+                                },
                               }
                             : m
                         ),
@@ -527,6 +582,7 @@ export default function App() {
                                 ...m,
                                 content: accContent,
                                 thought: accThought || undefined,
+                                statusText: undefined,
                                 isStreaming: false,
                                 error: errorMessage,
                               }
@@ -552,7 +608,13 @@ export default function App() {
                   ...conv,
                   messages: conv.messages.map((m) =>
                     m.id === assistantMessageId
-                      ? { ...m, content: accContent, isStreaming: false, error: message }
+                      ? {
+                          ...m,
+                          content: accContent,
+                          statusText: undefined,
+                          isStreaming: false,
+                          error: message,
+                        }
                       : m
                   ),
                 }
@@ -576,6 +638,7 @@ export default function App() {
                               ...m,
                               content: accContent,
                               thought: accThought || undefined,
+                              statusText: undefined,
                               isStreaming: false,
                             }
                           : m
@@ -651,44 +714,49 @@ export default function App() {
     [activeConversation, currentModelId, isStreamingActive, runStreamForConversation]
   );
 
-  const handleRegenerate = useCallback(() => {
-    if (!activeConversation || isStreamingActive) return;
-    const msgs = activeConversation.messages;
-    if (msgs.length === 0) return;
+  const handleRegenerate = useCallback(
+    (overrideModel?: string) => {
+      if (!activeConversation || isStreamingActive) return;
+      const msgs = activeConversation.messages;
+      if (msgs.length === 0) return;
 
-    const lastMsg = msgs[msgs.length - 1];
-    const baseMessages = lastMsg.role === 'assistant' ? msgs.slice(0, -1) : msgs;
-    if (baseMessages.length === 0) return;
+      const lastMsg = msgs[msgs.length - 1];
+      const baseMessages = lastMsg.role === 'assistant' ? msgs.slice(0, -1) : msgs;
+      if (baseMessages.length === 0) return;
 
-    const assistantMessageId = generateId();
-    const assistantPlaceholder: ChatMessageType = {
-      id: assistantMessageId,
-      role: 'assistant',
-      content: '',
-      createdAt: Date.now(),
-      model: activeConversation.model,
-      isStreaming: true,
-    };
+      const targetModel = overrideModel || activeConversation.model;
+      const assistantMessageId = generateId();
+      const assistantPlaceholder: ChatMessageType = {
+        id: assistantMessageId,
+        role: 'assistant',
+        content: '',
+        createdAt: Date.now(),
+        model: targetModel,
+        isStreaming: true,
+      };
 
-    setConversations((prev) =>
-      prev.map((conv) =>
-        conv.id !== activeConversation.id
-          ? conv
-          : {
-              ...conv,
-              updatedAt: Date.now(),
-              messages: [...baseMessages, assistantPlaceholder],
-            }
-      )
-    );
+      setConversations((prev) =>
+        prev.map((conv) =>
+          conv.id !== activeConversation.id
+            ? conv
+            : {
+                ...conv,
+                model: targetModel,
+                updatedAt: Date.now(),
+                messages: [...baseMessages, assistantPlaceholder],
+              }
+        )
+      );
 
-    void runStreamForConversation(
-      activeConversation.id,
-      activeConversation.model,
-      baseMessages,
-      assistantMessageId
-    );
-  }, [activeConversation, isStreamingActive, runStreamForConversation]);
+      void runStreamForConversation(
+        activeConversation.id,
+        targetModel,
+        baseMessages,
+        assistantMessageId
+      );
+    },
+    [activeConversation, isStreamingActive, runStreamForConversation]
+  );
 
   const handleEditUserMessage = useCallback(
     (messageId: string, newContent: string) => {
@@ -929,9 +997,13 @@ export default function App() {
                   <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 </Button>
 
-                {isStreamingActive && activeStream.tps > 0 && (
+                {isStreamingActive && (
                   <Badge variant="outline" className="hidden font-mono text-[10px] sm:inline-flex">
-                    {activeStream.tps} tok/s
+                    {activeStream.statusText
+                      ? 'Retrying...'
+                      : activeStream.tps > 0
+                        ? `${activeStream.tps} tok/s`
+                        : 'Thinking...'}
                   </Badge>
                 )}
               </div>
@@ -1003,7 +1075,7 @@ export default function App() {
                   <TooltipContent>
                     {settings.demoMode
                       ? 'Mode simulasi SSE lokal aktif'
-                      : 'Streaming SSE ke /api/chat'}
+                      : 'Streaming SSE ke /api/chat (Auto-Retry 3x)'}
                   </TooltipContent>
                 </Tooltip>
 
@@ -1116,8 +1188,8 @@ export default function App() {
                       Adam Studio Workspace
                     </h1>
                     <p className="mt-2.5 max-w-lg text-sm leading-relaxed text-muted-foreground">
-                      Platform AI real-time SSE tanpa lag, Pro Code Blocks, Live CodeMirror
-                      Artifact Studio, diagram Mermaid, dan rumus KaTeX.
+                      Platform AI real-time SSE dengan Live Thinking ala Google AI Studio,
+                      Auto-Retry 503/429, Pro Code Blocks, dan Artifact IDE Canvas.
                     </p>
 
                     {!settings.apiKey &&
@@ -1205,6 +1277,13 @@ export default function App() {
                               ...msg,
                               content: activeStream.content,
                               thought: activeStream.thought || msg.thought,
+                              statusText: activeStream.statusText,
+                              metrics: activeStream.thinkingDurationMs
+                                ? {
+                                    ...msg.metrics,
+                                    thinkingDurationMs: activeStream.thinkingDurationMs,
+                                  }
+                                : msg.metrics,
                               isStreaming: true,
                             }
                           : msg;
@@ -1214,8 +1293,16 @@ export default function App() {
                           key={msg.id}
                           message={effectiveMsg}
                           compact={settings.density === 'compact'}
+                          thinkingEnabled={thinkingEnabled}
                           isLastAssistant={msg.id === lastAssistantId}
-                          onRegenerate={msg.id === lastAssistantId ? handleRegenerate : undefined}
+                          onRegenerate={
+                            msg.id === lastAssistantId ? () => handleRegenerate() : undefined
+                          }
+                          onRetryWithModel={
+                            msg.id === lastAssistantId
+                              ? (mId) => handleRegenerate(mId)
+                              : undefined
+                          }
                           onEditUserMessage={
                             msg.role === 'user' && !isStreamingActive
                               ? handleEditUserMessage

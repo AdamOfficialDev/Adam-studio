@@ -14,11 +14,13 @@ export interface Attachment {
 export interface TokenUsage {
   promptTokenCount?: number;
   candidatesTokenCount?: number;
+  thoughtsTokenCount?: number;
   totalTokenCount?: number;
 }
 
 export interface StreamMetrics {
   ttftMs?: number;
+  thinkingDurationMs?: number;
   durationMs?: number;
   tokensPerSec?: number;
 }
@@ -36,6 +38,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   thought?: string;
+  statusText?: string;
   attachments?: Attachment[];
   createdAt: number;
   model?: string;
@@ -63,6 +66,11 @@ export interface AppSettings {
   systemInstruction: string;
   temperature: number;
   maxOutputTokens: number;
+  includeThoughts: boolean;
+  thinkingBudget: number;
+  autoFallbackOnOverload: boolean;
+  fallbackModel: string;
+  maxHistoryMessages: number; // 0 = Unlimited
   demoMode: boolean;
   autoOpenArtifacts: boolean;
   activePersonaId: string;

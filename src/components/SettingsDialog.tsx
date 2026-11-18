@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  Brain,
   Check,
   Eye,
   EyeOff,
+  History,
   KeyRound,
   Palette,
   Radio,
   RotateCcw,
+  ShieldAlert,
   SlidersHorizontal,
   Sparkles,
 } from 'lucide-react';
@@ -81,6 +84,21 @@ const THEME_SKINS: Array<{
   },
 ];
 
+const THINKING_BUDGET_OPTIONS = [
+  { label: 'Auto', value: -1 },
+  { label: '1K', value: 1024 },
+  { label: '4K', value: 4096 },
+  { label: '8K', value: 8192 },
+  { label: '16K', value: 16384 },
+];
+
+const HISTORY_LIMIT_OPTIONS = [
+  { label: 'Semua', value: 0 },
+  { label: '20 Pesan', value: 20 },
+  { label: '10 Pesan', value: 10 },
+  { label: '6 Pesan', value: 6 },
+];
+
 export function SettingsDialog({
   open,
   onOpenChange,
@@ -136,7 +154,7 @@ export function SettingsDialog({
         <DialogHeader className="shrink-0 border-b bg-card/60 px-5 py-4 sm:px-6">
           <DialogTitle>Adam Studio — Settings & Appearance</DialogTitle>
           <DialogDescription>
-            Koneksi Gemini SSE, kepribadian AI, tema visual, dan perilaku Canvas.
+            Koneksi Gemini SSE, Auto-Retry 503, Thinking Summaries, dan tema visual.
           </DialogDescription>
         </DialogHeader>
 
@@ -206,9 +224,80 @@ export function SettingsDialog({
                     </button>
                   </div>
                   <p className="text-[11px] leading-relaxed text-muted-foreground">
-                    Disimpan lokal di browser dan diteruskan via header ke proxy SSE tanpa
-                    mengekspos `.env` server.
+                    Backend otomatis melakukan <strong>3x Retry + Exponential Backoff</strong> jika
+                    terkena error <code>503 High Demand</code> / <code>429</code>.
                   </p>
+                </div>
+
+                {/* Auto Fallback on 503 */}
+                <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2 text-sm font-semibold">
+                        <ShieldAlert className="h-4 w-4 text-amber-400" />
+                        Auto-Fallback saat 503 High Demand
+                      </div>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        Jika model utama tetap penuh setelah 3x retry, otomatis pindah ke model
+                        cadangan.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={draft.autoFallbackOnOverload}
+                      onCheckedChange={(checked) =>
+                        setDraft({ ...draft, autoFallbackOnOverload: checked })
+                      }
+                    />
+                  </div>
+
+                  {draft.autoFallbackOnOverload && (
+                    <div className="grid grid-cols-2 gap-2 border-t border-border/60 pt-3">
+                      {['gemini-2.5-pro', 'gemini-2.5-flash'].map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => setDraft({ ...draft, fallbackModel: m })}
+                          className={cn(
+                            'rounded-xl border px-3 py-2 text-left font-mono text-xs transition-colors',
+                            draft.fallbackModel === m
+                              ? 'border-primary bg-primary/15 font-semibold text-primary'
+                              : 'bg-background/60 hover:bg-accent'
+                          )}
+                        >
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* History Window Limiter */}
+                <div className="space-y-2.5 rounded-2xl border bg-card/60 p-4">
+                  <div className="flex items-center gap-2 text-sm font-semibold">
+                    <History className="h-4 w-4 text-primary" />
+                    Batas Riwayat Konteks Terkirim
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Membatasi jumlah pesan lama yang dikirim ulang agar chat kode panjang tidak
+                    membebani batas kapasitas token API.
+                  </p>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {HISTORY_LIMIT_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => setDraft({ ...draft, maxHistoryMessages: opt.value })}
+                        className={cn(
+                          'rounded-lg border py-1.5 text-[11px] font-medium transition-colors',
+                          draft.maxHistoryMessages === opt.value
+                            ? 'border-primary bg-primary/15 text-primary'
+                            : 'bg-background/50 hover:bg-accent'
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between gap-4 rounded-2xl border bg-card/60 p-4">
@@ -218,7 +307,8 @@ export function SettingsDialog({
                       Demo SSE Mode (Showcase Lokal)
                     </div>
                     <p className="text-xs leading-relaxed text-muted-foreground">
-                      Uji streaming SSE, Mermaid diagram, LaTeX math, & HTML Artifact tanpa API key.
+                      Uji streaming Thinking Process, SSE, Mermaid diagram, LaTeX math, & HTML
+                      Artifact tanpa API key.
                     </p>
                   </div>
                   <Switch
@@ -229,6 +319,59 @@ export function SettingsDialog({
               </TabsContent>
 
               <TabsContent value="persona" className="mt-0 space-y-5">
+                <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2 text-sm font-semibold">
+                        <Brain className="h-4 w-4 text-primary" />
+                        Tampilkan Thinking Process (AI Studio Style)
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Kirim <code>includeThoughts: true</code> agar rencana pemikiran model tampil
+                        real-time saat streaming.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={draft.includeThoughts && draft.thinkingBudget !== 0}
+                      onCheckedChange={(checked) =>
+                        setDraft({
+                          ...draft,
+                          includeThoughts: checked,
+                          thinkingBudget:
+                            checked && draft.thinkingBudget === 0 ? -1 : draft.thinkingBudget,
+                        })
+                      }
+                    />
+                  </div>
+
+                  {draft.includeThoughts && draft.thinkingBudget !== 0 && (
+                    <div className="space-y-1.5 border-t border-border/60 pt-3">
+                      <div className="text-[11px] font-medium text-muted-foreground">
+                        Thinking Token Budget
+                      </div>
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {THINKING_BUDGET_OPTIONS.map((opt) => (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() =>
+                              setDraft({ ...draft, includeThoughts: true, thinkingBudget: opt.value })
+                            }
+                            className={cn(
+                              'rounded-lg border py-1.5 font-mono text-[11px] transition-colors',
+                              draft.thinkingBudget === opt.value
+                                ? 'border-primary bg-primary/15 font-semibold text-primary'
+                                : 'bg-background/50 hover:bg-accent'
+                            )}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="space-y-2.5">
                   <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                     Preset Persona

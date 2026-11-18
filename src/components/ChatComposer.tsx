@@ -11,6 +11,7 @@ import {
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowUp,
+  Brain,
   FileCode2,
   ImagePlus,
   Mic,
@@ -85,6 +86,14 @@ const TEXT_EXTENSIONS = new Set([
   'sh',
 ]);
 
+const THINKING_BUDGET_OPTIONS = [
+  { label: 'Auto', value: -1 },
+  { label: '1K', value: 1024 },
+  { label: '4K', value: 4096 },
+  { label: '8K', value: 8192 },
+  { label: '16K', value: 16384 },
+];
+
 export function ChatComposer({
   model,
   isStreaming,
@@ -113,7 +122,6 @@ export function ChatComposer({
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
 
-    // Keep OverlayScrollbars viewport scrolled cleanly if cursor is at bottom
     const vp = inputScrollRef.current?.getViewport();
     if (vp && el.selectionStart === el.value.length) {
       vp.scrollTop = vp.scrollHeight;
@@ -319,6 +327,7 @@ export function ChatComposer({
 
   const activePersona = PERSONA_PRESETS.find((p) => p.id === settings.activePersonaId);
   const draftTokens = estimateTokens(input);
+  const thinkingOn = settings.includeThoughts && settings.thinkingBudget !== 0;
 
   return (
     <div
@@ -439,7 +448,6 @@ export function ChatComposer({
           </div>
         )}
 
-        {/* Textarea dibungkus StudioScroll agar zero native scrollbar saat teks panjang */}
         <StudioScroll ref={inputScrollRef} className="max-h-[185px] w-full" autoHide="scroll">
           <Textarea
             ref={textareaRef}
@@ -478,6 +486,33 @@ export function ChatComposer({
             >
               <ImagePlus className="h-4 w-4" />
               <span className="hidden text-xs sm:inline">Lampiran</span>
+            </Button>
+
+            {/* Quick Thinking Chip */}
+            <Button
+              type="button"
+              variant={thinkingOn ? 'secondary' : 'ghost'}
+              size="sm"
+              disabled={isStreaming}
+              onClick={() => {
+                const next = !thinkingOn;
+                onUpdateSettings({
+                  ...settings,
+                  includeThoughts: next,
+                  thinkingBudget: next && settings.thinkingBudget === 0 ? -1 : settings.thinkingBudget,
+                });
+                toast.success(next ? 'Thinking Process: Aktif' : 'Thinking Process: Nonaktif');
+              }}
+              className={cn(
+                'h-8 gap-1 rounded-xl px-2 text-xs',
+                thinkingOn
+                  ? 'border border-primary/35 bg-primary/10 text-primary hover:bg-primary/20'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+              title="Tampilkan proses thinking AI (ala Google AI Studio)"
+            >
+              <Brain className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Think</span>
             </Button>
 
             <Button
@@ -537,7 +572,7 @@ export function ChatComposer({
                   title="Quick Tuning"
                 >
                   <SlidersHorizontal className="h-3.5 w-3.5" />
-                  <span className="hidden max-w-[100px] truncate sm:inline">
+                  <span className="hidden max-w-[95px] truncate sm:inline">
                     {activePersona?.name || 'Tuning'}
                   </span>
                 </Button>
@@ -569,6 +604,50 @@ export function ChatComposer({
                       </button>
                     ))}
                   </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="flex items-center gap-1.5 font-medium">
+                      <Brain className="h-3.5 w-3.5 text-primary" />
+                      Thinking Budget
+                    </span>
+                    <Switch
+                      checked={thinkingOn}
+                      onCheckedChange={(checked) =>
+                        onUpdateSettings({
+                          ...settings,
+                          includeThoughts: checked,
+                          thinkingBudget: checked && settings.thinkingBudget === 0 ? -1 : settings.thinkingBudget,
+                        })
+                      }
+                    />
+                  </div>
+                  {thinkingOn && (
+                    <div className="grid grid-cols-5 gap-1">
+                      {THINKING_BUDGET_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() =>
+                            onUpdateSettings({
+                              ...settings,
+                              includeThoughts: true,
+                              thinkingBudget: opt.value,
+                            })
+                          }
+                          className={cn(
+                            'rounded-md border py-1 font-mono text-[10px] transition-colors',
+                            settings.thinkingBudget === opt.value
+                              ? 'border-primary bg-primary/15 font-semibold text-primary'
+                              : 'hover:bg-accent'
+                          )}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-2">
