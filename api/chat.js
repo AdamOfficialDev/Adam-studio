@@ -4,7 +4,31 @@ export const config = {
 
 const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gemini-4-hydrogen';
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
-const MAX_RETRIES = 3;
+const ROTATE_IMMEDIATELY_STATUSES = new Set([401, 403, 429]);
+
+let roundRobinCursor = Math.floor(Math.random() * 1000);
+const keyCooldownMap = new Map();
+
+function parseKeyPool(...sources) {
+  const pool = [];
+  const seen = new Set();
+  for (const src of sources) {
+    if (!src || typeof src !== 'string') continue;
+    for (const part of src.split(/[\r\n,;]+/)) {
+      const k = part.trim();
+      if (k && !seen.has(k)) {
+        seen.add(k);
+        pool.push(k);
+      }
+    }
+  }
+  return pool;
+}
+
+function maskKeyLabel(key, idx) {
+  const tail = key.length >= 4 ? key.slice(-4) : '****';
+  return `Key #${idx + 1} (•••${tail})`;
+}
 
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -105,9 +129,29 @@ function extractGeminiError(rawText, status) {
   return msg;
 }
 
-async function fetchGeminiWithRetry({
+function buildOrderedCandidateKeys(keys) {
+  const now = Date.now();
+  const start = roundRobinCursor % keys.length;
+  roundRobinCursor = (roundRobinCursor + 1) % keys.length;
+
+  const rotated = [...keys.slice(start), ...keys.slice(0, start)];
+  const ready = [];
+  const cooling = [];
+  for (const item of rotated) {
+    const origIdx = keys.indexOf(item);
+    const coolUntil = keyCooldownMap.get(item) || 0;
+    if (coolUntil > now) {
+      cooling.push({ key: item, idx: origIdx });
+    } else {
+      ready.push({ key: item, idx: origIdx });
+    }
+  }
+  return [...ready, ...cooling];
+}
+
+async function fetchGeminiWithRotationAndRetry({
   targetModel,
-  apiKey,
+  apiKeys,
   messages,
   systemInstruction,
   temperature,
@@ -123,13 +167,22 @@ async function fetchGeminiWithRetry({
   )}:streamGenerateContent?alt=sse`;
 
   let wantsThinking = Boolean(includeThoughts) && Number(thinkingBudget) !== 0;
+  const orderedKeys = buildOrderedCandidateKeys(apiKeys);
+  const maxAttempts = Math.min(Math.max(orderedKeys.length * 2, 4), 10);
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  let keyPointer = 0;
+  let lastStatus = 503;
+  let lastErrorMessage = 'Semua API Key sedang sibuk atau terkena limit.';
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const current = orderedKeys[keyPointer % orderedKeys.length];
+    const keyLabel = maskKeyLabel(current.key, current.idx);
+
     const upstream = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
+        'x-goog-api-key': current.key,
       },
       body: JSON.stringify(
         buildGeminiPayload({
@@ -146,10 +199,15 @@ async function fetchGeminiWithRetry({
     });
 
     if (upstream.ok) {
+      if (attempt > 0 && orderedKeys.length > 1) {
+        onInfo(`Berhasil terhubung menggunakan ${keyLabel}`);
+      }
       return { ok: true, response: upstream, usedModel: targetModel };
     }
 
     const errBody = await upstream.text();
+    lastStatus = upstream.status;
+    lastErrorMessage = extractGeminiError(errBody, upstream.status);
 
     if (upstream.status === 400 && wantsThinking && /thinking/i.test(errBody)) {
       wantsThinking = false;
@@ -158,7 +216,31 @@ async function fetchGeminiWithRetry({
       continue;
     }
 
-    if (RETRYABLE_STATUSES.has(upstream.status) && attempt < MAX_RETRIES) {
+    const isBadKey =
+      upstream.status === 401 ||
+      upstream.status === 403 ||
+      (upstream.status === 400 && /api.?key|expired|invalid/i.test(lastErrorMessage));
+
+    const canRotateToAnotherKey = orderedKeys.length > 1;
+    const isRetryable = RETRYABLE_STATUSES.has(upstream.status) || (isBadKey && canRotateToAnotherKey);
+
+    if (isRetryable && attempt + 1 < maxAttempts) {
+      const coolMs = isBadKey ? 120_000 : upstream.status === 429 ? 60_000 : 12_000;
+      keyCooldownMap.set(current.key, Date.now() + coolMs);
+
+      if (canRotateToAnotherKey) {
+        keyPointer += 1;
+        const nextCandidate = orderedKeys[keyPointer % orderedKeys.length];
+        const nextLabel = maskKeyLabel(nextCandidate.key, nextCandidate.idx);
+        const fastRotateDelay = ROTATE_IMMEDIATELY_STATUSES.has(upstream.status) || isBadKey ? 280 : 900;
+
+        onStatus(
+          `${keyLabel} terkena (${upstream.status}). Merotasi otomatis ke ${nextLabel} (${attempt + 1}/${maxAttempts})...`
+        );
+        await sleep(fastRotateDelay, signal);
+        continue;
+      }
+
       const retryAfterSec = Number(upstream.headers.get('retry-after'));
       const baseDelay =
         Number.isFinite(retryAfterSec) && retryAfterSec > 0 && retryAfterSec <= 15
@@ -166,7 +248,7 @@ async function fetchGeminiWithRetry({
           : 1200 * Math.pow(2, attempt) + Math.round(Math.random() * 450);
 
       onStatus(
-        `Server ${targetModel} sedang padat (${upstream.status}). Mencoba ulang otomatis (${attempt + 1}/${MAX_RETRIES}) dalam ${(
+        `Server ${targetModel} sedang padat (${upstream.status}). Mencoba ulang otomatis (${attempt + 1}/${maxAttempts - 1}) dalam ${(
           baseDelay / 1000
         ).toFixed(1)}s...`
       );
@@ -176,12 +258,12 @@ async function fetchGeminiWithRetry({
 
     return {
       ok: false,
-      status: upstream.status,
-      message: extractGeminiError(errBody, upstream.status),
+      status: lastStatus,
+      message: lastErrorMessage,
     };
   }
 
-  return { ok: false, status: 503, message: 'Server Gemini sedang sibuk.' };
+  return { ok: false, status: lastStatus, message: lastErrorMessage };
 }
 
 export default async function handler(request) {
@@ -209,9 +291,14 @@ export default async function handler(request) {
     demoMode = false,
   } = body || {};
 
-  const headerKey = request.headers.get('x-gemini-api-key')?.trim() || '';
-  const apiKey = headerKey || process.env.GEMINI_API_KEY?.trim() || '';
-  const useDemo = Boolean(demoMode) || (process.env.DEMO_MODE === 'true' && !apiKey);
+  const headerKeys = parseKeyPool(
+    request.headers.get('x-gemini-api-keys') || '',
+    request.headers.get('x-gemini-api-key') || ''
+  );
+  const envKeys = parseKeyPool(process.env.GEMINI_API_KEYS, process.env.GEMINI_API_KEY);
+  const apiKeys = headerKeys.length > 0 ? headerKeys : envKeys;
+
+  const useDemo = Boolean(demoMode) || (process.env.DEMO_MODE === 'true' && apiKeys.length === 0);
 
   const encoder = new TextEncoder();
 
@@ -243,19 +330,24 @@ export default async function handler(request) {
               `**1. Analisis Permintaan di Edge Function**\n`,
               `Memahami prompt: "${userText.slice(0, 100)}".\n\n`,
               `**2. Perencanaan Komponen (${model})**\n`,
-              `- Menyiapkan jawaban terstruktur dengan arsitektur auto-retry 503/429.`,
+              `- Menyiapkan HTML Artifact untuk uji **Visual Inspector** & **Time-Machine Diff**.`,
             ].join('');
 
             const tTokens = demoThought.match(/\S+\s*/g) || [demoThought];
             for (const chunk of tTokens) {
-              await sleep(24, request.signal);
+              await sleep(20, request.signal);
               sendEvent('thought', { text: chunk });
             }
           }
 
           const demoReply = [
-            `Respons **Demo SSE Mode** dari Vercel Edge Function untuk model \`${model}\`.\n\n`,
-            `> **Prompt:** ${userText.replace(/\n/g, ' ')}\n`,
+            `Respons **Demo SSE Mode (v5.0)** dari Vercel Edge Function untuk \`${model}\`.\n\n`,
+            '```html\n',
+            '<!doctype html><html><body style="margin:0;display:grid;place-items:center;min-height:100vh;background:#09090b;color:#fff;font-family:sans-serif">',
+            '<div style="padding:24px;border-radius:16px;border:1px solid #27272a;background:#18181b;text-align:center">',
+            '<h3>Adam Studio v5.0</h3><button style="margin-top:12px;padding:10px 16px;border-radius:10px;border:0;background:#3b82f6;color:#fff;font-weight:600">Inspect Tombol Ini</button>',
+            '</div></body></html>\n',
+            '```\n',
           ].join('');
 
           const tokens = demoReply.match(/\S+\s*/g) || [demoReply];
@@ -275,18 +367,18 @@ export default async function handler(request) {
           return;
         }
 
-        if (!apiKey) {
+        if (apiKeys.length === 0) {
           sendEvent('error', {
             status: 401,
             message:
-              'GEMINI_API_KEY belum diset di Environment Variables Vercel. Tambahkan di Project Settings Vercel, masukkan lewat Settings UI, atau aktifkan Demo SSE Mode.',
+              'Belum ada GEMINI_API_KEY. Isi 1 atau banyak key di Settings → Koneksi (atau Environment Variables Vercel), atau aktifkan Demo SSE Mode.',
           });
           return;
         }
 
-        let result = await fetchGeminiWithRetry({
+        let result = await fetchGeminiWithRotationAndRetry({
           targetModel: model,
-          apiKey,
+          apiKeys,
           messages,
           systemInstruction,
           temperature,
@@ -311,9 +403,9 @@ export default async function handler(request) {
           sendEvent('info', {
             message: `Fallback otomatis ke ${fallbackModel} karena ${model} mengalami high demand.`,
           });
-          result = await fetchGeminiWithRetry({
+          result = await fetchGeminiWithRotationAndRetry({
             targetModel: fallbackModel,
-            apiKey,
+            apiKeys,
             messages,
             systemInstruction,
             temperature,

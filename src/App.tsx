@@ -57,8 +57,15 @@ import { Sidebar } from '@/components/Sidebar';
 import { usePwaInstall } from '@/hooks/usePwaInstall';
 import { extractArtifactsFromMarkdown } from '@/lib/artifacts';
 import { DEFAULT_MODEL_ID, getModelInfo } from '@/lib/models';
+import { playCompletionChime } from '@/lib/sound';
 import { streamChatCompletion } from '@/lib/sse';
-import { loadConversations, loadSettings, saveConversations, saveSettings } from '@/lib/storage';
+import {
+  countApiKeys,
+  loadConversations,
+  loadSettings,
+  saveConversations,
+  saveSettings,
+} from '@/lib/storage';
 import { cn, estimateTokens, generateId } from '@/lib/utils';
 import type {
   AppSettings,
@@ -69,6 +76,7 @@ import type {
   ServerHealth,
   ThemeSkin,
   TokenUsage,
+  VisualTarget,
 } from '@/types/chat';
 
 type WelcomeTab = 'All' | 'Coding' | 'UI/Design' | 'Agentic';
@@ -97,7 +105,7 @@ const STARTER_CARDS: Array<{
     category: 'UI/Design',
     icon: Code2,
     title: 'Interactive SaaS Dashboard',
-    subtitle: 'HTML + CSS + JS lengkap yang langsung live di Artifact Canvas',
+    subtitle: 'HTML + CSS + JS lengkap siap uji Visual Inspector & Diff',
     prompt:
       'Buatkan dashboard analytics AI modern interaktif lengkap dengan chart SVG dan dark glassmorphism dalam satu blok ```html mandiri agar bisa langsung dilihat di Artifact Live Preview.',
   },
@@ -159,6 +167,7 @@ export default function App() {
 
   const [welcomeTab, setWelcomeTab] = useState<WelcomeTab>('All');
   const [externalDraft, setExternalDraft] = useState<string | null>(null);
+  const [visualTarget, setVisualTarget] = useState<VisualTarget | null>(null);
   const [activeStream, setActiveStream] = useState<ActiveStreamState | null>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
 
@@ -238,6 +247,11 @@ export default function App() {
   const currentModelInfo = getModelInfo(currentModelId);
   const isStreamingActive = activeStream !== null;
   const thinkingEnabled = settings.includeThoughts && settings.thinkingBudget !== 0;
+
+  const activeKeyPoolCount =
+    countApiKeys(settings.apiKey) ||
+    serverHealth?.serverKeyCount ||
+    (serverHealth?.hasServerApiKey ? 1 : 0);
 
   const conversationArtifacts = useMemo(() => {
     if (!activeConversation) return [];
@@ -337,6 +351,7 @@ export default function App() {
     setActiveId(null);
     setActiveArtifact(null);
     setArtifactFullscreen(false);
+    setVisualTarget(null);
   }, [handleStopStream, isStreamingActive]);
 
   const handleCycleSkin = useCallback(() => {
@@ -523,6 +538,10 @@ export default function App() {
               const estTokens = Math.max(chunkCount, Math.round(accContent.length / 4));
               const tokensPerSec = Number(((estTokens / answerWindow) * 1000).toFixed(1));
 
+              if (settings.soundChime && durationMs >= 2500) {
+                playCompletionChime();
+              }
+
               setConversations((prev) =>
                 prev.map((conv) =>
                   conv.id !== convId
@@ -657,10 +676,16 @@ export default function App() {
     (text: string, attachments: Attachment[]) => {
       if (isStreamingActive) return;
 
+      const composedText = visualTarget
+        ? `[Visual Target Element: \`${visualTarget.selector}\`]\n\`\`\`html\n${visualTarget.outerHtml}\n\`\`\`\n\n${text}`
+        : text;
+
+      setVisualTarget(null);
+
       const userMessage: ChatMessageType = {
         id: generateId(),
         role: 'user',
-        content: text,
+        content: composedText,
         attachments: attachments.length > 0 ? attachments : undefined,
         createdAt: Date.now(),
       };
@@ -711,7 +736,7 @@ export default function App() {
         );
       }
     },
-    [activeConversation, currentModelId, isStreamingActive, runStreamForConversation]
+    [activeConversation, currentModelId, isStreamingActive, runStreamForConversation, visualTarget]
   );
 
   const handleRegenerate = useCallback(
@@ -944,6 +969,7 @@ export default function App() {
                 setActiveId(id);
                 setActiveArtifact(null);
                 setArtifactFullscreen(false);
+                setVisualTarget(null);
               }}
               onRenameConversation={handleRenameConversation}
               onTogglePinConversation={handleTogglePinConversation}
@@ -1000,7 +1026,7 @@ export default function App() {
                 {isStreamingActive && (
                   <Badge variant="outline" className="hidden font-mono text-[10px] sm:inline-flex">
                     {activeStream.statusText
-                      ? 'Retrying...'
+                      ? 'Rotating Key...'
                       : activeStream.tps > 0
                         ? `${activeStream.tps} tok/s`
                         : 'Thinking...'}
@@ -1068,14 +1094,20 @@ export default function App() {
                         }
                       />
                       <span className="hidden sm:inline">
-                        {settings.demoMode ? 'Demo SSE' : 'Live SSE'}
+                        {settings.demoMode
+                          ? 'Demo SSE'
+                          : activeKeyPoolCount > 1
+                            ? `${activeKeyPoolCount} Keys`
+                            : 'Live SSE'}
                       </span>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>
                     {settings.demoMode
                       ? 'Mode simulasi SSE lokal aktif'
-                      : 'Streaming SSE ke /api/chat (Auto-Retry 3x)'}
+                      : activeKeyPoolCount > 1
+                        ? `Auto-Rotation Pool aktif (${activeKeyPoolCount} API keys)`
+                        : 'Streaming SSE ke /api/chat'}
                   </TooltipContent>
                 </Tooltip>
 
@@ -1138,7 +1170,7 @@ export default function App() {
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={() => setSettingsDialogOpen(true)}>
                       <Settings className="h-3.5 w-3.5" />
-                      Settings & API Key
+                      Settings & API Key Pool
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -1171,15 +1203,18 @@ export default function App() {
                       <span className="font-mono font-semibold text-foreground">
                         {currentModelId}
                       </span>
-                      <span className="hidden sm:inline">•</span>
-                      <span className="hidden sm:inline">
-                        ${currentModelInfo.inputPricePerMillion.toFixed(2)} / $
-                        {currentModelInfo.outputPricePerMillion.toFixed(2)} per 1M
-                      </span>
+                      {activeKeyPoolCount > 0 && (
+                        <>
+                          <span>•</span>
+                          <span className="text-emerald-400">
+                            {activeKeyPoolCount} API Key{activeKeyPoolCount > 1 ? 's Pool' : ''}
+                          </span>
+                        </>
+                      )}
                       {isStandalone && (
                         <>
                           <span>•</span>
-                          <span className="text-emerald-400">App Mode</span>
+                          <span className="text-primary">App Mode</span>
                         </>
                       )}
                     </div>
@@ -1188,24 +1223,22 @@ export default function App() {
                       Adam Studio Workspace
                     </h1>
                     <p className="mt-2.5 max-w-lg text-sm leading-relaxed text-muted-foreground">
-                      Platform AI real-time SSE dengan Live Thinking ala Google AI Studio,
-                      Auto-Retry 503/429, Pro Code Blocks, dan Artifact IDE Canvas.
+                      Platform AI dengan Live Thinking, Auto-Rotate Key Pool, Visual Element
+                      Inspector, Artifact Time-Machine Diff, Mermaid, & KaTeX.
                     </p>
 
-                    {!settings.apiKey &&
-                      !serverHealth?.hasServerApiKey &&
-                      !settings.demoMode && (
-                        <div className="mt-5 flex flex-wrap items-center justify-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-400">
-                          <span>API Key belum aktif.</span>
-                          <button
-                            type="button"
-                            onClick={() => setSettingsDialogOpen(true)}
-                            className="font-semibold underline underline-offset-4 hover:text-amber-300"
-                          >
-                            Isi API Key atau aktifkan Demo SSE Showcase
-                          </button>
-                        </div>
-                      )}
+                    {activeKeyPoolCount === 0 && !settings.demoMode && (
+                      <div className="mt-5 flex flex-wrap items-center justify-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-400">
+                        <span>API Key belum aktif.</span>
+                        <button
+                          type="button"
+                          onClick={() => setSettingsDialogOpen(true)}
+                          className="font-semibold underline underline-offset-4 hover:text-amber-300"
+                        >
+                          Isi API Key Pool atau aktifkan Demo SSE
+                        </button>
+                      </div>
+                    )}
 
                     <div className="mt-6 inline-flex flex-wrap items-center justify-center gap-1 rounded-full border bg-card/80 p-1">
                       {WELCOME_TABS.map((tab) => (
@@ -1325,20 +1358,38 @@ export default function App() {
                 )}
               </StudioScroll>
 
+              {/* Dynamic Live Pill saat scroll ke atas, atau ArrowDown saat idle */}
               {showScrollBottom && (
-                <Button
+                <button
                   type="button"
-                  size="icon"
-                  variant="secondary"
                   onClick={() => {
                     autoScrollEnabledRef.current = true;
                     scrollToBottom(true);
                   }}
-                  className="absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded-full border shadow-xl"
+                  className={cn(
+                    'absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-medium shadow-xl backdrop-blur-md transition-all hover:scale-105',
+                    isStreamingActive
+                      ? 'border-primary/40 bg-card/95 text-foreground'
+                      : 'bg-secondary/95 text-secondary-foreground'
+                  )}
                   aria-label="Scroll ke bawah"
                 >
-                  <ArrowDown className="h-4 w-4" />
-                </Button>
+                  {isStreamingActive ? (
+                    <>
+                      <span className="h-2 w-2 animate-ping rounded-full bg-primary" />
+                      <span>
+                        {activeStream.statusText
+                          ? 'Rotating Key...'
+                          : activeStream.tps > 0
+                            ? `Streaming ${activeStream.tps} tok/s`
+                            : 'Sedang Thinking...'}
+                      </span>
+                      <ArrowDown className="h-3.5 w-3.5 text-primary" />
+                    </>
+                  ) : (
+                    <ArrowDown className="h-4 w-4" />
+                  )}
+                </button>
               )}
             </div>
 
@@ -1347,6 +1398,8 @@ export default function App() {
               isStreaming={isStreamingActive}
               settings={settings}
               externalDraft={externalDraft}
+              visualTarget={visualTarget}
+              onClearVisualTarget={() => setVisualTarget(null)}
               onClearExternalDraft={() => setExternalDraft(null)}
               onUpdateSettings={setSettings}
               onSend={handleSend}
@@ -1394,6 +1447,13 @@ export default function App() {
                       isFullscreen={artifactFullscreen}
                       onToggleFullscreen={() => setArtifactFullscreen((f) => !f)}
                       onSelectArtifact={setActiveArtifact}
+                      onSelectVisualTarget={(target) => {
+                        setVisualTarget(target);
+                        if (window.innerWidth < 1024) {
+                          setActiveArtifact(null);
+                          setArtifactFullscreen(false);
+                        }
+                      }}
                       onClose={() => {
                         setActiveArtifact(null);
                         setArtifactFullscreen(false);

@@ -50,7 +50,6 @@ export function extractArtifactsFromMarkdown(messageId: string, markdown: string
   return items;
 }
 
-// Shim in-memory untuk localStorage/sessionStorage & bridge console agar HTML apps di sandbox berjalan tanpa SecurityError
 export function buildPreviewSrcDoc(artifact: ArtifactItem, previewBg: 'dark' | 'light'): string {
   const sandboxRuntimeBridge = `
 <script>
@@ -104,6 +103,91 @@ export function buildPreviewSrcDoc(artifact: ArtifactItem, previewBg: 'dark' | '
       window.parent.postMessage({ type: 'hydrogen-artifact-error', message: e.message || 'Runtime error' }, '*');
     } catch (_) {}
   });
+
+  // --- Visual Element Annotator / Inspector Mode ---
+  var inspectEnabled = false;
+  var boxEl = null;
+  var labelEl = null;
+
+  function ensureOverlay() {
+    if (boxEl) return;
+    boxEl = document.createElement('div');
+    boxEl.setAttribute('data-adam-inspector', 'true');
+    boxEl.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483646;border:2px solid #3b82f6;background:rgba(59,130,246,0.14);border-radius:6px;display:none;transition:all 60ms ease-out;';
+    labelEl = document.createElement('div');
+    labelEl.setAttribute('data-adam-inspector', 'true');
+    labelEl.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;background:#3b82f6;color:#fff;font:600 10px/1.2 ui-monospace,monospace;padding:3px 6px;border-radius:4px;display:none;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.35);';
+    document.documentElement.appendChild(boxEl);
+    document.documentElement.appendChild(labelEl);
+  }
+
+  function hideOverlay() {
+    if (boxEl) boxEl.style.display = 'none';
+    if (labelEl) labelEl.style.display = 'none';
+  }
+
+  function buildSelector(el) {
+    if (!el || !el.tagName) return 'element';
+    var sel = el.tagName.toLowerCase();
+    if (el.id) sel += '#' + el.id;
+    if (el.className && typeof el.className === 'string') {
+      var cls = el.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2);
+      if (cls.length) sel += '.' + cls.join('.');
+    }
+    return sel;
+  }
+
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'hydrogen-inspector-toggle') {
+      inspectEnabled = Boolean(e.data.enabled);
+      document.documentElement.style.cursor = inspectEnabled ? 'crosshair' : '';
+      if (!inspectEnabled) hideOverlay();
+    }
+  });
+
+  document.addEventListener('mousemove', function(e) {
+    if (!inspectEnabled) return;
+    var target = e.target;
+    if (!target || target === document.documentElement || target === document.body || (target.getAttribute && target.getAttribute('data-adam-inspector'))) {
+      hideOverlay();
+      return;
+    }
+    ensureOverlay();
+    var rect = target.getBoundingClientRect();
+    boxEl.style.display = 'block';
+    boxEl.style.left = rect.left + 'px';
+    boxEl.style.top = rect.top + 'px';
+    boxEl.style.width = rect.width + 'px';
+    boxEl.style.height = rect.height + 'px';
+
+    labelEl.style.display = 'block';
+    labelEl.textContent = buildSelector(target);
+    labelEl.style.left = Math.max(4, rect.left) + 'px';
+    labelEl.style.top = (rect.top > 24 ? rect.top - 22 : rect.bottom + 4) + 'px';
+  }, true);
+
+  document.addEventListener('click', function(e) {
+    if (!inspectEnabled) return;
+    var target = e.target;
+    if (!target || (target.getAttribute && target.getAttribute('data-adam-inspector'))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    hideOverlay();
+    inspectEnabled = false;
+    document.documentElement.style.cursor = '';
+
+    var text = (target.innerText || target.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 60);
+    var htmlSnippet = (target.outerHTML || '').slice(0, 800);
+    window.parent.postMessage({
+      type: 'hydrogen-artifact-element-selected',
+      payload: {
+        tagName: target.tagName ? target.tagName.toLowerCase() : 'element',
+        selector: buildSelector(target),
+        textSnippet: text,
+        outerHtml: htmlSnippet
+      }
+    }, '*');
+  }, true);
 })();
 </script>`;
 

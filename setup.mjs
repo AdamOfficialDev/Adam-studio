@@ -26,7 +26,7 @@ if (extractedFiles.length === 0) {
   process.exit(1);
 }
 
-console.log(`🛡️  Menerapkan Patch v4.5 (Auto-Retry 503/429 + Fallback Recovery) (${extractedFiles.length} file)...\n`);
+console.log(`🚀 Menerapkan Adam Studio v5.0 (Auto-Rotate Keys + Visual Inspector + Time-Machine Diff) (${extractedFiles.length} file)...\n`);
 
 for (const file of extractedFiles) {
   const target = path.resolve(cwd, file.relativePath);
@@ -39,4 +39,5 @@ for (const file of extractedFiles) {
   console.log(`  ✓ ${file.relativePath}`);
 }
 
-console.log('\n✅ Patch v4.5 selesai! Jalankan `pnpm build` atau `pnpm dev` untuk menguji.\n');
+console.log('\n✅ Adam Studio v5.0 berhasil diterapkan! Tidak perlu install library baru.');
+console.log('   Jalankan `pnpm build` untuk verifikasi atau `pnpm dev` untuk langsung mencobanya.\n');

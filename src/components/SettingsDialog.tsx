@@ -10,8 +10,10 @@ import {
   Radio,
   RotateCcw,
   ShieldAlert,
+  Shuffle,
   SlidersHorizontal,
   Sparkles,
+  Volume2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -23,14 +25,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
 import { StudioScroll } from '@/components/ui/studio-scroll';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { PERSONA_PRESETS } from '@/lib/personas';
-import { DEFAULT_SETTINGS } from '@/lib/storage';
+import { countApiKeys, DEFAULT_SETTINGS } from '@/lib/storage';
 import type { AppSettings, ServerHealth, ThemeSkin } from '@/types/chat';
 import { cn } from '@/lib/utils';
 
@@ -148,13 +149,16 @@ export function SettingsDialog({
     toast.success('Parameter di-reset ke default');
   };
 
+  const browserKeyCount = countApiKeys(draft.apiKey);
+  const serverKeyCount = serverHealth?.serverKeyCount ?? (serverHealth?.hasServerApiKey ? 1 : 0);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[90dvh] max-w-xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="shrink-0 border-b bg-card/60 px-5 py-4 sm:px-6">
           <DialogTitle>Adam Studio — Settings & Appearance</DialogTitle>
           <DialogDescription>
-            Koneksi Gemini SSE, Auto-Retry 503, Thinking Summaries, dan tema visual.
+            Auto-Rotate API Key Pool, Retry 503, Thinking Summaries, & tema visual.
           </DialogDescription>
         </DialogHeader>
 
@@ -181,11 +185,16 @@ export function SettingsDialog({
               <TabsContent value="connection" className="mt-0 space-y-4">
                 <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <label className="text-sm font-semibold">Gemini API Key</label>
+                    <div className="flex items-center gap-2">
+                      <Shuffle className="h-4 w-4 text-primary" />
+                      <label className="text-sm font-semibold">
+                        Gemini API Key Pool (Auto-Rotation)
+                      </label>
+                    </div>
                     <span
                       className={cn(
                         'inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium',
-                        draft.apiKey.trim() || serverHealth?.hasServerApiKey
+                        browserKeyCount > 0 || serverKeyCount > 0
                           ? 'bg-emerald-500/15 text-emerald-400'
                           : 'bg-amber-500/15 text-amber-400'
                       )}
@@ -193,43 +202,58 @@ export function SettingsDialog({
                       <span
                         className={cn(
                           'h-1.5 w-1.5 rounded-full',
-                          draft.apiKey.trim() || serverHealth?.hasServerApiKey
+                          browserKeyCount > 0 || serverKeyCount > 0
                             ? 'bg-emerald-400'
                             : 'bg-amber-400'
                         )}
                       />
-                      {draft.apiKey.trim()
-                        ? 'Browser Key Aktif'
-                        : serverHealth?.hasServerApiKey
-                          ? 'Server .env Aktif'
+                      {browserKeyCount > 0
+                        ? `${browserKeyCount} Browser Key`
+                        : serverKeyCount > 0
+                          ? `Server .env (${serverKeyCount} Key)`
                           : 'Belum Ada Key'}
                     </span>
                   </div>
 
                   <div className="relative">
-                    <Input
-                      type={showKey ? 'text' : 'password'}
-                      value={draft.apiKey}
-                      onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })}
-                      placeholder="AIza... (opsional jika sudah diset di .env)"
-                      className="h-10 rounded-xl pr-10 font-mono text-xs"
-                    />
+                    {showKey ? (
+                      <div className="rounded-xl border bg-background/80 p-1 focus-within:ring-2 focus-within:ring-ring">
+                        <StudioScroll className="max-h-[120px] w-full" autoHide="scroll">
+                          <Textarea
+                            rows={3}
+                            value={draft.apiKey}
+                            onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })}
+                            placeholder={'AIzaKeyProject1...\nAIzaKeyProject2...\nAIzaKeyProject3...'}
+                            className="min-h-[76px] resize-none overflow-hidden border-0 bg-transparent px-2.5 py-2 pr-9 font-mono text-xs shadow-none focus-visible:ring-0"
+                          />
+                        </StudioScroll>
+                      </div>
+                    ) : (
+                      <div className="flex h-11 items-center rounded-xl border bg-background/80 px-3 pr-10 font-mono text-xs text-muted-foreground">
+                        {browserKeyCount > 0
+                          ? `${browserKeyCount} API key tersimpan tersembunyi (klik ikon mata untuk edit)`
+                          : 'Paste 1 atau banyak API Key (1 per baris atau pisah koma)...'}
+                      </div>
+                    )}
+
                     <button
                       type="button"
                       onClick={() => setShowKey((prev) => !prev)}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      className="absolute right-2.5 top-2.5 rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                       aria-label="Toggle API key visibility"
                     >
                       {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
                   </div>
+
                   <p className="text-[11px] leading-relaxed text-muted-foreground">
-                    Backend otomatis melakukan <strong>3x Retry + Exponential Backoff</strong> jika
-                    terkena error <code>503 High Demand</code> / <code>429</code>.
+                    Masukkan banyak key (1 key per baris atau pisah koma). Backend merotasi key
+                    secara <strong>Round-Robin</strong> dan langsung pindah ke key lain jika
+                    terkena limit <code>429</code>, <code>503</code>, atau key bermasalah. Di{' '}
+                    <code>.env</code> server bisa memakai <code>GEMINI_API_KEYS=k1,k2,k3</code>.
                   </p>
                 </div>
 
-                {/* Auto Fallback on 503 */}
                 <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
                   <div className="flex items-center justify-between gap-4">
                     <div className="space-y-0.5">
@@ -238,7 +262,7 @@ export function SettingsDialog({
                         Auto-Fallback saat 503 High Demand
                       </div>
                       <p className="text-xs leading-relaxed text-muted-foreground">
-                        Jika model utama tetap penuh setelah 3x retry, otomatis pindah ke model
+                        Jika seluruh key untuk model utama tetap penuh, otomatis pindah ke model
                         cadangan.
                       </p>
                     </div>
@@ -271,7 +295,6 @@ export function SettingsDialog({
                   )}
                 </div>
 
-                {/* History Window Limiter */}
                 <div className="space-y-2.5 rounded-2xl border bg-card/60 p-4">
                   <div className="flex items-center gap-2 text-sm font-semibold">
                     <History className="h-4 w-4 text-primary" />
@@ -307,8 +330,7 @@ export function SettingsDialog({
                       Demo SSE Mode (Showcase Lokal)
                     </div>
                     <p className="text-xs leading-relaxed text-muted-foreground">
-                      Uji streaming Thinking Process, SSE, Mermaid diagram, LaTeX math, & HTML
-                      Artifact tanpa API key.
+                      Uji streaming Thinking, Visual Inspector, & Time-Machine Diff tanpa API key.
                     </p>
                   </div>
                   <Switch
@@ -528,6 +550,22 @@ export function SettingsDialog({
                 </div>
 
                 <div className="space-y-2.5">
+                  <div className="flex items-center justify-between gap-4 rounded-2xl border bg-card/60 p-3.5">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-1.5 text-sm font-medium">
+                        <Volume2 className="h-3.5 w-3.5 text-primary" />
+                        Chime Notifikasi Selesai
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Bunyi harmonik lembut saat respons panjang (&gt;2.5 detik) selesai.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={draft.soundChime}
+                      onCheckedChange={(checked) => setDraft({ ...draft, soundChime: checked })}
+                    />
+                  </div>
+
                   <div className="flex items-center justify-between gap-4 rounded-2xl border bg-card/60 p-3.5">
                     <div className="space-y-0.5">
                       <div className="flex items-center gap-1.5 text-sm font-medium">

@@ -14,12 +14,24 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoFallbackOnOverload: false,
   fallbackModel: 'gemini-2.5-pro',
   maxHistoryMessages: 0,
+  soundChime: true,
   demoMode: false,
   autoOpenArtifacts: false,
   activePersonaId: PERSONA_PRESETS[0].id,
   skin: 'obsidian',
   density: 'comfortable',
 };
+
+export function countApiKeys(raw: string): number {
+  if (!raw) return 0;
+  const unique = new Set(
+    raw
+      .split(/[\r\n,;]+/)
+      .map((k) => k.trim())
+      .filter(Boolean)
+  );
+  return unique.size;
+}
 
 export function loadConversations(): Conversation[] {
   try {

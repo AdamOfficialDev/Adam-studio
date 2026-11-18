@@ -11,6 +11,14 @@ export interface Attachment {
   previewUrl?: string;
 }
 
+export interface VisualTarget {
+  id: string;
+  tagName: string;
+  selector: string;
+  textSnippet: string;
+  outerHtml: string;
+}
+
 export interface TokenUsage {
   promptTokenCount?: number;
   candidatesTokenCount?: number;
@@ -62,7 +70,7 @@ export interface Conversation {
 }
 
 export interface AppSettings {
-  apiKey: string;
+  apiKey: string; // Mendukung single atau multi-key (1 key per baris / koma)
   systemInstruction: string;
   temperature: number;
   maxOutputTokens: number;
@@ -70,7 +78,8 @@ export interface AppSettings {
   thinkingBudget: number;
   autoFallbackOnOverload: boolean;
   fallbackModel: string;
-  maxHistoryMessages: number; // 0 = Unlimited
+  maxHistoryMessages: number;
+  soundChime: boolean;
   demoMode: boolean;
   autoOpenArtifacts: boolean;
   activePersonaId: string;
@@ -82,5 +91,6 @@ export interface ServerHealth {
   ok: boolean;
   defaultModel: string;
   hasServerApiKey: boolean;
+  serverKeyCount?: number;
   demoModeEnv: boolean;
 }

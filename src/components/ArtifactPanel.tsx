@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { html } from '@codemirror/lang-html';
 import { javascript } from '@codemirror/lang-javascript';
@@ -10,8 +10,10 @@ import {
   Check,
   Code2,
   Copy,
+  Crosshair,
   Download,
   Eye,
+  GitCompare,
   Maximize2,
   Minimize2,
   Monitor,
@@ -33,8 +35,9 @@ import { StudioScroll } from '@/components/ui/studio-scroll';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { MarkdownRenderer } from '@/components/MarkdownRenderer';
 import { buildPreviewSrcDoc, getExtensionForLanguage } from '@/lib/artifacts';
-import type { ArtifactItem } from '@/types/chat';
-import { cn } from '@/lib/utils';
+import { computeLineDiff } from '@/lib/diff';
+import type { ArtifactItem, VisualTarget } from '@/types/chat';
+import { cn, generateId } from '@/lib/utils';
 
 interface ConsoleEntry {
   id: string;
@@ -49,6 +52,7 @@ interface ArtifactPanelProps {
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
   onSelectArtifact: (artifact: ArtifactItem) => void;
+  onSelectVisualTarget?: (target: VisualTarget) => void;
   onClose: () => void;
 }
 
@@ -59,12 +63,15 @@ export function ArtifactPanel({
   isFullscreen,
   onToggleFullscreen,
   onSelectArtifact,
+  onSelectVisualTarget,
   onClose,
 }: ArtifactPanelProps) {
   const canPreview =
     artifact.kind === 'html' || artifact.kind === 'svg' || artifact.kind === 'markdown';
 
-  const [tab, setTab] = useState<'preview' | 'code' | 'console'>(canPreview ? 'preview' : 'code');
+  const [tab, setTab] = useState<'preview' | 'code' | 'diff' | 'console'>(
+    canPreview ? 'preview' : 'code'
+  );
   const [viewport, setViewport] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
   const [previewBg, setPreviewBg] = useState<'dark' | 'light'>('dark');
   const [editableContent, setEditableContent] = useState(artifact.content);
@@ -72,17 +79,41 @@ export function ArtifactPanel({
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [consoleLogs, setConsoleLogs] = useState<ConsoleEntry[]>([]);
   const [copied, setCopied] = useState(false);
+  const [inspectMode, setInspectMode] = useState(false);
+  const [compareBaselineId, setCompareBaselineId] = useState<string>('original');
+
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
   useEffect(() => {
     setEditableContent(artifact.content);
     setRuntimeError(null);
     setConsoleLogs([]);
+    setInspectMode(false);
+    const currentIdx = allArtifacts.findIndex((a) => a.id === artifact.id);
+    if (currentIdx > 0) {
+      setCompareBaselineId(allArtifacts[currentIdx - 1].id);
+    } else {
+      setCompareBaselineId('original');
+    }
     setTab(
       artifact.kind === 'html' || artifact.kind === 'svg' || artifact.kind === 'markdown'
         ? 'preview'
         : 'code'
     );
-  }, [artifact]);
+  }, [artifact, allArtifacts]);
+
+  const sendInspectToggleToIframe = (enabled: boolean) => {
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: 'hydrogen-inspector-toggle', enabled },
+      '*'
+    );
+  };
+
+  const toggleInspectMode = () => {
+    const next = !inspectMode;
+    setInspectMode(next);
+    sendInspectToggleToIframe(next);
+  };
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -106,11 +137,24 @@ export function ArtifactPanel({
             message: String(event.data.message || ''),
           },
         ]);
+      } else if (event.data?.type === 'hydrogen-artifact-element-selected') {
+        const payload = event.data.payload;
+        if (payload && onSelectVisualTarget) {
+          setInspectMode(false);
+          onSelectVisualTarget({
+            id: generateId(),
+            tagName: String(payload.tagName || 'element'),
+            selector: String(payload.selector || 'element'),
+            textSnippet: String(payload.textSnippet || ''),
+            outerHtml: String(payload.outerHtml || ''),
+          });
+          toast.success(`Elemen <${payload.selector}> ditandai ke Composer!`);
+        }
       }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, []);
+  }, [onSelectVisualTarget]);
 
   const codeMirrorExtensions = useMemo(() => {
     const lang = artifact.language.toLowerCase();
@@ -119,6 +163,27 @@ export function ArtifactPanel({
     if (lang === 'markdown' || lang === 'md') return [markdown()];
     return [javascript({ jsx: true, typescript: true })];
   }, [artifact.language]);
+
+  const baselineContent = useMemo(() => {
+    if (compareBaselineId === 'original') return artifact.content;
+    const found = allArtifacts.find((a) => a.id === compareBaselineId);
+    return found ? found.content : artifact.content;
+  }, [allArtifacts, artifact.content, compareBaselineId]);
+
+  const diffLines = useMemo(() => {
+    if (tab !== 'diff') return [];
+    return computeLineDiff(baselineContent, editableContent);
+  }, [baselineContent, editableContent, tab]);
+
+  const diffStats = useMemo(() => {
+    let added = 0;
+    let removed = 0;
+    for (const d of diffLines) {
+      if (d.type === 'add') added += 1;
+      if (d.type === 'remove') removed += 1;
+    }
+    return { added, removed };
+  }, [diffLines]);
 
   const currentArtifact: ArtifactItem = {
     ...artifact,
@@ -221,7 +286,13 @@ export function ArtifactPanel({
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 px-3.5 py-2">
-        <Tabs value={tab} onValueChange={(v) => setTab(v as 'preview' | 'code' | 'console')}>
+        <Tabs
+          value={tab}
+          onValueChange={(v) => {
+            setTab(v as 'preview' | 'code' | 'diff' | 'console');
+            if (v !== 'preview') setInspectMode(false);
+          }}
+        >
           <TabsList>
             {canPreview && (
               <TabsTrigger value="preview" className="gap-1">
@@ -231,12 +302,16 @@ export function ArtifactPanel({
             )}
             <TabsTrigger value="code" className="gap-1">
               <Code2 className="h-3 w-3" />
-              IDE Editor
+              IDE
+            </TabsTrigger>
+            <TabsTrigger value="diff" className="gap-1">
+              <GitCompare className="h-3 w-3" />
+              Diff
             </TabsTrigger>
             {(artifact.kind === 'html' || artifact.kind === 'svg') && (
               <TabsTrigger value="console" className="gap-1">
                 <Terminal className="h-3 w-3" />
-                Console
+                <span className="hidden sm:inline">Console</span>
                 {consoleLogs.length > 0 && (
                   <span className="ml-0.5 rounded-full bg-primary/20 px-1.5 text-[10px] text-primary">
                     {consoleLogs.length}
@@ -248,8 +323,22 @@ export function ArtifactPanel({
         </Tabs>
 
         {tab === 'preview' && (artifact.kind === 'html' || artifact.kind === 'svg') && (
-          <div className="flex items-center gap-1.5">
-            <div className="flex items-center rounded-lg border bg-background/70 p-0.5">
+          <div className="flex items-center gap-1">
+            {onSelectVisualTarget && (
+              <Button
+                type="button"
+                variant={inspectMode ? 'default' : 'outline'}
+                size="sm"
+                onClick={toggleInspectMode}
+                className="h-7 gap-1 rounded-lg px-2 text-[11px]"
+                title="Klik elemen di preview untuk mengeditnya langsung dengan AI"
+              >
+                <Crosshair className="h-3.5 w-3.5" />
+                <span>{inspectMode ? 'Pilih Elemen...' : 'Inspect'}</span>
+              </Button>
+            )}
+
+            <div className="hidden items-center rounded-lg border bg-background/70 p-0.5 sm:flex">
               <button
                 type="button"
                 onClick={() => setViewport('desktop')}
@@ -291,7 +380,7 @@ export function ArtifactPanel({
               </button>
             </div>
 
-            <span className="hidden font-mono text-[10px] text-muted-foreground sm:inline">
+            <span className="hidden font-mono text-[10px] text-muted-foreground md:inline">
               {viewportWidthLabel}
             </span>
 
@@ -328,14 +417,15 @@ export function ArtifactPanel({
         )}
       </div>
 
+      {/* Time-Machine Version Switcher */}
       {allArtifacts.length > 1 && (
         <div className="border-b bg-muted/20 px-3.5 py-1.5">
           <StudioScroll axis="x" autoHide="scroll" className="w-full">
             <div className="flex items-center gap-1.5">
               <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Files:
+                Versions:
               </span>
-              {allArtifacts.map((item) => (
+              {allArtifacts.map((item, idx) => (
                 <button
                   key={item.id}
                   type="button"
@@ -347,11 +437,23 @@ export function ArtifactPanel({
                       : 'bg-secondary/70 text-muted-foreground hover:text-foreground'
                   )}
                 >
-                  {item.title}
+                  v{idx + 1}: {item.title}
                 </button>
               ))}
             </div>
           </StudioScroll>
+        </div>
+      )}
+
+      {inspectMode && tab === 'preview' && (
+        <div className="flex items-center justify-between border-b border-primary/30 bg-primary/10 px-3.5 py-1.5 text-[11px] text-primary">
+          <span className="flex items-center gap-1.5 font-medium">
+            <Crosshair className="h-3.5 w-3.5" />
+            Inspector Aktif: Ketuk atau klik elemen mana saja pada preview untuk diedit AI.
+          </span>
+          <button type="button" onClick={toggleInspectMode} className="underline">
+            Batal
+          </button>
         </div>
       )}
 
@@ -394,15 +496,70 @@ export function ArtifactPanel({
                 )}
               >
                 <iframe
+                  ref={iframeRef}
                   key={`${artifact.id}-${refreshSeed}`}
                   title={artifact.title}
                   sandbox="allow-scripts"
+                  onLoad={() => sendInspectToggleToIframe(inspectMode)}
                   srcDoc={buildPreviewSrcDoc(currentArtifact, previewBg)}
                   className={cn('h-full w-full border-0', isResizing && 'pointer-events-none')}
                 />
               </div>
             </div>
           )
+        ) : tab === 'diff' ? (
+          <div className="flex h-full flex-col overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-card/60 px-3.5 py-2 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Bandingkan dengan:</span>
+                <select
+                  value={compareBaselineId}
+                  onChange={(e) => setCompareBaselineId(e.target.value)}
+                  className="rounded-lg border bg-background px-2 py-1 text-xs outline-none"
+                >
+                  <option value="original">Asli Artifact Ini</option>
+                  {allArtifacts.map((item, idx) =>
+                    item.id === artifact.id ? null : (
+                      <option key={item.id} value={item.id}>
+                        v{idx + 1}: {item.title}
+                      </option>
+                    )
+                  )}
+                </select>
+              </div>
+              <div className="flex items-center gap-2 font-mono text-[11px]">
+                <span className="text-emerald-400">+{diffStats.added}</span>
+                <span className="text-rose-400">-{diffStats.removed}</span>
+              </div>
+            </div>
+
+            <StudioScroll axis="both" autoHide="never" className="min-h-0 flex-1 bg-[#0b0d12]">
+              <div className="min-w-full py-2 font-mono text-[12px] leading-6">
+                {diffLines.map((d, idx) => (
+                  <div
+                    key={idx}
+                    className={cn(
+                      'flex whitespace-pre px-3',
+                      d.type === 'add' && 'bg-emerald-500/15 text-emerald-200',
+                      d.type === 'remove' && 'bg-rose-500/15 text-rose-200',
+                      d.type === 'same' && 'text-zinc-400'
+                    )}
+                  >
+                    <span className="w-8 shrink-0 select-none text-right text-[10px] text-zinc-600">
+                      {d.oldLineNum ?? ''}
+                    </span>
+                    <span className="w-8 shrink-0 select-none text-right text-[10px] text-zinc-600">
+                      {d.newLineNum ?? ''}
+                    </span>
+                    <span className="w-5 shrink-0 select-none text-center">
+                      {d.type === 'add' ? '+' : d.type === 'remove' ? '-' : ' '}
+                    </span>
+                    <span>{d.line}</span>
+                  </div>
+                ))}
+              </div>
+            </StudioScroll>
+          </div>
         ) : tab === 'console' ? (
           <div className="flex h-full flex-col overflow-hidden">
             <div className="flex shrink-0 items-center justify-between border-b bg-card/50 px-3.5 py-2 text-xs text-muted-foreground">

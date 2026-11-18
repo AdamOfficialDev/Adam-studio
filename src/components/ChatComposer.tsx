@@ -12,6 +12,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowUp,
   Brain,
+  Crosshair,
   FileCode2,
   ImagePlus,
   Mic,
@@ -33,7 +34,7 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { PERSONA_PRESETS, SLASH_PROMPTS } from '@/lib/personas';
 import { estimateTokens, formatBytes, generateId } from '@/lib/utils';
-import type { AppSettings, Attachment } from '@/types/chat';
+import type { AppSettings, Attachment, VisualTarget } from '@/types/chat';
 import { cn } from '@/lib/utils';
 
 interface SpeechRecognitionResultItem {
@@ -62,6 +63,8 @@ interface ChatComposerProps {
   isStreaming: boolean;
   settings: AppSettings;
   externalDraft?: string | null;
+  visualTarget?: VisualTarget | null;
+  onClearVisualTarget?: () => void;
   onClearExternalDraft?: () => void;
   onUpdateSettings: (next: AppSettings) => void;
   onSend: (text: string, attachments: Attachment[]) => void;
@@ -99,6 +102,8 @@ export function ChatComposer({
   isStreaming,
   settings,
   externalDraft,
+  visualTarget,
+  onClearVisualTarget,
   onClearExternalDraft,
   onUpdateSettings,
   onSend,
@@ -138,6 +143,12 @@ export function ChatComposer({
       }, 20);
     }
   }, [externalDraft, onClearExternalDraft]);
+
+  useEffect(() => {
+    if (visualTarget) {
+      setTimeout(() => textareaRef.current?.focus(), 30);
+    }
+  }, [visualTarget]);
 
   const speechSupported = useMemo(() => {
     if (typeof window === 'undefined') return false;
@@ -396,6 +407,32 @@ export function ChatComposer({
           </div>
         )}
 
+        {visualTarget && (
+          <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-primary/40 bg-primary/10 px-3 py-2 text-xs">
+            <div className="flex min-w-0 items-center gap-2">
+              <Crosshair className="h-3.5 w-3.5 shrink-0 text-primary" />
+              <span className="truncate font-mono text-[11px] font-semibold text-primary">
+                &lt;{visualTarget.selector}&gt;
+              </span>
+              {visualTarget.textSnippet && (
+                <span className="hidden truncate text-muted-foreground sm:inline">
+                  &ldquo;{visualTarget.textSnippet}&rdquo;
+                </span>
+              )}
+            </div>
+            {onClearVisualTarget && (
+              <button
+                type="button"
+                onClick={onClearVisualTarget}
+                className="rounded-md p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
+                aria-label="Hapus target elemen"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        )}
+
         {attachments.length > 0 && (
           <div className="mb-2.5 flex flex-wrap gap-2 px-1">
             {attachments.map((att) =>
@@ -459,7 +496,11 @@ export function ChatComposer({
             }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder={`Tanya ${model}...`}
+            placeholder={
+              visualTarget
+                ? `Instruksi edit untuk <${visualTarget.selector}>...`
+                : `Tanya ${model}...`
+            }
             className="min-h-[42px] w-full resize-none overflow-hidden border-0 bg-transparent px-2 py-2 text-[15px] leading-relaxed shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
           />
         </StudioScroll>
@@ -488,7 +529,6 @@ export function ChatComposer({
               <span className="hidden text-xs sm:inline">Lampiran</span>
             </Button>
 
-            {/* Quick Thinking Chip */}
             <Button
               type="button"
               variant={thinkingOn ? 'secondary' : 'ghost'}

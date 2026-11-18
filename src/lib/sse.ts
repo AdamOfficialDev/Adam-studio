@@ -37,8 +37,14 @@ export async function streamChatCompletion(
     'Content-Type': 'application/json',
   };
 
-  if (payload.apiKey?.trim()) {
-    headers['x-gemini-api-key'] = payload.apiKey.trim();
+  // Normalisasi multi-line API key menjadi satu baris koma-separated agar valid sebagai HTTP header
+  const normalizedKeys = (payload.apiKey || '')
+    .split(/[\r\n,;]+/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+
+  if (normalizedKeys.length > 0) {
+    headers['x-gemini-api-key'] = normalizedKeys.join(',');
   }
 
   const response = await fetch('/api/chat', {
