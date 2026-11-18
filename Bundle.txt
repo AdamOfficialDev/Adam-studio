@@ -1,0 +1,2742 @@
+<<<FILE: package.json>>>
+{
+  "name": "adam-studio",
+  "private": true,
+  "version": "4.3.0",
+  "type": "module",
+  "scripts": {
+    "dev:client": "vite",
+    "dev:server": "node server/index.mjs",
+    "dev": "concurrently -k -n SERVER,CLIENT -c magenta,cyan \"pnpm dev:server\" \"pnpm dev:client\"",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "start": "NODE_ENV=production node server/index.mjs"
+  },
+  "dependencies": {
+    "@codemirror/lang-css": "^6.3.1",
+    "@codemirror/lang-html": "^6.4.9",
+    "@codemirror/lang-javascript": "^6.2.2",
+    "@codemirror/lang-markdown": "^6.3.1",
+    "@codemirror/theme-one-dark": "^6.1.2",
+    "@radix-ui/react-avatar": "^1.1.2",
+    "@radix-ui/react-dialog": "^1.1.4",
+    "@radix-ui/react-dropdown-menu": "^2.1.4",
+    "@radix-ui/react-popover": "^1.1.4",
+    "@radix-ui/react-scroll-area": "^1.2.2",
+    "@radix-ui/react-separator": "^1.1.1",
+    "@radix-ui/react-slider": "^1.2.2",
+    "@radix-ui/react-slot": "^1.1.1",
+    "@radix-ui/react-switch": "^1.1.2",
+    "@radix-ui/react-tabs": "^1.1.2",
+    "@radix-ui/react-tooltip": "^1.1.6",
+    "@uiw/react-codemirror": "^4.23.6",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cmdk": "^1.0.4",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "framer-motion": "^11.15.0",
+    "highlight.js": "^11.11.1",
+    "katex": "^0.16.19",
+    "lucide-react": "^0.469.0",
+    "mermaid": "^11.4.1",
+    "overlayscrollbars": "^2.10.1",
+    "overlayscrollbars-react": "^0.5.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.0",
+    "remark-math": "^6.0.0",
+    "sonner": "^1.7.1",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "tailwindcss-animate": "^1.0.7",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vite-plugin-pwa": "^0.21.1"
+  }
+}
+<<<END_FILE>>>
+
+<<<FILE: vercel.json>>>
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "pnpm install --no-frozen-lockfile",
+  "buildCommand": "pnpm build",
+  "outputDirectory": "dist",
+  "headers": [
+    {
+      "source": "/sw.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/manifest.webmanifest",
+      "headers": [
+        { "key": "Content-Type", "value": "application/manifest+json; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
+<<<END_FILE>>>
+
+<<<FILE: vite.config.ts>>>
+import path from 'node:path';
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { VitePWA } from 'vite-plugin-pwa';
+
+export default defineConfig({
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: 'prompt',
+      includeAssets: [
+        'favicon.svg',
+        'apple-touch-icon.png',
+        'pwa-192x192.png',
+        'pwa-512x512.png',
+        'pwa-maskable-512x512.png',
+      ],
+      manifest: {
+        id: '/',
+        name: 'Adam Studio — AI Workspace',
+        short_name: 'Adam Studio',
+        description:
+          'Platform chatbot AI real-time SSE dengan Artifact IDE Canvas, Mermaid Diagram, dan KaTeX.',
+        theme_color: '#0a0a0c',
+        background_color: '#0a0a0c',
+        display: 'standalone',
+        display_override: ['window-controls-overlay', 'standalone'],
+        orientation: 'any',
+        scope: '/',
+        start_url: '/?source=pwa',
+        categories: ['productivity', 'utilities', 'developer'],
+        icons: [
+          {
+            src: '/pwa-192x192.png',
+            sizes: '192x192',
+            type: 'image/png',
+          },
+          {
+            src: '/pwa-512x512.png',
+            sizes: '512x512',
+            type: 'image/png',
+          },
+          {
+            src: '/pwa-maskable-512x512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'maskable',
+          },
+        ],
+        shortcuts: [
+          {
+            name: 'New Chat',
+            short_name: 'New Chat',
+            description: 'Mulai percakapan baru di Adam Studio',
+            url: '/?action=new',
+            icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
+          },
+        ],
+      },
+      workbox: {
+        maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        navigateFallback: '/index.html',
+        navigateFallbackDenylist: [/^\/api\//],
+        runtimeCaching: [
+          {
+            urlPattern: /^\/api\//,
+            handler: 'NetworkOnly',
+          },
+        ],
+      },
+      devOptions: {
+        enabled: false,
+      },
+    }),
+  ],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+    },
+  },
+});
+<<<END_FILE>>>
+
+<<<FILE: public/favicon.svg>>>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <rect width="32" height="32" rx="8" fill="#3b82f6" />
+  <path
+    fill-rule="evenodd"
+    clip-rule="evenodd"
+    d="M14 6.5L6.5 24.5H10.1L11.7 20.6H16.3L17.9 24.5H21.5L14 6.5ZM14 12.2L12.3 17.5H15.7L14 12.2Z"
+    fill="#ffffff"
+  />
+  <path
+    d="M23.5 5.2L24.4 7.7L26.9 8.6L24.4 9.5L23.5 12L22.6 9.5L20.1 8.6L22.6 7.7Z"
+    fill="#ffffff"
+  />
+</svg>
+<<<END_FILE>>>
+
+<<<FILE: src/vite-env.d.ts>>>
+/// <reference types="vite/client" />
+/// <reference types="vite-plugin-pwa/client" />
+<<<END_FILE>>>
+
+<<<FILE: index.html>>>
+<!doctype html>
+<html lang="id" class="dark" data-skin="obsidian">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0a0a0c" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Adam Studio" />
+    <title>Adam Studio — AI Workspace</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          var raw =
+            localStorage.getItem('hydrogen-chat-settings-v3') ||
+            localStorage.getItem('hydrogen-chat-settings-v2');
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            var skin = parsed.skin || (parsed.theme === 'light' ? 'paper' : 'obsidian');
+            document.documentElement.setAttribute('data-skin', skin);
+            if (skin === 'paper') {
+              document.documentElement.classList.remove('dark');
+            } else {
+              document.documentElement.classList.add('dark');
+            }
+          }
+        } catch (_) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-background text-foreground antialiased selection:bg-primary/25">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+<<<END_FILE>>>
+
+<<<FILE: src/index.css>>>
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root,
+  html[data-skin='obsidian'] {
+    --background: 240 10% 4.5%;
+    --foreground: 0 0% 96%;
+    --card: 240 8% 7.5%;
+    --card-foreground: 0 0% 96%;
+    --popover: 240 8% 9%;
+    --popover-foreground: 0 0% 96%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 240 6% 12%;
+    --secondary-foreground: 0 0% 95%;
+    --muted: 240 6% 12%;
+    --muted-foreground: 240 5% 62%;
+    --accent: 240 6% 15%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 68% 52%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 6% 15%;
+    --input: 240 6% 16%;
+    --ring: 217 91% 60%;
+    --radius: 0.85rem;
+  }
+
+  html[data-skin='claude'] {
+    --background: 28 12% 8.5%;
+    --foreground: 36 22% 93%;
+    --card: 28 10% 11.5%;
+    --card-foreground: 36 22% 93%;
+    --popover: 28 10% 13%;
+    --popover-foreground: 36 22% 93%;
+    --primary: 17 65% 58%;
+    --primary-foreground: 28 20% 8%;
+    --secondary: 28 9% 16%;
+    --secondary-foreground: 36 20% 92%;
+    --muted: 28 9% 15%;
+    --muted-foreground: 32 10% 62%;
+    --accent: 28 10% 19%;
+    --accent-foreground: 36 25% 96%;
+    --destructive: 0 68% 52%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 28 9% 19%;
+    --input: 28 9% 21%;
+    --ring: 17 65% 58%;
+    --radius: 0.85rem;
+  }
+
+  html[data-skin='aurora'] {
+    --background: 226 35% 6%;
+    --foreground: 213 31% 95%;
+    --card: 226 30% 9%;
+    --card-foreground: 213 31% 95%;
+    --popover: 226 30% 11%;
+    --popover-foreground: 213 31% 95%;
+    --primary: 189 94% 52%;
+    --primary-foreground: 226 45% 8%;
+    --secondary: 225 24% 14%;
+    --secondary-foreground: 213 31% 95%;
+    --muted: 225 24% 13%;
+    --muted-foreground: 220 15% 64%;
+    --accent: 225 24% 17%;
+    --accent-foreground: 213 31% 98%;
+    --destructive: 0 72% 54%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 224 24% 17%;
+    --input: 224 24% 19%;
+    --ring: 189 94% 52%;
+    --radius: 0.85rem;
+  }
+
+  html[data-skin='paper'] {
+    --background: 36 33% 97.5%;
+    --foreground: 240 12% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 12% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 12% 10%;
+    --primary: 221 83% 51%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 36 18% 93%;
+    --secondary-foreground: 240 10% 14%;
+    --muted: 36 15% 93%;
+    --muted-foreground: 240 6% 45%;
+    --accent: 36 18% 90%;
+    --accent-foreground: 240 12% 10%;
+    --destructive: 0 84% 58%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 36 14% 87%;
+    --input: 36 14% 86%;
+    --ring: 221 83% 51%;
+    --radius: 0.85rem;
+  }
+
+  * {
+    @apply border-border;
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
+  }
+
+  html,
+  body,
+  #root {
+    max-width: 100%;
+    overflow-x: hidden;
+    overscroll-behavior-y: none;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-tap-highlight-color: transparent;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.28);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--primary) / 0.72);
+  }
+}
+
+.os-theme-hydrogen {
+  --os-size: 8px;
+  --os-padding-perpendicular: 2px;
+  --os-padding-axis: 3px;
+  --os-track-border-radius: 9999px;
+  --os-track-bg: transparent;
+  --os-track-bg-hover: hsl(var(--muted) / 0.25);
+  --os-track-bg-active: hsl(var(--muted) / 0.4);
+  --os-handle-border-radius: 9999px;
+  --os-handle-bg: hsl(var(--muted-foreground) / 0.34);
+  --os-handle-bg-hover: hsl(var(--primary) / 0.8);
+  --os-handle-bg-active: hsl(var(--primary));
+  --os-handle-min-size: 32px;
+}
+
+.os-theme-hydrogen > .os-scrollbar-horizontal {
+  height: 8px;
+}
+.os-theme-hydrogen > .os-scrollbar-vertical {
+  width: 8px;
+}
+
+.cm-editor {
+  height: 100% !important;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace !important;
+}
+.cm-scroller {
+  overscroll-behavior: contain;
+}
+.cm-scroller::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+.cm-scroller::-webkit-scrollbar-thumb {
+  background: rgba(161, 161, 170, 0.28);
+  border-radius: 9999px;
+}
+.cm-scroller::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--primary) / 0.8);
+}
+
+.hljs {
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.bg-dot-matrix {
+  background-image: radial-gradient(hsl(var(--border) / 0.75) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.katex-display {
+  @apply my-3 max-w-full overflow-x-auto rounded-xl border bg-muted/30 px-4 py-3;
+}
+<<<END_FILE>>>
+
+<<<FILE: src/hooks/usePwaInstall.ts>>>
+import { useCallback, useEffect, useState } from 'react';
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+}
+
+export function usePwaInstall() {
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isStandalone, setIsStandalone] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return (
+      window.matchMedia('(display-mode: standalone)').matches ||
+      Boolean((window.navigator as { standalone?: boolean }).standalone)
+    );
+  });
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+
+  const isIos =
+    typeof navigator !== 'undefined' &&
+    /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+  useEffect(() => {
+    const onBeforeInstall = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e as BeforeInstallPromptEvent);
+    };
+
+    const onInstalled = () => {
+      setDeferredPrompt(null);
+      setIsStandalone(true);
+    };
+
+    const media = window.matchMedia('(display-mode: standalone)');
+    const onDisplayChange = (e: MediaQueryListEvent) => {
+      if (e.matches) setIsStandalone(true);
+    };
+
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+
+    window.addEventListener('beforeinstallprompt', onBeforeInstall);
+    window.addEventListener('appinstalled', onInstalled);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    media.addEventListener('change', onDisplayChange);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+      window.removeEventListener('appinstalled', onInstalled);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      media.removeEventListener('change', onDisplayChange);
+    };
+  }, []);
+
+  const triggerNativeInstall = useCallback(async (): Promise<'installed' | 'dismissed' | 'guide'> => {
+    if (!deferredPrompt) return 'guide';
+    await deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
+      return 'installed';
+    }
+    return 'dismissed';
+  }, [deferredPrompt]);
+
+  return {
+    isStandalone,
+    isIos,
+    isOnline,
+    canNativeInstall: Boolean(deferredPrompt),
+    triggerNativeInstall,
+  };
+}
+<<<END_FILE>>>
+
+<<<FILE: src/components/InstallAppDialog.tsx>>>
+import { CheckCircle2, Laptop, MonitorDown, Share, Smartphone } from 'lucide-react';
+import { BrandLogo } from '@/components/BrandLogo';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+
+interface InstallAppDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  isIos: boolean;
+  canNativeInstall: boolean;
+  onNativeInstall: () => void;
+}
+
+export function InstallAppDialog({
+  open,
+  onOpenChange,
+  isIos,
+  canNativeInstall,
+  onNativeInstall,
+}: InstallAppDialogProps) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <div className="flex items-center gap-3">
+            <BrandLogo size="md" />
+            <div>
+              <DialogTitle>Install Adam Studio</DialogTitle>
+              <DialogDescription className="mt-1">
+                Jalankan sebagai aplikasi standalone seperti ChatGPT & Claude Desktop.
+              </DialogDescription>
+            </div>
+          </div>
+        </DialogHeader>
+
+        <div className="space-y-3 py-2 text-xs">
+          <div className="space-y-2 rounded-xl border bg-card/70 p-3.5">
+            <div className="flex items-center gap-2 font-medium text-foreground">
+              <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+              <span>Keuntungan App Mode</span>
+            </div>
+            <ul className="ml-6 list-disc space-y-1 text-muted-foreground">
+              <li>Jendela terpisah tanpa address bar browser</li>
+              <li>Loading instan & riwayat tetap tersedia saat offline</li>
+              <li>Akses cepat dari Home Screen HP atau Taskbar / Dock PC</li>
+            </ul>
+          </div>
+
+          {canNativeInstall ? (
+            <div className="rounded-xl border border-primary/40 bg-primary/10 p-3.5 text-foreground">
+              Browser Anda mendukung instalasi instan 1-klik. Klik tombol{' '}
+              <strong>Install Sekarang</strong> di bawah.
+            </div>
+          ) : isIos ? (
+            <div className="space-y-2 rounded-xl border bg-muted/40 p-3.5">
+              <div className="flex items-center gap-2 font-semibold">
+                <Smartphone className="h-4 w-4 text-primary" />
+                <span>Cara Install di iPhone / iPad (Safari)</span>
+              </div>
+              <ol className="ml-4 list-decimal space-y-1.5 text-muted-foreground">
+                <li>
+                  Tap tombol <strong>Share</strong> (<Share className="inline h-3.5 w-3.5" />) di
+                  bar bawah Safari.
+                </li>
+                <li>
+                  Gulir ke bawah lalu pilih <strong>Add to Home Screen</strong>.
+                </li>
+                <li>
+                  Tap <strong>Add</strong> di pojok kanan atas.
+                </li>
+              </ol>
+            </div>
+          ) : (
+            <div className="space-y-2 rounded-xl border bg-muted/40 p-3.5">
+              <div className="flex items-center gap-2 font-semibold">
+                <Laptop className="h-4 w-4 text-primary" />
+                <span>Cara Install di Chrome / Edge / Brave</span>
+              </div>
+              <p className="leading-relaxed text-muted-foreground">
+                Klik ikon <strong>Install App</strong> di ujung kanan address bar browser, atau
+                buka menu browser (<code>⋮</code>) lalu pilih{' '}
+                <strong>Install Adam Studio / Add to Home screen</strong>. Pastikan situs diakses
+                lewat <strong>HTTPS</strong> (Vercel) atau <code>localhost</code>.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenChange(false)}
+            className="rounded-xl"
+          >
+            Tutup
+          </Button>
+          {canNativeInstall && (
+            <Button type="button" size="sm" onClick={onNativeInstall} className="gap-1.5 rounded-xl">
+              <MonitorDown className="h-4 w-4" />
+              Install Sekarang
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+<<<END_FILE>>>
+
+<<<FILE: src/components/Sidebar.tsx>>>
+import { memo, useMemo, useState } from 'react';
+import {
+  Bookmark,
+  Command,
+  MessageSquare,
+  MonitorDown,
+  MoreHorizontal,
+  Palette,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Pencil,
+  Pin,
+  PinOff,
+  Plus,
+  Search,
+  Settings,
+  Trash2,
+  X,
+} from 'lucide-react';
+import { BrandLogo } from '@/components/BrandLogo';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Separator } from '@/components/ui/separator';
+import { StudioScroll } from '@/components/ui/studio-scroll';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { estimateCostNumber } from '@/lib/models';
+import type { Conversation } from '@/types/chat';
+import { cn } from '@/lib/utils';
+
+interface SidebarProps {
+  open: boolean;
+  mobileOpen: boolean;
+  onToggleDesktop: () => void;
+  onCloseMobile: () => void;
+  conversations: Conversation[];
+  activeId: string | null;
+  onNewChat: () => void;
+  onSelectConversation: (id: string) => void;
+  onRenameConversation: (id: string, title: string) => void;
+  onTogglePinConversation: (id: string) => void;
+  onDeleteConversation: (id: string) => void;
+  onOpenSettings: () => void;
+  onOpenCommandPalette: () => void;
+  onOpenBookmarks: () => void;
+  onCycleSkin: () => void;
+  showInstallButton?: boolean;
+  onInstallApp?: () => void;
+}
+
+function getDateBucket(timestamp: number): 'Hari Ini' | 'Kemarin' | 'Sebelumnya' {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfYesterday = startOfToday - 86_400_000;
+  if (timestamp >= startOfToday) return 'Hari Ini';
+  if (timestamp >= startOfYesterday) return 'Kemarin';
+  return 'Sebelumnya';
+}
+
+export const Sidebar = memo(function Sidebar({
+  open,
+  mobileOpen,
+  onToggleDesktop,
+  onCloseMobile,
+  conversations,
+  activeId,
+  onNewChat,
+  onSelectConversation,
+  onRenameConversation,
+  onTogglePinConversation,
+  onDeleteConversation,
+  onOpenSettings,
+  onOpenCommandPalette,
+  onOpenBookmarks,
+  onCycleSkin,
+  showInstallButton = false,
+  onInstallApp,
+}: SidebarProps) {
+  const [search, setSearch] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+
+  const { pinned, grouped, totalTokens, totalCost } = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const filtered = conversations
+      .filter((c) => !q || c.title.toLowerCase().includes(q))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+
+    let tokens = 0;
+    let cost = 0;
+    for (const c of conversations) {
+      for (const m of c.messages) {
+        if (m.usage?.totalTokenCount) tokens += m.usage.totalTokenCount;
+        cost += estimateCostNumber(m.model || c.model, m.usage);
+      }
+    }
+
+    const pinnedList = filtered.filter((c) => c.pinned);
+    const regularList = filtered.filter((c) => !c.pinned);
+
+    const groups: Record<'Hari Ini' | 'Kemarin' | 'Sebelumnya', Conversation[]> = {
+      'Hari Ini': [],
+      Kemarin: [],
+      Sebelumnya: [],
+    };
+
+    for (const conv of regularList) {
+      groups[getDateBucket(conv.updatedAt)].push(conv);
+    }
+
+    return { pinned: pinnedList, grouped: groups, totalTokens: tokens, totalCost: cost };
+  }, [conversations, search]);
+
+  const commitRename = (id: string) => {
+    const trimmed = editingTitle.trim();
+    if (trimmed) {
+      onRenameConversation(id, trimmed);
+    }
+    setEditingId(null);
+  };
+
+  const renderConversationRow = (conv: Conversation) => {
+    const isActive = conv.id === activeId;
+    const isEditing = editingId === conv.id;
+
+    return (
+      <div
+        key={conv.id}
+        className={cn(
+          'group flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-sm transition-colors',
+          isActive
+            ? 'bg-accent text-accent-foreground font-medium shadow-sm'
+            : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+        )}
+      >
+        {conv.pinned ? (
+          <Pin className="h-3.5 w-3.5 shrink-0 text-primary" />
+        ) : (
+          <MessageSquare className="h-3.5 w-3.5 shrink-0 opacity-65" />
+        )}
+
+        {isEditing ? (
+          <input
+            autoFocus
+            value={editingTitle}
+            onChange={(e) => setEditingTitle(e.target.value)}
+            onBlur={() => commitRename(conv.id)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitRename(conv.id);
+              if (e.key === 'Escape') setEditingId(null);
+            }}
+            className="w-full rounded bg-background px-2 py-1 text-xs text-foreground outline-none ring-1 ring-ring"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              onSelectConversation(conv.id);
+              onCloseMobile();
+            }}
+            className="min-w-0 flex-1 truncate text-left text-xs"
+          >
+            {conv.title}
+          </button>
+        )}
+
+        {!isEditing && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                onClick={(e) => e.stopPropagation()}
+                className={cn(
+                  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-opacity hover:bg-background/80 focus:opacity-100',
+                  isActive
+                    ? 'opacity-100'
+                    : 'opacity-80 md:opacity-0 md:group-hover:opacity-100'
+                )}
+                aria-label="Opsi percakapan"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={() => onTogglePinConversation(conv.id)}>
+                {conv.pinned ? (
+                  <>
+                    <PinOff className="h-3.5 w-3.5" />
+                    Lepas Sematan
+                  </>
+                ) : (
+                  <>
+                    <Pin className="h-3.5 w-3.5" />
+                    Sematkan Chat
+                  </>
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  setEditingId(conv.id);
+                  setEditingTitle(conv.title);
+                }}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                Ubah Judul
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => onDeleteConversation(conv.id)}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Hapus Chat
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <>
+      {mobileOpen && (
+        <div className="fixed inset-0 z-30 bg-black/60 md:hidden" onClick={onCloseMobile} />
+      )}
+
+      {!open && (
+        <aside className="hidden w-14 shrink-0 flex-col items-center justify-between border-r bg-card/85 py-3 md:flex">
+          <div className="flex flex-col items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={onToggleDesktop}
+                  className="rounded-xl"
+                >
+                  <PanelLeftOpen className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">Buka Sidebar (Ctrl+B)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button type="button" size="icon" onClick={onNewChat} className="rounded-xl">
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">New Chat</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={onOpenCommandPalette}
+                  className="rounded-xl"
+                >
+                  <Command className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">Command Palette (Ctrl+K)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={onOpenBookmarks}
+                  className="rounded-xl"
+                >
+                  <Bookmark className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">Starred Answers</TooltipContent>
+            </Tooltip>
+          </div>
+
+          <div className="flex flex-col items-center gap-2">
+            {showInstallButton && onInstallApp && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={onInstallApp}
+                    className="rounded-xl text-primary"
+                  >
+                    <MonitorDown className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="right">Install Adam Studio App</TooltipContent>
+              </Tooltip>
+            )}
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={onCycleSkin}
+                  className="rounded-xl"
+                >
+                  <Palette className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">Ganti Theme Skin</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={onOpenSettings}
+                  className="rounded-xl"
+                >
+                  <Settings className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">Settings</TooltipContent>
+            </Tooltip>
+          </div>
+        </aside>
+      )}
+
+      <aside
+        className={cn(
+          'fixed inset-y-0 left-0 z-40 flex w-[82vw] max-w-72 shrink-0 flex-col border-r bg-card transition-transform duration-200 md:static md:w-72',
+          mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
+          !open && 'md:hidden'
+        )}
+      >
+        <div className="flex items-center justify-between px-4 py-3.5">
+          <div className="flex items-center gap-2.5">
+            <BrandLogo size="sm" />
+            <div>
+              <div className="text-sm font-bold leading-none tracking-tight">Adam Studio</div>
+              <div className="mt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                Gemini 4 Workspace
+              </div>
+            </div>
+          </div>
+
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onToggleDesktop}
+            className="hidden rounded-xl md:inline-flex"
+            title="Ciutkan ke Icon Rail (Ctrl+B)"
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </Button>
+
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onCloseMobile}
+            className="md:hidden"
+            aria-label="Tutup sidebar"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <div className="space-y-2.5 px-3 pb-3">
+          <div className="flex gap-1.5">
+            <Button
+              type="button"
+              onClick={() => {
+                onNewChat();
+                onCloseMobile();
+              }}
+              className="flex-1 justify-start gap-2 rounded-xl"
+            >
+              <Plus className="h-4 w-4" />
+              New Chat
+            </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={onOpenCommandPalette}
+              title="Command Palette (Ctrl+K)"
+              className="h-9 w-9 shrink-0 rounded-xl"
+            >
+              <Command className="h-4 w-4" />
+            </Button>
+          </div>
+
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Cari riwayat chat..."
+              className="h-8 bg-background/60 pl-8 text-xs"
+            />
+          </div>
+        </div>
+
+        <Separator />
+
+        <StudioScroll className="min-h-0 flex-1" autoHide="scroll">
+          <div className="px-2.5 py-2.5">
+            {conversations.length === 0 ? (
+              <div className="px-3 py-8 text-center text-xs leading-relaxed text-muted-foreground">
+                Belum ada percakapan. Mulai chat baru atau tekan{' '}
+                <kbd className="rounded border px-1">Ctrl+K</kbd>.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {pinned.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-primary">
+                      Disematkan
+                    </div>
+                    {pinned.map(renderConversationRow)}
+                  </div>
+                )}
+
+                {(['Hari Ini', 'Kemarin', 'Sebelumnya'] as const).map((label) => {
+                  const items = grouped[label];
+                  if (items.length === 0) return null;
+
+                  return (
+                    <div key={label} className="space-y-1">
+                      <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        {label}
+                      </div>
+                      {items.map(renderConversationRow)}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </StudioScroll>
+
+        {showInstallButton && onInstallApp && (
+          <div className="mx-3 mb-2">
+            <button
+              type="button"
+              onClick={() => {
+                onInstallApp();
+                onCloseMobile();
+              }}
+              className="flex w-full items-center justify-between rounded-xl border border-primary/35 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/15"
+            >
+              <span className="flex items-center gap-2">
+                <MonitorDown className="h-4 w-4" />
+                <span>Install App</span>
+              </span>
+              <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[10px]">PWA</span>
+            </button>
+          </div>
+        )}
+
+        <div className="mx-3 mb-2 rounded-xl border bg-background/50 p-2.5 text-[11px]">
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span>Workspace Usage</span>
+            <span className="font-mono text-foreground">{totalTokens.toLocaleString()} tok</span>
+          </div>
+          <div className="mt-1 flex items-center justify-between text-muted-foreground">
+            <span>Est. Cost</span>
+            <span className="font-mono text-emerald-400">${totalCost.toFixed(4)}</span>
+          </div>
+        </div>
+
+        <Separator />
+
+        <div className="flex items-center justify-between gap-1 p-2.5">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              onOpenSettings();
+              onCloseMobile();
+            }}
+            className="flex-1 justify-start gap-2 rounded-xl text-xs"
+          >
+            <Settings className="h-4 w-4" />
+            Settings
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              onOpenBookmarks();
+              onCloseMobile();
+            }}
+            className="rounded-xl"
+            title="Starred Answers"
+          >
+            <Bookmark className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onCycleSkin}
+            className="rounded-xl"
+            title="Ganti Theme Skin"
+          >
+            <Palette className="h-4 w-4" />
+          </Button>
+        </div>
+      </aside>
+    </>
+  );
+});
+<<<END_FILE>>>
+
+<<<FILE: src/components/CommandPalette.tsx>>>
+import {
+  Bookmark,
+  Cpu,
+  Download,
+  Maximize2,
+  MessageSquare,
+  MonitorDown,
+  Palette,
+  Plus,
+  Settings,
+  Sparkles,
+  Terminal,
+} from 'lucide-react';
+import {
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+  CommandShortcut,
+} from '@/components/ui/command';
+import { SLASH_PROMPTS } from '@/lib/personas';
+import type { Conversation, ThemeSkin } from '@/types/chat';
+
+interface CommandPaletteProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  conversations: Conversation[];
+  activeSkin: ThemeSkin;
+  onNewChat: () => void;
+  onSelectConversation: (id: string) => void;
+  onOpenModelSelector: () => void;
+  onOpenSettings: () => void;
+  onOpenBookmarks: () => void;
+  onToggleZenMode: () => void;
+  onCycleSkin: () => void;
+  onExportMarkdown: () => void;
+  onInsertTemplate: (template: string) => void;
+  showInstallOption?: boolean;
+  onInstallApp?: () => void;
+}
+
+export function CommandPalette({
+  open,
+  onOpenChange,
+  conversations,
+  activeSkin,
+  onNewChat,
+  onSelectConversation,
+  onOpenModelSelector,
+  onOpenSettings,
+  onOpenBookmarks,
+  onToggleZenMode,
+  onCycleSkin,
+  onExportMarkdown,
+  onInsertTemplate,
+  showInstallOption = false,
+  onInstallApp,
+}: CommandPaletteProps) {
+  const run = (fn: () => void) => {
+    onOpenChange(false);
+    fn();
+  };
+
+  return (
+    <CommandDialog open={open} onOpenChange={onOpenChange}>
+      <CommandInput placeholder="Ketik perintah, cari chat, template, atau install app..." />
+      <CommandList>
+        <CommandEmpty>Tidak ada perintah atau chat yang cocok.</CommandEmpty>
+
+        <CommandGroup heading="Aksi Workspace">
+          <CommandItem onSelect={() => run(onNewChat)}>
+            <Plus className="text-primary" />
+            <span>Buat Percakapan Baru</span>
+            <CommandShortcut>Ctrl+Shift+O</CommandShortcut>
+          </CommandItem>
+          {showInstallOption && onInstallApp && (
+            <CommandItem onSelect={() => run(onInstallApp)}>
+              <MonitorDown className="text-primary" />
+              <span>Install Adam Studio sebagai Aplikasi (PWA)</span>
+            </CommandItem>
+          )}
+          <CommandItem onSelect={() => run(onOpenModelSelector)}>
+            <Cpu className="text-primary" />
+            <span>Pilih Model (Gemini 4 Hydrogen / Custom)</span>
+          </CommandItem>
+          <CommandItem onSelect={() => run(onToggleZenMode)}>
+            <Maximize2 className="text-primary" />
+            <span>Toggle Zen Focus Mode</span>
+            <CommandShortcut>Ctrl+\</CommandShortcut>
+          </CommandItem>
+          <CommandItem onSelect={() => run(onCycleSkin)}>
+            <Palette className="text-primary" />
+            <span>Ganti Theme Skin (Aktif: {activeSkin})</span>
+          </CommandItem>
+          <CommandItem onSelect={() => run(onOpenBookmarks)}>
+            <Bookmark className="text-amber-400" />
+            <span>Buka Starred / Bookmarked Pesan</span>
+          </CommandItem>
+          <CommandItem onSelect={() => run(onExportMarkdown)}>
+            <Download />
+            <span>Export Percakapan Aktif (.md)</span>
+          </CommandItem>
+          <CommandItem onSelect={() => run(onOpenSettings)}>
+            <Settings />
+            <span>Buka Workspace Settings & API Key</span>
+          </CommandItem>
+        </CommandGroup>
+
+        <CommandSeparator />
+
+        <CommandGroup heading="Slash Prompt Templates">
+          {SLASH_PROMPTS.map((tpl) => (
+            <CommandItem key={tpl.command} onSelect={() => run(() => onInsertTemplate(tpl.template))}>
+              <Terminal className="text-primary" />
+              <div className="flex flex-col">
+                <span className="font-medium">{tpl.title}</span>
+                <span className="text-[11px] text-muted-foreground">{tpl.description}</span>
+              </div>
+              <CommandShortcut>{tpl.command}</CommandShortcut>
+            </CommandItem>
+          ))}
+        </CommandGroup>
+
+        {conversations.length > 0 && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Percakapan Terakhir">
+              {conversations.slice(0, 8).map((conv) => (
+                <CommandItem key={conv.id} onSelect={() => run(() => onSelectConversation(conv.id))}>
+                  <MessageSquare className="text-muted-foreground" />
+                  <span className="truncate">{conv.title}</span>
+                  <CommandShortcut className="flex items-center gap-1">
+                    <Sparkles className="h-2.5 w-2.5 text-primary" />
+                    {conv.model}
+                  </CommandShortcut>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
+      </CommandList>
+    </CommandDialog>
+  );
+}
+<<<END_FILE>>>
+
+<<<FILE: src/App.tsx>>>
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+import { AnimatePresence, MotionConfig, motion } from 'framer-motion';
+import { Toaster, toast } from 'sonner';
+import { useRegisterSW } from 'virtual:pwa-register/react';
+import {
+  ArrowDown,
+  ChevronDown,
+  Code2,
+  Cpu,
+  Download,
+  Eye,
+  FileJson,
+  FileText,
+  Image as ImageIcon,
+  Maximize2,
+  Menu,
+  Minimize2,
+  MonitorDown,
+  MoreVertical,
+  Palette,
+  Radio,
+  Settings,
+  Sparkles,
+  WifiOff,
+  Workflow,
+} from 'lucide-react';
+import { BrandLogo } from '@/components/BrandLogo';
+import { InstallAppDialog } from '@/components/InstallAppDialog';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { StudioScroll, type StudioScrollHandle } from '@/components/ui/studio-scroll';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { ArtifactPanel } from '@/components/ArtifactPanel';
+import { BookmarksDialog } from '@/components/BookmarksDialog';
+import { ChatComposer } from '@/components/ChatComposer';
+import { ChatMessage } from '@/components/ChatMessage';
+import { CommandPalette } from '@/components/CommandPalette';
+import { ModelSelectorDialog } from '@/components/ModelSelectorDialog';
+import { SettingsDialog } from '@/components/SettingsDialog';
+import { Sidebar } from '@/components/Sidebar';
+import { usePwaInstall } from '@/hooks/usePwaInstall';
+import { extractArtifactsFromMarkdown } from '@/lib/artifacts';
+import { DEFAULT_MODEL_ID, getModelInfo } from '@/lib/models';
+import { streamChatCompletion } from '@/lib/sse';
+import { loadConversations, loadSettings, saveConversations, saveSettings } from '@/lib/storage';
+import { cn, estimateTokens, generateId } from '@/lib/utils';
+import type {
+  AppSettings,
+  ArtifactItem,
+  Attachment,
+  ChatMessage as ChatMessageType,
+  Conversation,
+  ServerHealth,
+  ThemeSkin,
+  TokenUsage,
+} from '@/types/chat';
+
+type WelcomeTab = 'All' | 'Coding' | 'UI/Design' | 'Agentic';
+
+interface ActiveStreamState {
+  convId: string;
+  msgId: string;
+  content: string;
+  thought: string;
+  tps: number;
+  usage?: TokenUsage;
+}
+
+const WELCOME_TABS: WelcomeTab[] = ['All', 'Coding', 'UI/Design', 'Agentic'];
+
+const STARTER_CARDS: Array<{
+  category: Exclude<WelcomeTab, 'All'>;
+  icon: typeof Code2;
+  title: string;
+  subtitle: string;
+  prompt: string;
+}> = [
+  {
+    category: 'UI/Design',
+    icon: Code2,
+    title: 'Interactive SaaS Dashboard',
+    subtitle: 'HTML + CSS + JS lengkap yang langsung live di Artifact Canvas',
+    prompt:
+      'Buatkan dashboard analytics AI modern interaktif lengkap dengan chart SVG dan dark glassmorphism dalam satu blok ```html mandiri agar bisa langsung dilihat di Artifact Live Preview.',
+  },
+  {
+    category: 'Agentic',
+    icon: Workflow,
+    title: 'Multi-Agent Code Reviewer',
+    subtitle: 'Diagram arsitektur Mermaid + desain guardrails produksi',
+    prompt:
+      'Rancang sistem multi-agent AI untuk automated PR review beserta diagram arsitektur ```mermaid dan strategi fallback.',
+  },
+  {
+    category: 'Coding',
+    icon: Sparkles,
+    title: 'High-Throughput SSE Server',
+    subtitle: 'Zero-leak Node.js stream + backpressure & AbortController',
+    prompt:
+      'Buatkan implementasi server SSE (Server-Sent Events) TypeScript yang tahan memory leak, mendukung backpressure, heartbeat, dan graceful client abort.',
+  },
+  {
+    category: 'UI/Design',
+    icon: ImageIcon,
+    title: 'Multimodal & Math Synthesis',
+    subtitle: 'Visual diagram + formula matematis KaTeX terstruktur',
+    prompt:
+      'Jelaskan mekanisme multimodal cross-attention untuk teks dan gambar, lengkap dengan persamaan matematis $$\\text{Attention}(Q,K,V)$$ dan diagram ```mermaid.',
+  },
+];
+
+const SKIN_ORDER: ThemeSkin[] = ['obsidian', 'claude', 'aurora', 'paper'];
+
+export default function App() {
+  const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations());
+  const [activeId, setActiveId] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('action') === 'new') return null;
+    const existing = loadConversations();
+    return existing[0]?.id ?? null;
+  });
+  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_ID);
+  const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  const [serverHealth, setServerHealth] = useState<ServerHealth | null>(null);
+
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [zenMode, setZenMode] = useState(false);
+
+  const [modelDialogOpen, setModelDialogOpen] = useState(false);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [installDialogOpen, setInstallDialogOpen] = useState(false);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+
+  const [activeArtifact, setActiveArtifact] = useState<ArtifactItem | null>(null);
+  const [artifactFullscreen, setArtifactFullscreen] = useState(false);
+  const [artifactWidthPct, setArtifactWidthPct] = useState(46);
+  const [isResizingPane, setIsResizingPane] = useState(false);
+
+  const [welcomeTab, setWelcomeTab] = useState<WelcomeTab>('All');
+  const [externalDraft, setExternalDraft] = useState<string | null>(null);
+  const [activeStream, setActiveStream] = useState<ActiveStreamState | null>(null);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
+
+  const { isStandalone, isIos, isOnline, canNativeInstall, triggerNativeInstall } = usePwaInstall();
+
+  const {
+    needRefresh: [needRefresh],
+    updateServiceWorker,
+  } = useRegisterSW();
+
+  useEffect(() => {
+    if (needRefresh) {
+      toast('Pembaruan Adam Studio tersedia', {
+        description: 'Muat ulang untuk mendapatkan versi terbaru.',
+        duration: 10000,
+        action: {
+          label: 'Update',
+          onClick: () => {
+            void updateServiceWorker(true);
+          },
+        },
+      });
+    }
+  }, [needRefresh, updateServiceWorker]);
+
+  const handleInstallAction = useCallback(async () => {
+    if (canNativeInstall) {
+      const result = await triggerNativeInstall();
+      if (result === 'installed') {
+        toast.success('Adam Studio berhasil diinstal!');
+        return;
+      }
+      if (result === 'dismissed') return;
+    }
+    setInstallDialogOpen(true);
+  }, [canNativeInstall, triggerNativeInstall]);
+
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const activeStreamRef = useRef<ActiveStreamState | null>(null);
+  const chatScrollRef = useRef<StudioScrollHandle | null>(null);
+  const autoScrollEnabledRef = useRef(true);
+  const flushTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    activeStreamRef.current = activeStream;
+  }, [activeStream]);
+
+  useEffect(() => {
+    saveConversations(conversations);
+  }, [conversations]);
+
+  useEffect(() => {
+    saveSettings(settings);
+    document.documentElement.setAttribute('data-skin', settings.skin);
+    if (settings.skin === 'paper') {
+      document.documentElement.classList.remove('dark');
+    } else {
+      document.documentElement.classList.add('dark');
+    }
+  }, [settings]);
+
+  useEffect(() => {
+    fetch('/api/health')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: ServerHealth | null) => {
+        if (data) setServerHealth(data);
+      })
+      .catch(() => {});
+  }, []);
+
+  const activeConversation = useMemo(
+    () => conversations.find((c) => c.id === activeId) ?? null,
+    [conversations, activeId]
+  );
+
+  const currentModelId = activeConversation?.model ?? selectedModel;
+  const currentModelInfo = getModelInfo(currentModelId);
+  const isStreamingActive = activeStream !== null;
+
+  const conversationArtifacts = useMemo(() => {
+    if (!activeConversation) return [];
+    const list: ArtifactItem[] = [];
+    for (const msg of activeConversation.messages) {
+      if (msg.role === 'assistant' && !msg.isStreaming && msg.content) {
+        list.push(...extractArtifactsFromMarkdown(msg.id, msg.content));
+      }
+    }
+    return list;
+  }, [activeConversation]);
+
+  const contextTokenEstimate = useMemo(() => {
+    if (!activeConversation) return estimateTokens(settings.systemInstruction);
+    const textSum = activeConversation.messages.reduce(
+      (acc, m) => acc + estimateTokens(m.content) + estimateTokens(m.thought || ''),
+      0
+    );
+    return textSum + estimateTokens(settings.systemInstruction);
+  }, [activeConversation, settings.systemInstruction]);
+
+  const contextUsagePct = Math.min(
+    100,
+    Math.max(1, Math.round((contextTokenEstimate / currentModelInfo.contextLimit) * 100))
+  );
+
+  const scrollToBottom = useCallback((smooth = false) => {
+    const el = chatScrollRef.current?.getViewport();
+    if (!el) return;
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: smooth ? 'smooth' : 'auto',
+    });
+  }, []);
+
+  useEffect(() => {
+    if (autoScrollEnabledRef.current) {
+      scrollToBottom(false);
+    }
+  }, [activeConversation?.messages.length, activeStream?.content, scrollToBottom]);
+
+  const handleViewportScroll = useCallback((el: HTMLElement) => {
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottom = distanceFromBottom < 90;
+    autoScrollEnabledRef.current = nearBottom;
+    setShowScrollBottom(!nearBottom);
+  }, []);
+
+  const handleStopStream = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    if (flushTimerRef.current !== null) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+
+    const current = activeStreamRef.current;
+    activeStreamRef.current = null;
+    setActiveStream(null);
+
+    if (current) {
+      setConversations((prev) =>
+        prev.map((conv) =>
+          conv.id !== current.convId
+            ? conv
+            : {
+                ...conv,
+                updatedAt: Date.now(),
+                messages: conv.messages.map((m) =>
+                  m.id === current.msgId
+                    ? {
+                        ...m,
+                        content: current.content,
+                        thought: current.thought || m.thought,
+                        usage: current.usage ?? m.usage,
+                        isStreaming: false,
+                      }
+                    : m
+                ),
+              }
+        )
+      );
+    }
+  }, []);
+
+  const handleNewChat = useCallback(() => {
+    if (isStreamingActive) handleStopStream();
+    setActiveId(null);
+    setActiveArtifact(null);
+    setArtifactFullscreen(false);
+  }, [handleStopStream, isStreamingActive]);
+
+  const handleCycleSkin = useCallback(() => {
+    setSettings((prev) => {
+      const idx = SKIN_ORDER.indexOf(prev.skin);
+      const nextSkin = SKIN_ORDER[(idx + 1) % SKIN_ORDER.length];
+      toast.success(`Tema diganti ke ${nextSkin.toUpperCase()}`);
+      return { ...prev, skin: nextSkin };
+    });
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setCommandOpen((prev) => !prev);
+      } else if (mod && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        setSidebarOpen((prev) => !prev);
+      } else if (mod && e.key === '\\') {
+        e.preventDefault();
+        setZenMode((prev) => !prev);
+      } else if (mod && e.shiftKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        handleNewChat();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleNewChat]);
+
+  const startResizingPane = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsResizingPane(true);
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const widthPct = ((window.innerWidth - moveEvent.clientX) / window.innerWidth) * 100;
+      setArtifactWidthPct(Math.min(66, Math.max(30, widthPct)));
+    };
+
+    const onUp = () => {
+      setIsResizingPane(false);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  const runStreamForConversation = useCallback(
+    async (
+      convId: string,
+      modelId: string,
+      historyMessages: ChatMessageType[],
+      assistantMessageId: string
+    ) => {
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      autoScrollEnabledRef.current = true;
+
+      const startedAt = performance.now();
+      let firstTokenAt: number | null = null;
+      let accContent = '';
+      let accThought = '';
+      let accUsage: TokenUsage | undefined = undefined;
+      let chunkCount = 0;
+
+      const initialStream: ActiveStreamState = {
+        convId,
+        msgId: assistantMessageId,
+        content: '',
+        thought: '',
+        tps: 0,
+      };
+      activeStreamRef.current = initialStream;
+      setActiveStream(initialStream);
+
+      const commitStreamSnapshot = () => {
+        flushTimerRef.current = null;
+        if (!activeStreamRef.current) return;
+        const elapsed = Math.max(100, performance.now() - startedAt);
+        const estTok = Math.max(chunkCount, Math.round(accContent.length / 4));
+        const tps = Number(((estTok / elapsed) * 1000).toFixed(1));
+        const snapshot: ActiveStreamState = {
+          convId,
+          msgId: assistantMessageId,
+          content: accContent,
+          thought: accThought,
+          tps,
+          usage: accUsage,
+        };
+        activeStreamRef.current = snapshot;
+        setActiveStream(snapshot);
+      };
+
+      const scheduleFlush = () => {
+        if (flushTimerRef.current !== null) return;
+        const cadence = accContent.length > 3000 ? 55 : 24;
+        flushTimerRef.current = window.setTimeout(commitStreamSnapshot, cadence);
+      };
+
+      try {
+        await streamChatCompletion(
+          {
+            model: modelId,
+            messages: historyMessages.map((m) => ({
+              role: m.role,
+              content: m.content,
+              attachments: m.attachments,
+            })),
+            systemInstruction: settings.systemInstruction,
+            temperature: settings.temperature,
+            maxOutputTokens: settings.maxOutputTokens,
+            demoMode: settings.demoMode,
+            apiKey: settings.apiKey,
+          },
+          {
+            signal: controller.signal,
+            onThought: (thoughtChunk) => {
+              if (firstTokenAt === null) firstTokenAt = performance.now();
+              accThought += thoughtChunk;
+              scheduleFlush();
+            },
+            onDelta: (textChunk) => {
+              if (firstTokenAt === null) firstTokenAt = performance.now();
+              accContent += textChunk;
+              chunkCount += 1;
+              scheduleFlush();
+            },
+            onUsage: (usage) => {
+              accUsage = usage;
+            },
+            onDone: ({ isDemo }) => {
+              if (flushTimerRef.current !== null) {
+                window.clearTimeout(flushTimerRef.current);
+                flushTimerRef.current = null;
+              }
+              activeStreamRef.current = null;
+              setActiveStream(null);
+
+              const finishedAt = performance.now();
+              const durationMs = Math.max(1, Math.round(finishedAt - startedAt));
+              const ttftMs =
+                firstTokenAt !== null ? Math.round(firstTokenAt - startedAt) : durationMs;
+              const estTokens = Math.max(chunkCount, Math.round(accContent.length / 4));
+              const tokensPerSec = Number(((estTokens / durationMs) * 1000).toFixed(1));
+
+              setConversations((prev) =>
+                prev.map((conv) =>
+                  conv.id !== convId
+                    ? conv
+                    : {
+                        ...conv,
+                        updatedAt: Date.now(),
+                        messages: conv.messages.map((m) =>
+                          m.id === assistantMessageId
+                            ? {
+                                ...m,
+                                content: accContent,
+                                thought: accThought || undefined,
+                                usage: accUsage,
+                                isStreaming: false,
+                                isDemo,
+                                metrics: { ttftMs, durationMs, tokensPerSec },
+                              }
+                            : m
+                        ),
+                      }
+                )
+              );
+
+              if (settings.autoOpenArtifacts && accContent) {
+                const detected = extractArtifactsFromMarkdown(assistantMessageId, accContent);
+                const previewable = detected.find(
+                  (a) => a.kind === 'html' || a.kind === 'svg' || a.kind === 'mermaid'
+                );
+                if (previewable) setActiveArtifact(previewable);
+              }
+            },
+            onError: (errorMessage) => {
+              if (flushTimerRef.current !== null) {
+                window.clearTimeout(flushTimerRef.current);
+                flushTimerRef.current = null;
+              }
+              activeStreamRef.current = null;
+              setActiveStream(null);
+              toast.error(errorMessage);
+              setConversations((prev) =>
+                prev.map((conv) =>
+                  conv.id !== convId
+                    ? conv
+                    : {
+                        ...conv,
+                        messages: conv.messages.map((m) =>
+                          m.id === assistantMessageId
+                            ? {
+                                ...m,
+                                content: accContent,
+                                thought: accThought || undefined,
+                                isStreaming: false,
+                                error: errorMessage,
+                              }
+                            : m
+                        ),
+                      }
+                )
+              );
+            },
+          }
+        );
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return;
+        const message = err instanceof Error ? err.message : 'Gagal terhubung ke server SSE.';
+        toast.error(message);
+        activeStreamRef.current = null;
+        setActiveStream(null);
+        setConversations((prev) =>
+          prev.map((conv) =>
+            conv.id !== convId
+              ? conv
+              : {
+                  ...conv,
+                  messages: conv.messages.map((m) =>
+                    m.id === assistantMessageId
+                      ? { ...m, content: accContent, isStreaming: false, error: message }
+                      : m
+                  ),
+                }
+          )
+        );
+      } finally {
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+          if (activeStreamRef.current?.msgId === assistantMessageId) {
+            activeStreamRef.current = null;
+            setActiveStream(null);
+            setConversations((prev) =>
+              prev.map((conv) =>
+                conv.id !== convId
+                  ? conv
+                  : {
+                      ...conv,
+                      messages: conv.messages.map((m) =>
+                        m.id === assistantMessageId && m.isStreaming
+                          ? {
+                              ...m,
+                              content: accContent,
+                              thought: accThought || undefined,
+                              isStreaming: false,
+                            }
+                          : m
+                      ),
+                    }
+              )
+            );
+          }
+        }
+      }
+    },
+    [settings]
+  );
+
+  const handleSend = useCallback(
+    (text: string, attachments: Attachment[]) => {
+      if (isStreamingActive) return;
+
+      const userMessage: ChatMessageType = {
+        id: generateId(),
+        role: 'user',
+        content: text,
+        attachments: attachments.length > 0 ? attachments : undefined,
+        createdAt: Date.now(),
+      };
+
+      const assistantMessageId = generateId();
+      const assistantPlaceholder: ChatMessageType = {
+        id: assistantMessageId,
+        role: 'assistant',
+        content: '',
+        createdAt: Date.now(),
+        model: currentModelId,
+        isStreaming: true,
+      };
+
+      if (!activeConversation) {
+        const newId = generateId();
+        const title = (text || attachments[0]?.name || 'New Chat').slice(0, 50);
+        const newConv: Conversation = {
+          id: newId,
+          title,
+          model: currentModelId,
+          messages: [userMessage, assistantPlaceholder],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+
+        setConversations((prev) => [newConv, ...prev]);
+        setActiveId(newId);
+        void runStreamForConversation(newId, currentModelId, [userMessage], assistantMessageId);
+      } else {
+        const historyForModel = [...activeConversation.messages, userMessage];
+        setConversations((prev) =>
+          prev.map((conv) =>
+            conv.id !== activeConversation.id
+              ? conv
+              : {
+                  ...conv,
+                  updatedAt: Date.now(),
+                  messages: [...conv.messages, userMessage, assistantPlaceholder],
+                }
+          )
+        );
+        void runStreamForConversation(
+          activeConversation.id,
+          currentModelId,
+          historyForModel,
+          assistantMessageId
+        );
+      }
+    },
+    [activeConversation, currentModelId, isStreamingActive, runStreamForConversation]
+  );
+
+  const handleRegenerate = useCallback(() => {
+    if (!activeConversation || isStreamingActive) return;
+    const msgs = activeConversation.messages;
+    if (msgs.length === 0) return;
+
+    const lastMsg = msgs[msgs.length - 1];
+    const baseMessages = lastMsg.role === 'assistant' ? msgs.slice(0, -1) : msgs;
+    if (baseMessages.length === 0) return;
+
+    const assistantMessageId = generateId();
+    const assistantPlaceholder: ChatMessageType = {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      createdAt: Date.now(),
+      model: activeConversation.model,
+      isStreaming: true,
+    };
+
+    setConversations((prev) =>
+      prev.map((conv) =>
+        conv.id !== activeConversation.id
+          ? conv
+          : {
+              ...conv,
+              updatedAt: Date.now(),
+              messages: [...baseMessages, assistantPlaceholder],
+            }
+      )
+    );
+
+    void runStreamForConversation(
+      activeConversation.id,
+      activeConversation.model,
+      baseMessages,
+      assistantMessageId
+    );
+  }, [activeConversation, isStreamingActive, runStreamForConversation]);
+
+  const handleEditUserMessage = useCallback(
+    (messageId: string, newContent: string) => {
+      if (!activeConversation || isStreamingActive) return;
+      const idx = activeConversation.messages.findIndex((m) => m.id === messageId);
+      if (idx === -1) return;
+
+      const updatedMsg: ChatMessageType = {
+        ...activeConversation.messages[idx],
+        content: newContent,
+      };
+      const baseHistory = [...activeConversation.messages.slice(0, idx), updatedMsg];
+
+      const assistantMessageId = generateId();
+      const assistantPlaceholder: ChatMessageType = {
+        id: assistantMessageId,
+        role: 'assistant',
+        content: '',
+        createdAt: Date.now(),
+        model: activeConversation.model,
+        isStreaming: true,
+      };
+
+      setConversations((prev) =>
+        prev.map((conv) =>
+          conv.id !== activeConversation.id
+            ? conv
+            : {
+                ...conv,
+                updatedAt: Date.now(),
+                messages: [...baseHistory, assistantPlaceholder],
+              }
+        )
+      );
+
+      void runStreamForConversation(
+        activeConversation.id,
+        activeConversation.model,
+        baseHistory,
+        assistantMessageId
+      );
+    },
+    [activeConversation, isStreamingActive, runStreamForConversation]
+  );
+
+  const handleForkFromMessage = useCallback(
+    (messageId: string) => {
+      if (!activeConversation) return;
+      const idx = activeConversation.messages.findIndex((m) => m.id === messageId);
+      if (idx === -1) return;
+
+      const forkedId = generateId();
+      const forkedConv: Conversation = {
+        id: forkedId,
+        title: `Branch: ${activeConversation.title}`.slice(0, 52),
+        model: activeConversation.model,
+        messages: activeConversation.messages.slice(0, idx + 1).map((m) => ({
+          ...m,
+          id: generateId(),
+        })),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      setConversations((prev) => [forkedConv, ...prev]);
+      setActiveId(forkedId);
+      toast.success('Cabang chat baru dibuat');
+    },
+    [activeConversation]
+  );
+
+  const handleToggleStar = useCallback((convId: string, msgId: string) => {
+    setConversations((prev) =>
+      prev.map((conv) =>
+        conv.id !== convId
+          ? conv
+          : {
+              ...conv,
+              messages: conv.messages.map((m) =>
+                m.id === msgId ? { ...m, starred: !m.starred } : m
+              ),
+            }
+      )
+    );
+  }, []);
+
+  const handleSelectModel = (modelId: string) => {
+    setSelectedModel(modelId);
+    if (activeConversation) {
+      setConversations((prev) =>
+        prev.map((c) => (c.id === activeConversation.id ? { ...c, model: modelId } : c))
+      );
+    }
+    toast.success(`Model aktif: ${modelId}`);
+  };
+
+  const handleExportConversation = useCallback(
+    (format: 'md' | 'json') => {
+      if (!activeConversation) {
+        toast.error('Tidak ada percakapan aktif untuk di-export');
+        return;
+      }
+      let content = '';
+      let mime = 'text/markdown;charset=utf-8';
+      if (format === 'json') {
+        content = JSON.stringify(activeConversation, null, 2);
+        mime = 'application/json;charset=utf-8';
+      } else {
+        content = [
+          `# ${activeConversation.title}`,
+          `Model: \`${activeConversation.model}\`\n`,
+          ...activeConversation.messages.map(
+            (m) => `### ${m.role === 'user' ? 'User' : 'Assistant'}\n\n${m.content}\n`
+          ),
+        ].join('\n');
+      }
+      const blob = new Blob([content], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `chat-${activeConversation.id.slice(0, 8)}.${format}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported .${format}`);
+    },
+    [activeConversation]
+  );
+
+  const handleDeleteConversation = useCallback(
+    (id: string) => {
+      if (activeStreamRef.current?.convId === id) handleStopStream();
+      setConversations((prev) => {
+        const next = prev.filter((c) => c.id !== id);
+        if (activeId === id) setActiveId(next[0]?.id ?? null);
+        return next;
+      });
+      toast.success('Percakapan dihapus');
+    },
+    [activeId, handleStopStream]
+  );
+
+  const handleRenameConversation = useCallback((id: string, title: string) => {
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title } : c)));
+  }, []);
+
+  const handleTogglePinConversation = useCallback((id: string) => {
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, pinned: !c.pinned } : c))
+    );
+  }, []);
+
+  const lastAssistantId = useMemo(() => {
+    const msgs = activeConversation?.messages ?? [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant') return msgs[i].id;
+    }
+    return null;
+  }, [activeConversation]);
+
+  const filteredStarterCards = useMemo(() => {
+    if (welcomeTab === 'All') return STARTER_CARDS;
+    return STARTER_CARDS.filter((c) => c.category === welcomeTab);
+  }, [welcomeTab]);
+
+  return (
+    <MotionConfig reducedMotion="user">
+      <TooltipProvider>
+        <Toaster
+          richColors
+          position="bottom-right"
+          theme={settings.skin === 'paper' ? 'light' : 'dark'}
+        />
+
+        <div className="flex h-[100dvh] w-full max-w-full overflow-hidden bg-background text-foreground">
+          {!zenMode && (
+            <Sidebar
+              open={sidebarOpen}
+              mobileOpen={mobileSidebarOpen}
+              onToggleDesktop={() => setSidebarOpen((prev) => !prev)}
+              onCloseMobile={() => setMobileSidebarOpen(false)}
+              conversations={conversations}
+              activeId={activeId}
+              onNewChat={handleNewChat}
+              onSelectConversation={(id) => {
+                if (isStreamingActive) handleStopStream();
+                setActiveId(id);
+                setActiveArtifact(null);
+                setArtifactFullscreen(false);
+              }}
+              onRenameConversation={handleRenameConversation}
+              onTogglePinConversation={handleTogglePinConversation}
+              onDeleteConversation={handleDeleteConversation}
+              onOpenSettings={() => setSettingsDialogOpen(true)}
+              onOpenCommandPalette={() => setCommandOpen(true)}
+              onOpenBookmarks={() => setBookmarksOpen(true)}
+              onCycleSkin={handleCycleSkin}
+              showInstallButton={!isStandalone}
+              onInstallApp={() => void handleInstallAction()}
+            />
+          )}
+
+          <div
+            className={cn(
+              'flex min-w-0 max-w-full flex-1 flex-col overflow-hidden',
+              activeArtifact && artifactFullscreen && 'hidden lg:hidden'
+            )}
+          >
+            <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-3 sm:px-4">
+              <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
+                {!zenMode && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setMobileSidebarOpen(true)}
+                    className="shrink-0 md:hidden"
+                    aria-label="Menu"
+                  >
+                    <Menu className="h-5 w-5" />
+                  </Button>
+                )}
+
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setModelDialogOpen(true)}
+                  className="h-9 min-w-0 gap-1.5 rounded-xl border border-border/50 bg-card/60 px-2.5 font-medium shadow-sm sm:gap-2 sm:px-3"
+                >
+                  <Sparkles className="h-4 w-4 shrink-0 text-primary" />
+                  <span className="truncate text-xs sm:text-sm">{currentModelInfo.name}</span>
+                  {currentModelInfo.isNew && (
+                    <Badge
+                      variant="secondary"
+                      className="hidden bg-emerald-500/15 text-[10px] text-emerald-500 sm:inline-flex"
+                    >
+                      New
+                    </Badge>
+                  )}
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                </Button>
+
+                {isStreamingActive && activeStream.tps > 0 && (
+                  <Badge variant="outline" className="hidden font-mono text-[10px] sm:inline-flex">
+                    {activeStream.tps} tok/s
+                  </Badge>
+                )}
+              </div>
+
+              <div className="flex shrink-0 items-center gap-1">
+                {!isOnline && (
+                  <Badge variant="destructive" className="gap-1 px-2 py-0.5 text-[10px]">
+                    <WifiOff className="h-3 w-3" />
+                    <span className="hidden sm:inline">Offline</span>
+                  </Badge>
+                )}
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="hidden items-center gap-2 rounded-full border bg-card/60 px-2.5 py-1 text-[11px] text-muted-foreground lg:flex">
+                      <span className="font-mono">
+                        {(contextTokenEstimate / 1000).toFixed(1)}k ctx
+                      </span>
+                      <div className="h-1.5 w-12 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full bg-primary transition-all"
+                          style={{ width: `${contextUsagePct}%` }}
+                        />
+                      </div>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Estimasi context (~{contextTokenEstimate.toLocaleString()} /{' '}
+                    {currentModelInfo.contextLimit.toLocaleString()} tokens)
+                  </TooltipContent>
+                </Tooltip>
+
+                {conversationArtifacts.length > 0 && !activeArtifact && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setActiveArtifact(conversationArtifacts[conversationArtifacts.length - 1])
+                    }
+                    className="h-8 gap-1 rounded-full px-2.5 text-xs"
+                  >
+                    <Eye className="h-3.5 w-3.5 text-primary" />
+                    <span className="hidden sm:inline">
+                      Canvas ({conversationArtifacts.length})
+                    </span>
+                  </Button>
+                )}
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => setSettingsDialogOpen(true)}
+                      className="inline-flex items-center gap-1.5 rounded-full border bg-card/70 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:px-2.5"
+                    >
+                      <Radio
+                        className={
+                          settings.demoMode
+                            ? 'h-3.5 w-3.5 text-amber-500'
+                            : 'h-3.5 w-3.5 text-emerald-500'
+                        }
+                      />
+                      <span className="hidden sm:inline">
+                        {settings.demoMode ? 'Demo SSE' : 'Live SSE'}
+                      </span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {settings.demoMode
+                      ? 'Mode simulasi SSE lokal aktif'
+                      : 'Streaming SSE ke /api/chat'}
+                  </TooltipContent>
+                </Tooltip>
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={zenMode ? 'secondary' : 'ghost'}
+                      size="icon"
+                      onClick={() => setZenMode((z) => !z)}
+                      className="hidden sm:inline-flex"
+                    >
+                      {zenMode ? (
+                        <Minimize2 className="h-4 w-4" />
+                      ) : (
+                        <Maximize2 className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Zen Focus Mode (Ctrl+\)</TooltipContent>
+                </Tooltip>
+
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button type="button" variant="ghost" size="icon" aria-label="Menu studio">
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-52">
+                    {!isStandalone && (
+                      <>
+                        <DropdownMenuItem onClick={() => void handleInstallAction()}>
+                          <MonitorDown className="h-3.5 w-3.5 text-primary" />
+                          Install Adam Studio App
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                      </>
+                    )}
+                    <DropdownMenuItem onClick={handleCycleSkin}>
+                      <Palette className="h-3.5 w-3.5" />
+                      Skin: {settings.skin}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setCommandOpen(true)}>
+                      <Download className="h-3.5 w-3.5" />
+                      Command Palette (Ctrl+K)
+                    </DropdownMenuItem>
+                    {activeConversation && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => handleExportConversation('md')}>
+                          <FileText className="h-3.5 w-3.5" />
+                          Export Markdown (.md)
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleExportConversation('json')}>
+                          <FileJson className="h-3.5 w-3.5" />
+                          Export JSON (.json)
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => setSettingsDialogOpen(true)}>
+                      <Settings className="h-3.5 w-3.5" />
+                      Settings & API Key
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </header>
+
+            <div className="relative min-h-0 flex-1 overflow-hidden">
+              <StudioScroll
+                ref={chatScrollRef}
+                onScroll={handleViewportScroll}
+                className="h-full w-full"
+                autoHide="scroll"
+              >
+                {!activeConversation || activeConversation.messages.length === 0 ? (
+                  <div className="relative mx-auto flex min-h-[calc(100dvh-13rem)] w-full max-w-3xl flex-col items-center justify-center px-4 py-8 text-center">
+                    <div className="pointer-events-none absolute inset-0 -z-10 bg-dot-matrix opacity-35 [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]" />
+                    <div className="pointer-events-none absolute top-10 -z-10 h-56 w-56 rounded-full bg-primary/10 blur-3xl" />
+
+                    <motion.div
+                      initial={{ scale: 0.92, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      transition={{ duration: 0.24 }}
+                      className="mb-4"
+                    >
+                      <BrandLogo size="lg" className="shadow-xl" />
+                    </motion.div>
+
+                    <div className="mb-2 inline-flex flex-wrap items-center justify-center gap-2 rounded-full border bg-card/90 px-3.5 py-1 text-xs text-muted-foreground shadow-sm">
+                      <Cpu className="h-3.5 w-3.5 text-primary" />
+                      <span className="font-mono font-semibold text-foreground">
+                        {currentModelId}
+                      </span>
+                      <span className="hidden sm:inline">•</span>
+                      <span className="hidden sm:inline">
+                        ${currentModelInfo.inputPricePerMillion.toFixed(2)} / $
+                        {currentModelInfo.outputPricePerMillion.toFixed(2)} per 1M
+                      </span>
+                      {isStandalone && (
+                        <>
+                          <span>•</span>
+                          <span className="text-emerald-400">App Mode</span>
+                        </>
+                      )}
+                    </div>
+
+                    <h1 className="mt-2 text-2xl font-bold tracking-tight text-foreground sm:text-4xl">
+                      Adam Studio Workspace
+                    </h1>
+                    <p className="mt-2.5 max-w-lg text-sm leading-relaxed text-muted-foreground">
+                      Platform AI real-time SSE tanpa lag, Pro Code Blocks, Live CodeMirror
+                      Artifact Studio, diagram Mermaid, dan rumus KaTeX.
+                    </p>
+
+                    {!settings.apiKey &&
+                      !serverHealth?.hasServerApiKey &&
+                      !settings.demoMode && (
+                        <div className="mt-5 flex flex-wrap items-center justify-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-400">
+                          <span>API Key belum aktif.</span>
+                          <button
+                            type="button"
+                            onClick={() => setSettingsDialogOpen(true)}
+                            className="font-semibold underline underline-offset-4 hover:text-amber-300"
+                          >
+                            Isi API Key atau aktifkan Demo SSE Showcase
+                          </button>
+                        </div>
+                      )}
+
+                    <div className="mt-6 inline-flex flex-wrap items-center justify-center gap-1 rounded-full border bg-card/80 p-1">
+                      {WELCOME_TABS.map((tab) => (
+                        <button
+                          key={tab}
+                          type="button"
+                          onClick={() => setWelcomeTab(tab)}
+                          className={cn(
+                            'relative rounded-full px-3 py-1 text-xs font-medium transition-colors sm:px-3.5',
+                            welcomeTab === tab
+                              ? 'text-primary-foreground'
+                              : 'text-muted-foreground hover:text-foreground'
+                          )}
+                        >
+                          {welcomeTab === tab && (
+                            <motion.span
+                              layoutId="welcome-tab-pill"
+                              transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                              className="absolute inset-0 -z-10 rounded-full bg-primary shadow-sm"
+                            />
+                          )}
+                          {tab}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="mt-5 grid w-full grid-cols-1 gap-3 text-left sm:grid-cols-2">
+                      {filteredStarterCards.map((item) => {
+                        const Icon = item.icon;
+                        return (
+                          <button
+                            key={item.title}
+                            type="button"
+                            onClick={() => handleSend(item.prompt, [])}
+                            className="group rounded-2xl border bg-card/80 p-4 transition-all hover:-translate-y-0.5 hover:border-primary/50 hover:bg-accent/40 hover:shadow-lg"
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
+                                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/15 text-primary">
+                                  <Icon className="h-3.5 w-3.5" />
+                                </div>
+                                <span>{item.title}</span>
+                              </div>
+                              <Badge variant="outline" className="text-[10px] font-normal">
+                                {item.category}
+                              </Badge>
+                            </div>
+                            <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+                              {item.subtitle}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className={cn(
+                      'mx-auto w-full min-w-0 max-w-3xl px-3 py-5 sm:px-5 sm:py-6',
+                      settings.density === 'compact' ? 'space-y-4' : 'space-y-6'
+                    )}
+                  >
+                    {activeConversation.messages.map((msg) => {
+                      const effectiveMsg =
+                        activeStream &&
+                        activeStream.convId === activeConversation.id &&
+                        activeStream.msgId === msg.id
+                          ? {
+                              ...msg,
+                              content: activeStream.content,
+                              thought: activeStream.thought || msg.thought,
+                              isStreaming: true,
+                            }
+                          : msg;
+
+                      return (
+                        <ChatMessage
+                          key={msg.id}
+                          message={effectiveMsg}
+                          compact={settings.density === 'compact'}
+                          isLastAssistant={msg.id === lastAssistantId}
+                          onRegenerate={msg.id === lastAssistantId ? handleRegenerate : undefined}
+                          onEditUserMessage={
+                            msg.role === 'user' && !isStreamingActive
+                              ? handleEditUserMessage
+                              : undefined
+                          }
+                          onForkFromMessage={
+                            msg.role === 'assistant' && !isStreamingActive
+                              ? handleForkFromMessage
+                              : undefined
+                          }
+                          onToggleStar={(msgId) =>
+                            handleToggleStar(activeConversation.id, msgId)
+                          }
+                          onOpenArtifact={setActiveArtifact}
+                          onPreviewImage={setLightboxUrl}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+              </StudioScroll>
+
+              {showScrollBottom && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="secondary"
+                  onClick={() => {
+                    autoScrollEnabledRef.current = true;
+                    scrollToBottom(true);
+                  }}
+                  className="absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded-full border shadow-xl"
+                  aria-label="Scroll ke bawah"
+                >
+                  <ArrowDown className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+
+            <ChatComposer
+              model={currentModelId}
+              isStreaming={isStreamingActive}
+              settings={settings}
+              externalDraft={externalDraft}
+              onClearExternalDraft={() => setExternalDraft(null)}
+              onUpdateSettings={setSettings}
+              onSend={handleSend}
+              onStop={handleStopStream}
+              onPreviewImage={setLightboxUrl}
+            />
+          </div>
+
+          <AnimatePresence>
+            {activeArtifact && (
+              <>
+                {!artifactFullscreen && (
+                  <div
+                    onPointerDown={startResizingPane}
+                    className="hidden w-1.5 shrink-0 cursor-col-resize items-center justify-center border-l bg-border/40 transition-colors hover:bg-primary/60 lg:flex"
+                    title="Tarik untuk mengubah lebar Canvas"
+                  />
+                )}
+                <motion.aside
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 20 }}
+                  transition={{ duration: 0.16 }}
+                  style={
+                    {
+                      '--artifact-w': artifactFullscreen ? '100%' : `${artifactWidthPct}%`,
+                    } as CSSProperties
+                  }
+                  className={cn(
+                    'fixed inset-0 z-40 border-l',
+                    !artifactFullscreen &&
+                      'lg:static lg:w-[var(--artifact-w)] lg:min-w-[360px] lg:max-w-[68%]',
+                    artifactFullscreen && 'lg:flex-1'
+                  )}
+                >
+                  <ArtifactPanel
+                    artifact={activeArtifact}
+                    allArtifacts={conversationArtifacts}
+                    isResizing={isResizingPane}
+                    isFullscreen={artifactFullscreen}
+                    onToggleFullscreen={() => setArtifactFullscreen((f) => !f)}
+                    onSelectArtifact={setActiveArtifact}
+                    onClose={() => {
+                      setActiveArtifact(null);
+                      setArtifactFullscreen(false);
+                    }}
+                  />
+                </motion.aside>
+              </>
+            )}
+          </AnimatePresence>
+
+          <ModelSelectorDialog
+            open={modelDialogOpen}
+            onOpenChange={setModelDialogOpen}
+            selectedModel={currentModelId}
+            onSelectModel={handleSelectModel}
+          />
+
+          <SettingsDialog
+            open={settingsDialogOpen}
+            onOpenChange={setSettingsDialogOpen}
+            settings={settings}
+            serverHealth={serverHealth}
+            onSave={setSettings}
+          />
+
+          <CommandPalette
+            open={commandOpen}
+            onOpenChange={setCommandOpen}
+            conversations={conversations}
+            activeSkin={settings.skin}
+            onNewChat={handleNewChat}
+            onSelectConversation={(id) => {
+              if (isStreamingActive) handleStopStream();
+              setActiveId(id);
+              setActiveArtifact(null);
+              setArtifactFullscreen(false);
+            }}
+            onOpenModelSelector={() => setModelDialogOpen(true)}
+            onOpenSettings={() => setSettingsDialogOpen(true)}
+            onOpenBookmarks={() => setBookmarksOpen(true)}
+            onToggleZenMode={() => setZenMode((z) => !z)}
+            onCycleSkin={handleCycleSkin}
+            onExportMarkdown={() => handleExportConversation('md')}
+            onInsertTemplate={(tpl) => setExternalDraft(tpl)}
+            showInstallOption={!isStandalone}
+            onInstallApp={() => void handleInstallAction()}
+          />
+
+          <BookmarksDialog
+            open={bookmarksOpen}
+            onOpenChange={setBookmarksOpen}
+            conversations={conversations}
+            onJumpToConversation={(convId) => {
+              if (isStreamingActive) handleStopStream();
+              setActiveId(convId);
+            }}
+            onToggleStar={handleToggleStar}
+          />
+
+          <InstallAppDialog
+            open={installDialogOpen}
+            onOpenChange={setInstallDialogOpen}
+            isIos={isIos}
+            canNativeInstall={canNativeInstall}
+            onNativeInstall={() => {
+              void handleInstallAction().then(() => setInstallDialogOpen(false));
+            }}
+          />
+
+          <Dialog open={Boolean(lightboxUrl)} onOpenChange={() => setLightboxUrl(null)}>
+            <DialogContent className="max-w-4xl border-0 bg-transparent p-2 shadow-none">
+              <DialogHeader className="sr-only">
+                <DialogTitle>Image Preview</DialogTitle>
+              </DialogHeader>
+              {lightboxUrl && (
+                <img
+                  src={lightboxUrl}
+                  alt="Attachment Preview"
+                  className="max-h-[85dvh] w-full rounded-2xl object-contain shadow-2xl"
+                />
+              )}
+            </DialogContent>
+          </Dialog>
+        </div>
+      </TooltipProvider>
+    </MotionConfig>
+  );
+}
+<<<END_FILE>>>

@@ -1,0 +1,197 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root,
+  html[data-skin='obsidian'] {
+    --background: 240 10% 4.5%;
+    --foreground: 0 0% 96%;
+    --card: 240 8% 7.5%;
+    --card-foreground: 0 0% 96%;
+    --popover: 240 8% 9%;
+    --popover-foreground: 0 0% 96%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 240 6% 12%;
+    --secondary-foreground: 0 0% 95%;
+    --muted: 240 6% 12%;
+    --muted-foreground: 240 5% 62%;
+    --accent: 240 6% 15%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 68% 52%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 6% 15%;
+    --input: 240 6% 16%;
+    --ring: 217 91% 60%;
+    --radius: 0.85rem;
+  }
+
+  html[data-skin='claude'] {
+    --background: 28 12% 8.5%;
+    --foreground: 36 22% 93%;
+    --card: 28 10% 11.5%;
+    --card-foreground: 36 22% 93%;
+    --popover: 28 10% 13%;
+    --popover-foreground: 36 22% 93%;
+    --primary: 17 65% 58%;
+    --primary-foreground: 28 20% 8%;
+    --secondary: 28 9% 16%;
+    --secondary-foreground: 36 20% 92%;
+    --muted: 28 9% 15%;
+    --muted-foreground: 32 10% 62%;
+    --accent: 28 10% 19%;
+    --accent-foreground: 36 25% 96%;
+    --destructive: 0 68% 52%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 28 9% 19%;
+    --input: 28 9% 21%;
+    --ring: 17 65% 58%;
+    --radius: 0.85rem;
+  }
+
+  html[data-skin='aurora'] {
+    --background: 226 35% 6%;
+    --foreground: 213 31% 95%;
+    --card: 226 30% 9%;
+    --card-foreground: 213 31% 95%;
+    --popover: 226 30% 11%;
+    --popover-foreground: 213 31% 95%;
+    --primary: 189 94% 52%;
+    --primary-foreground: 226 45% 8%;
+    --secondary: 225 24% 14%;
+    --secondary-foreground: 213 31% 95%;
+    --muted: 225 24% 13%;
+    --muted-foreground: 220 15% 64%;
+    --accent: 225 24% 17%;
+    --accent-foreground: 213 31% 98%;
+    --destructive: 0 72% 54%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 224 24% 17%;
+    --input: 224 24% 19%;
+    --ring: 189 94% 52%;
+    --radius: 0.85rem;
+  }
+
+  html[data-skin='paper'] {
+    --background: 36 33% 97.5%;
+    --foreground: 240 12% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 12% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 12% 10%;
+    --primary: 221 83% 51%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 36 18% 93%;
+    --secondary-foreground: 240 10% 14%;
+    --muted: 36 15% 93%;
+    --muted-foreground: 240 6% 45%;
+    --accent: 36 18% 90%;
+    --accent-foreground: 240 12% 10%;
+    --destructive: 0 84% 58%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 36 14% 87%;
+    --input: 36 14% 86%;
+    --ring: 221 83% 51%;
+    --radius: 0.85rem;
+  }
+
+  * {
+    @apply border-border;
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
+  }
+
+  html,
+  body,
+  #root {
+    max-width: 100%;
+    overflow-x: hidden;
+    overscroll-behavior-y: none;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-tap-highlight-color: transparent;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.28);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--primary) / 0.72);
+  }
+}
+
+.os-theme-hydrogen {
+  --os-size: 8px;
+  --os-padding-perpendicular: 2px;
+  --os-padding-axis: 3px;
+  --os-track-border-radius: 9999px;
+  --os-track-bg: transparent;
+  --os-track-bg-hover: hsl(var(--muted) / 0.25);
+  --os-track-bg-active: hsl(var(--muted) / 0.4);
+  --os-handle-border-radius: 9999px;
+  --os-handle-bg: hsl(var(--muted-foreground) / 0.34);
+  --os-handle-bg-hover: hsl(var(--primary) / 0.8);
+  --os-handle-bg-active: hsl(var(--primary));
+  --os-handle-min-size: 32px;
+}
+
+.os-theme-hydrogen > .os-scrollbar-horizontal {
+  height: 8px;
+}
+.os-theme-hydrogen > .os-scrollbar-vertical {
+  width: 8px;
+}
+
+.cm-editor {
+  height: 100% !important;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace !important;
+}
+.cm-scroller {
+  overscroll-behavior: contain;
+}
+.cm-scroller::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+.cm-scroller::-webkit-scrollbar-thumb {
+  background: rgba(161, 161, 170, 0.28);
+  border-radius: 9999px;
+}
+.cm-scroller::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--primary) / 0.8);
+}
+
+.hljs {
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.bg-dot-matrix {
+  background-image: radial-gradient(hsl(var(--border) / 0.75) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.katex-display {
+  @apply my-3 max-w-full overflow-x-auto rounded-xl border bg-muted/30 px-4 py-3;
+}
