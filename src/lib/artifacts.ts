@@ -1,6 +1,7 @@
 import type { ArtifactItem } from '@/types/chat';
 
 const PREVIEWABLE_LANGS = new Set(['html', 'htm', 'svg', 'markdown', 'md', 'mermaid']);
+const artifactCache = new Map<string, ArtifactItem[]>();
 
 export function detectArtifactKind(language: string): ArtifactItem['kind'] {
   const norm = language.toLowerCase();
@@ -18,6 +19,10 @@ export function isArtifactCandidate(language: string, code: string): boolean {
 }
 
 export function extractArtifactsFromMarkdown(messageId: string, markdown: string): ArtifactItem[] {
+  const cacheKey = `${messageId}:${markdown.length}`;
+  const cached = artifactCache.get(cacheKey);
+  if (cached) return cached;
+
   const regex = /```([\w-]*)\n([\s\S]*?)```/g;
   const items: ArtifactItem[] = [];
   let match: RegExpExecArray | null;
@@ -47,6 +52,11 @@ export function extractArtifactsFromMarkdown(messageId: string, markdown: string
     });
   }
 
+  if (artifactCache.size > 120) {
+    const firstKey = artifactCache.keys().next().value;
+    if (firstKey !== undefined) artifactCache.delete(firstKey);
+  }
+  artifactCache.set(cacheKey, items);
   return items;
 }
 
@@ -104,7 +114,6 @@ export function buildPreviewSrcDoc(artifact: ArtifactItem, previewBg: 'dark' | '
     } catch (_) {}
   });
 
-  // --- Visual Element Annotator / Inspector Mode ---
   var inspectEnabled = false;
   var boxEl = null;
   var labelEl = null;

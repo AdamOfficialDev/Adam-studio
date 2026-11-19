@@ -12,6 +12,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowUp,
   Brain,
+  Check,
   Crosshair,
   FileAudio,
   FileCode2,
@@ -19,7 +20,6 @@ import {
   FileVideo,
   Loader2,
   Mic,
-  MicOff,
   Paperclip,
   Slash,
   SlidersHorizontal,
@@ -38,6 +38,11 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { PERSONA_PRESETS, SLASH_PROMPTS } from '@/lib/personas';
 import {
+  WavAudioRecorder,
+  normalizeTechTranscript,
+  transcribeAudioWithAI,
+} from '@/lib/speech';
+import {
   estimateAttachmentTokensLocal,
   fetchExactAttachmentTokens,
   formatDuration,
@@ -46,12 +51,18 @@ import { estimateTokens, formatBytes, generateId } from '@/lib/utils';
 import type { AppSettings, Attachment, VisualTarget } from '@/types/chat';
 import { cn } from '@/lib/utils';
 
-interface SpeechRecognitionResultItem {
+interface SpeechRecognitionAlternativeLike {
   transcript: string;
 }
 
+interface SpeechRecognitionResultLike {
+  isFinal: boolean;
+  [index: number]: SpeechRecognitionAlternativeLike;
+}
+
 interface SpeechRecognitionEventLike {
-  results: ArrayLike<ArrayLike<SpeechRecognitionResultItem>>;
+  resultIndex: number;
+  results: ArrayLike<SpeechRecognitionResultLike>;
 }
 
 interface SpeechRecognitionInstance {
@@ -71,6 +82,7 @@ interface ChatComposerProps {
   model: string;
   isStreaming: boolean;
   settings: AppSettings;
+  hasApiKeyConfigured: boolean;
   externalDraft?: string | null;
   visualTarget?: VisualTarget | null;
   onClearVisualTarget?: () => void;
@@ -147,6 +159,7 @@ export function ChatComposer({
   model,
   isStreaming,
   settings,
+  hasApiKeyConfigured,
   externalDraft,
   visualTarget,
   onClearVisualTarget,
@@ -159,13 +172,19 @@ export function ChatComposer({
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
-  const [isListening, setIsListening] = useState(false);
+
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [recordSeconds, setRecordSeconds] = useState(0);
+  const [interimText, setInterimText] = useState('');
   const [slashIndex, setSlashIndex] = useState(0);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const inputScrollRef = useRef<StudioScrollHandle | null>(null);
+
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const wavRecorderRef = useRef<WavAudioRecorder | null>(null);
 
   const adjustHeight = () => {
     const el = textareaRef.current;
@@ -196,7 +215,23 @@ export function ChatComposer({
     }
   }, [visualTarget]);
 
-  const speechSupported = useMemo(() => {
+  useEffect(() => {
+    if (!isRecording) {
+      setRecordSeconds(0);
+      return;
+    }
+    const timer = window.setInterval(() => setRecordSeconds((s) => s + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [isRecording]);
+
+  useEffect(() => {
+    return () => {
+      recognitionRef.current?.stop();
+      wavRecorderRef.current?.cancel();
+    };
+  }, []);
+
+  const browserSpeechSupported = useMemo(() => {
     if (typeof window === 'undefined') return false;
     const w = window as unknown as {
       SpeechRecognition?: SpeechRecognitionCtor;
@@ -204,6 +239,16 @@ export function ChatComposer({
     };
     return Boolean(w.SpeechRecognition || w.webkitSpeechRecognition);
   }, []);
+
+  const aiAudioSupported =
+    typeof navigator !== 'undefined' &&
+    Boolean(navigator.mediaDevices?.getUserMedia) &&
+    typeof AudioContext !== 'undefined';
+
+  const useAiStt =
+    settings.sttMode === 'ai' && hasApiKeyConfigured && !settings.demoMode && aiAudioSupported;
+
+  const micAvailable = useAiStt || browserSpeechSupported;
 
   const slashSuggestions = useMemo(() => {
     if (!input.startsWith('/') || input.includes('\n')) return [];
@@ -219,7 +264,6 @@ export function ChatComposer({
 
   const verifyExactTokensAsync = async (item: Attachment) => {
     if (settings.demoMode) return;
-    // Batasi ukuran payload agar aman di Vercel /api/count-tokens (<3.2MB raw)
     if (item.size > 3_200_000 && item.kind !== 'text') return;
 
     setAttachments((prev) =>
@@ -381,14 +425,50 @@ export function ChatComposer({
     if (files.length > 0) await ingestFiles(files);
   };
 
-  const toggleVoiceInput = () => {
-    if (!speechSupported) return;
-    if (isListening) {
-      recognitionRef.current?.stop();
-      setIsListening(false);
+  const startAiAudioRecording = async () => {
+    try {
+      const recorder = new WavAudioRecorder();
+      await recorder.start();
+      wavRecorderRef.current = recorder;
+      setIsRecording(true);
+    } catch {
+      toast.error('Izin mikrofon ditolak atau tidak tersedia');
+      setIsRecording(false);
+    }
+  };
+
+  const stopAndTranscribeAiAudio = async () => {
+    const recorder = wavRecorderRef.current;
+    wavRecorderRef.current = null;
+    setIsRecording(false);
+    if (!recorder) return;
+
+    const wavBlob = recorder.stop();
+    if (wavBlob.size < 1200) {
+      toast.error('Rekaman suara terlalu singkat.');
       return;
     }
 
+    setIsTranscribing(true);
+    const result = await transcribeAudioWithAI({
+      audioBlob: wavBlob,
+      model,
+      apiKey: settings.apiKey,
+    });
+    setIsTranscribing(false);
+
+    if (result.ok && result.text) {
+      setInput((prev) => (prev ? `${prev} ${result.text}` : result.text!));
+      setTimeout(() => {
+        textareaRef.current?.focus();
+        adjustHeight();
+      }, 20);
+    } else {
+      toast.error(result.error || 'Gagal mentranskrip suara');
+    }
+  };
+
+  const startBrowserSpeech = () => {
     const w = window as unknown as {
       SpeechRecognition?: SpeechRecognitionCtor;
       webkitSpeechRecognition?: SpeechRecognitionCtor;
@@ -398,25 +478,76 @@ export function ChatComposer({
 
     const recognition = new Ctor();
     recognition.lang = 'id-ID';
-    recognition.interimResults = false;
-    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.continuous = true;
 
     recognition.onresult = (event) => {
-      const transcript = Array.from(event.results)
-        .map((res) => res[0]?.transcript || '')
-        .join(' ')
-        .trim();
-      if (transcript) {
-        setInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
+      let finalChunk = '';
+      let interimChunk = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const res = event.results[i];
+        const transcript = res[0]?.transcript || '';
+        if (res.isFinal) {
+          finalChunk += transcript + ' ';
+        } else {
+          interimChunk += transcript;
+        }
+      }
+
+      setInterimText(interimChunk);
+
+      if (finalChunk.trim()) {
+        const cleaned = normalizeTechTranscript(finalChunk);
+        setInput((prev) => (prev ? `${prev} ${cleaned}` : cleaned));
         setTimeout(adjustHeight, 10);
       }
     };
-    recognition.onerror = () => setIsListening(false);
-    recognition.onend = () => setIsListening(false);
+
+    recognition.onerror = () => {
+      setIsRecording(false);
+      setInterimText('');
+    };
+    recognition.onend = () => {
+      setIsRecording(false);
+      setInterimText('');
+    };
 
     recognitionRef.current = recognition;
-    setIsListening(true);
+    setIsRecording(true);
     recognition.start();
+  };
+
+  const handleToggleMic = () => {
+    if (!micAvailable || isTranscribing) return;
+
+    if (isRecording) {
+      if (wavRecorderRef.current) {
+        void stopAndTranscribeAiAudio();
+      } else {
+        recognitionRef.current?.stop();
+        setIsRecording(false);
+        setInterimText('');
+      }
+      return;
+    }
+
+    if (useAiStt) {
+      void startAiAudioRecording();
+    } else {
+      startBrowserSpeech();
+    }
+  };
+
+  const handleCancelRecording = () => {
+    if (wavRecorderRef.current) {
+      wavRecorderRef.current.cancel();
+      wavRecorderRef.current = null;
+      setIsRecording(false);
+    } else {
+      recognitionRef.current?.stop();
+      setIsRecording(false);
+      setInterimText('');
+    }
   };
 
   const handleEnhancePrompt = () => {
@@ -446,7 +577,7 @@ export function ChatComposer({
   };
 
   const submit = () => {
-    if (isStreaming) return;
+    if (isStreaming || isRecording || isTranscribing) return;
     const trimmed = input.trim();
     if (!trimmed && attachments.length === 0) return;
 
@@ -554,6 +685,50 @@ export function ChatComposer({
         {isDragging && (
           <div className="mb-2 rounded-xl border border-dashed border-primary bg-primary/10 py-3 text-center text-xs font-medium text-primary">
             Lepaskan gambar, video, audio, PDF, atau file kode di sini
+          </div>
+        )}
+
+        {(isRecording || isTranscribing) && (
+          <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-primary/40 bg-primary/10 px-3 py-2 text-xs">
+            <div className="flex min-w-0 items-center gap-2">
+              {isTranscribing ? (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+              ) : (
+                <span className="h-2.5 w-2.5 shrink-0 animate-ping rounded-full bg-rose-500" />
+              )}
+              <span className="truncate font-medium text-foreground">
+                {isTranscribing
+                  ? 'Mentranskrip suara dengan Gemini AI...'
+                  : useAiStt
+                    ? `Merekam WAV (${formatDuration(recordSeconds)}) — sebutkan istilah teknik apa saja`
+                    : interimText
+                      ? `Live: "${interimText}"`
+                      : `Mendengarkan (${formatDuration(recordSeconds)})...`}
+              </span>
+            </div>
+
+            {isRecording && (
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleCancelRecording}
+                  className="h-6 px-2 text-[11px] text-muted-foreground hover:text-destructive"
+                >
+                  Batal
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleToggleMic}
+                  className="h-6 gap-1 rounded-lg px-2.5 text-[11px]"
+                >
+                  <Check className="h-3 w-3" />
+                  Selesai
+                </Button>
+              </div>
+            )}
           </div>
         )}
 
@@ -674,7 +849,11 @@ export function ChatComposer({
 
             <div className="flex items-center justify-between text-[11px] text-muted-foreground">
               <span>
-                {attachments.length} file terlampir ({attachments.every((a) => a.tokenExact) ? 'Gemini exact count' : 'estimasi / verifikasi'})
+                {attachments.length} file terlampir (
+                {attachments.every((a) => a.tokenExact)
+                  ? 'Gemini exact count'
+                  : 'estimasi / verifikasi'}
+                )
               </span>
               <span className="font-mono font-medium text-primary">
                 Total file: {filesTotalTokens.toLocaleString()} tok
@@ -747,7 +926,7 @@ export function ChatComposer({
                   ? 'border border-primary/35 bg-primary/10 text-primary hover:bg-primary/20'
                   : 'text-muted-foreground hover:text-foreground'
               )}
-              title="Tampilkan proses thinking AI (ala Google AI Studio)"
+              title="Tampilkan proses thinking AI"
             >
               <Brain className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Think</span>
@@ -782,20 +961,31 @@ export function ChatComposer({
               </Button>
             )}
 
-            {speechSupported && (
+            {micAvailable && (
               <Button
                 type="button"
-                variant={isListening ? 'destructive' : 'ghost'}
+                variant={isRecording ? 'destructive' : 'ghost'}
                 size="icon"
-                onClick={toggleVoiceInput}
-                disabled={isStreaming}
+                onClick={handleToggleMic}
+                disabled={isStreaming || isTranscribing}
                 className="h-8 w-8 rounded-xl"
-                title={isListening ? 'Hentikan Voice Input' : 'Voice Input'}
+                title={
+                  isRecording
+                    ? 'Selesai & Transkrip'
+                    : useAiStt
+                      ? 'AI Voice Input (WAV 16kHz + Gemini AI)'
+                      : 'Browser Voice Input'
+                }
               >
-                {isListening ? (
-                  <MicOff className="h-4 w-4 animate-pulse" />
+                {isTranscribing ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
                 ) : (
-                  <Mic className="h-4 w-4 text-muted-foreground" />
+                  <Mic
+                    className={cn(
+                      'h-4 w-4',
+                      isRecording ? 'animate-pulse text-white' : 'text-muted-foreground'
+                    )}
+                  />
                 )}
               </Button>
             )}
@@ -841,6 +1031,41 @@ export function ChatComposer({
                         {p.name}
                       </button>
                     ))}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="flex items-center gap-1.5 font-medium">
+                      <Mic className="h-3.5 w-3.5 text-primary" />
+                      Mode Speech-to-Text
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => onUpdateSettings({ ...settings, sttMode: 'ai' })}
+                      className={cn(
+                        'rounded-lg border px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                        settings.sttMode === 'ai'
+                          ? 'border-primary bg-primary/10 font-semibold text-primary'
+                          : 'hover:bg-accent'
+                      )}
+                    >
+                      Gemini AI (Akurat)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onUpdateSettings({ ...settings, sttMode: 'browser' })}
+                      className={cn(
+                        'rounded-lg border px-2.5 py-1.5 text-left text-[11px] transition-colors',
+                        settings.sttMode === 'browser'
+                          ? 'border-primary bg-primary/10 font-semibold text-primary'
+                          : 'hover:bg-accent'
+                      )}
+                    >
+                      Browser Live
+                    </button>
                   </div>
                 </div>
 
@@ -938,7 +1163,7 @@ export function ChatComposer({
                 type="button"
                 size="icon"
                 onClick={submit}
-                disabled={!input.trim() && attachments.length === 0}
+                disabled={(!input.trim() && attachments.length === 0) || isRecording || isTranscribing}
                 className="h-8 w-8 rounded-xl shadow-md"
                 aria-label="Kirim pesan"
               >

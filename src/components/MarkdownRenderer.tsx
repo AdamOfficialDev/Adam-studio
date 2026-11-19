@@ -17,53 +17,71 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { StudioScroll } from '@/components/ui/studio-scroll';
 import { MermaidBlock } from '@/components/MermaidBlock';
 import { detectArtifactKind, getExtensionForLanguage, isArtifactCandidate } from '@/lib/artifacts';
 import type { ArtifactItem } from '@/types/chat';
 import { cn, formatBytes } from '@/lib/utils';
 
 const CodeBlockContext = createContext(false);
+const highlightCache = new Map<string, string>();
 
-export interface CodeBlockProps {
+interface CodeBlockProps {
   language: string;
   code: string;
   isStreaming?: boolean;
-  defaultCollapsed?: boolean;
   onOpenArtifact?: (artifact: ArtifactItem) => void;
 }
 
-export function CodeBlock({
-  language,
-  code,
-  isStreaming,
-  defaultCollapsed = false,
-  onOpenArtifact,
-}: CodeBlockProps) {
+function CodeBlock({ language, code, isStreaming, onOpenArtifact }: CodeBlockProps) {
+  const lineCount = useMemo(() => {
+    let count = 1;
+    for (let i = 0; i < code.length; i++) {
+      if (code.charCodeAt(i) === 10) count += 1;
+    }
+    return count;
+  }, [code]);
+
   const [copied, setCopied] = useState(false);
   const [wrapLines, setWrapLines] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth < 640 : false
   );
   const [showLines, setShowLines] = useState(true);
-  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  // Auto-collapse blok raksasa (>120 baris) saat membuka history chat agar scroll cepat & ringan
+  const [collapsed, setCollapsed] = useState(() => !isStreaming && lineCount > 120);
 
-  const lines = useMemo(() => code.split('\n'), [code]);
-  const lineCount = lines.length;
   const byteSize = formatBytes(code.length);
   const canOpenArtifact = !isStreaming && isArtifactCandidate(language, code);
   const isPreviewable = ['html', 'htm', 'svg', 'markdown', 'md'].includes(language.toLowerCase());
 
+  // Satu single text node untuk nomor baris (menghemat ribuan DOM nodes saat buka history panjang)
+  const lineNumbersText = useMemo(() => {
+    if (collapsed || wrapLines || !showLines) return '';
+    const arr = new Array<string>(lineCount);
+    for (let i = 0; i < lineCount; i++) arr[i] = String(i + 1);
+    return arr.join('\n');
+  }, [collapsed, lineCount, showLines, wrapLines]);
+
   const highlightedHtml = useMemo(() => {
-    if (isStreaming || !language) return null;
+    if (collapsed || isStreaming || !language) return null;
+    const cacheKey = `${language}:${code.length}:${code.slice(0, 64)}:${code.slice(-64)}`;
+    const cached = highlightCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
     try {
       if (hljs.getLanguage(language)) {
-        return hljs.highlight(code, { language }).value;
+        const htmlOut = hljs.highlight(code, { language }).value;
+        if (highlightCache.size > 120) {
+          const firstKey = highlightCache.keys().next().value;
+          if (firstKey !== undefined) highlightCache.delete(firstKey);
+        }
+        highlightCache.set(cacheKey, htmlOut);
+        return htmlOut;
       }
     } catch {
       return null;
     }
     return null;
-  }, [code, language, isStreaming]);
+  }, [code, collapsed, language, isStreaming]);
 
   const handleCopy = async () => {
     try {
@@ -105,7 +123,7 @@ export function CodeBlock({
   };
 
   return (
-    <div className="my-3 w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-zinc-800/90 bg-[#0b0d12] text-zinc-100 shadow-xl">
+    <div className="my-4 w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-zinc-800/90 bg-[#0b0d12] text-zinc-100 shadow-xl">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 bg-zinc-900/90 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="hidden items-center gap-1.5 sm:flex">
@@ -123,7 +141,7 @@ export function CodeBlock({
         </div>
 
         <div className="flex flex-wrap items-center gap-1">
-          {!wrapLines && (
+          {!wrapLines && !collapsed && (
             <Button
               type="button"
               variant="ghost"
@@ -139,20 +157,22 @@ export function CodeBlock({
             </Button>
           )}
 
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setWrapLines((w) => !w)}
-            title="Toggle Text Wrap"
-            className={cn(
-              'h-7 gap-1 rounded-lg px-2 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100',
-              wrapLines && 'bg-zinc-800 text-zinc-100'
-            )}
-          >
-            <WrapText className="h-3 w-3" />
-            <span className="hidden sm:inline">Wrap</span>
-          </Button>
+          {!collapsed && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setWrapLines((w) => !w)}
+              title="Toggle Text Wrap"
+              className={cn(
+                'h-7 gap-1 rounded-lg px-2 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100',
+                wrapLines && 'bg-zinc-800 text-zinc-100'
+              )}
+            >
+              <WrapText className="h-3 w-3" />
+              <span className="hidden sm:inline">Wrap</span>
+            </Button>
+          )}
 
           <Button
             type="button"
@@ -197,7 +217,7 @@ export function CodeBlock({
             )}
           </Button>
 
-          {lineCount > 10 && (
+          {lineCount > 16 && (
             <Button
               type="button"
               variant="ghost"
@@ -222,46 +242,45 @@ export function CodeBlock({
           onClick={() => setCollapsed(false)}
           className="flex w-full items-center justify-center gap-2 py-3 text-xs text-zinc-400 hover:bg-zinc-900/60 hover:text-zinc-200"
         >
-          <span>{lineCount} baris kode — klik untuk lihat isi</span>
+          <span>
+            {lineCount.toLocaleString()} baris ({byteSize}) terlipat — klik untuk tampilkan kode
+          </span>
           <ChevronDown className="h-3.5 w-3.5" />
         </button>
       ) : (
-        <StudioScroll
-          axis={wrapLines ? 'y' : 'both'}
-          autoHide="never"
-          className="max-h-[460px] w-full"
+        <div
+          className={cn(
+            'flex max-h-[460px] w-full overflow-y-auto overscroll-contain text-[12.5px] leading-[1.65]',
+            wrapLines ? 'overflow-x-hidden' : 'overflow-x-auto'
+          )}
         >
-          <div className="flex min-w-full text-[12.5px] leading-[1.65]">
-            {!wrapLines && showLines && (
-              <div
-                aria-hidden="true"
-                className="select-none border-r border-zinc-800/70 bg-zinc-950/60 py-3.5 pl-3 pr-2.5 text-right font-mono text-[11px] text-zinc-600"
-              >
-                {lines.map((_, i) => (
-                  <div key={i}>{i + 1}</div>
-                ))}
-              </div>
-            )}
-
-            <pre
-              className={cn(
-                'min-w-0 flex-1 p-3.5 font-mono',
-                wrapLines
-                  ? 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
-                  : 'whitespace-pre'
-              )}
+          {!wrapLines && showLines && (
+            <div
+              aria-hidden="true"
+              className="select-none whitespace-pre border-r border-zinc-800/70 bg-zinc-950/60 py-3.5 pl-3 pr-2.5 text-right font-mono text-[11px] text-zinc-600"
             >
-              {highlightedHtml ? (
-                <code
-                  className={`hljs language-${language}`}
-                  dangerouslySetInnerHTML={{ __html: highlightedHtml }}
-                />
-              ) : (
-                <code className="text-zinc-100">{code}</code>
-              )}
-            </pre>
-          </div>
-        </StudioScroll>
+              {lineNumbersText}
+            </div>
+          )}
+
+          <pre
+            className={cn(
+              'min-w-0 flex-1 p-3.5 font-mono',
+              wrapLines
+                ? 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
+                : 'whitespace-pre'
+            )}
+          >
+            {highlightedHtml ? (
+              <code
+                className={`hljs language-${language}`}
+                dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+              />
+            ) : (
+              <code className="text-zinc-100">{code}</code>
+            )}
+          </pre>
+        </div>
       )}
     </div>
   );
@@ -352,10 +371,8 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
           },
           table({ children }) {
             return (
-              <div className="my-3 w-full max-w-full overflow-hidden rounded-xl border bg-card/50 shadow-sm">
-                <StudioScroll axis="x" autoHide="never" className="w-full">
-                  <table className="w-full border-collapse text-left text-sm">{children}</table>
-                </StudioScroll>
+              <div className="my-3 w-full max-w-full overflow-x-auto rounded-xl border bg-card/50 shadow-sm">
+                <table className="w-full border-collapse text-left text-sm">{children}</table>
               </div>
             );
           },

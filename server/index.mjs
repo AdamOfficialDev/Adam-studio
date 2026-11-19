@@ -80,7 +80,6 @@ function buildAttachmentParts(att) {
   return [];
 }
 
-// Endpoint resmi hitung token per file ala Google AI Studio
 app.post('/api/count-tokens', async (req, res) => {
   const { model = DEFAULT_MODEL, attachment } = req.body || {};
 
@@ -106,7 +105,7 @@ app.post('/api/count-tokens', async (req, res) => {
   )}:countTokens`;
 
   const ordered = buildOrderedCandidateKeys(apiKeys);
-  for (const candidate of ordered.slice(0, Math.min(ordered.length, 3))) {
+  for (const candidate of ordered) {
     try {
       const upstream = await fetch(endpoint, {
         method: 'POST',
@@ -131,6 +130,107 @@ app.post('/api/count-tokens', async (req, res) => {
   }
 
   res.status(502).json({ ok: false });
+});
+
+app.post('/api/transcribe', async (req, res) => {
+  const { model, mimeType = 'audio/wav', data = '' } = req.body || {};
+
+  const headerKeys = parseKeyPool(
+    typeof req.headers['x-gemini-api-keys'] === 'string' ? req.headers['x-gemini-api-keys'] : '',
+    typeof req.headers['x-gemini-api-key'] === 'string' ? req.headers['x-gemini-api-key'] : ''
+  );
+  const apiKeys = headerKeys.length > 0 ? headerKeys : getServerEnvKeys();
+
+  if (!data) {
+    res.status(400).json({ ok: false, message: 'Data audio kosong.' });
+    return;
+  }
+
+  if (apiKeys.length === 0) {
+    res.status(401).json({
+      ok: false,
+      message: 'API Key belum tersedia untuk transkripsi AI Audio.',
+    });
+    return;
+  }
+
+  const sttModels = Array.from(
+    new Set(['gemini-2.5-flash', model || DEFAULT_MODEL, 'gemini-2.0-flash'].filter(Boolean))
+  );
+  const ordered = buildOrderedCandidateKeys(apiKeys);
+  const cleanMime = String(mimeType).split(';')[0].trim() || 'audio/wav';
+
+  const promptText = [
+    'Transcribe the spoken audio accurately verbatim.',
+    'The speaker speaks Indonesian mixed with English technical, UI/UX, and software engineering terms',
+    '(such as UI/UX, React, Vite, shadcn, TypeScript, JavaScript, pnpm, npm, API, SSE, JSON, HTML, CSS, SQL, PWA, Vercel, GitHub, Gemini 4 Hydrogen).',
+    'Output ONLY the transcribed text with natural punctuation and proper technical capitalization. Do not answer the prompt or add commentary.',
+  ].join(' ');
+
+  let lastStatus = 502;
+  let lastError = 'Transkripsi AI Audio gagal.';
+
+  for (const sttModel of sttModels) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      sttModel
+    )}:generateContent`;
+
+    for (const candidate of ordered) {
+      try {
+        const upstream = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': candidate.key,
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { text: promptText },
+                  { inlineData: { mimeType: cleanMime, data } },
+                ],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.1,
+              maxOutputTokens: 1024,
+            },
+          }),
+        });
+
+        if (upstream.ok) {
+          const json = await upstream.json();
+          const textOut = json?.candidates?.[0]?.content?.parts
+            ?.map((p) => p?.text || '')
+            .join('')
+            .trim();
+          if (textOut) {
+            res.json({ ok: true, text: textOut });
+            return;
+          }
+          lastError = 'Suara tidak terdeteksi / hasil transkrip kosong.';
+        } else {
+          lastStatus = upstream.status;
+          const errRaw = await upstream.text();
+          lastError = extractGeminiError(errRaw, upstream.status);
+          console.error(`[STT ${sttModel}] ${upstream.status}: ${lastError}`);
+          if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
+            keyCooldownMap.set(candidate.key, Date.now() + 60_000);
+          }
+          if (upstream.status === 404) break;
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : 'Network error';
+      }
+    }
+  }
+
+  res.status(lastStatus >= 400 && lastStatus < 600 ? lastStatus : 502).json({
+    ok: false,
+    message: lastError,
+  });
 });
 
 function writeSseEvent(res, event, data) {
@@ -166,7 +266,7 @@ async function runDemoSse({ res, model, messages, includeThoughts = true, signal
       `Pengguna meminta: "${userText.slice(0, 100)}".\n\n`,
       `**2. Merencanakan Struktur Respons (${model})**\n`,
       `- Menyiapkan HTML Artifact interaktif agar dapat diuji dengan **Visual Element Inspector**.\n`,
-      `- Mendemonstrasikan Time-Machine Diff & Per-File Token Counter.`,
+      `- Mendemonstrasikan Time-Machine Diff & Virtualized 60fps UI.`,
     ].join('');
 
     const thoughtTokens = demoThought.match(/\S+\s*/g) || [demoThought];
@@ -177,7 +277,7 @@ async function runDemoSse({ res, model, messages, includeThoughts = true, signal
   }
 
   const demoReply = [
-    `Berikut hasil **Adam Studio v5.1 (Demo SSE Mode)** pada model \`${model}\`.\n\n`,
+    `Berikut hasil **Adam Studio (Demo SSE Mode)** pada model \`${model}\`.\n\n`,
     '```html\n',
     '<!doctype html>\n',
     '<html>\n',
@@ -194,7 +294,7 @@ async function runDemoSse({ res, model, messages, includeThoughts = true, signal
     '</head>\n',
     '<body>\n',
     '  <div class="card">\n',
-    '    <h2>Adam Studio v5.1</h2>\n',
+    '    <h2>Adam Studio</h2>\n',
     '    <p>Aktifkan ikon Crosshair untuk Inspect tombol di bawah ini.</p>\n',
     '    <button class="action-btn" id="main-cta">Tombol Utama</button>\n',
     '  </div>\n',
@@ -328,7 +428,8 @@ async function fetchGeminiWithRotationAndRetry({
 
   let wantsThinking = Boolean(includeThoughts) && Number(thinkingBudget) !== 0;
   const orderedKeys = buildOrderedCandidateKeys(apiKeys);
-  const maxAttempts = Math.min(Math.max(orderedKeys.length * 2, 4), 10);
+  // Mengikuti penuh seluruh jumlah key yang dimasukkan user di Settings (1 key tetap retry 4x)
+  const maxAttempts = orderedKeys.length > 1 ? orderedKeys.length : 4;
 
   let keyPointer = 0;
   let lastStatus = 503;
@@ -360,7 +461,7 @@ async function fetchGeminiWithRotationAndRetry({
 
     if (upstream.ok) {
       if (attempt > 0 && orderedKeys.length > 1) {
-        onInfo(`Berhasil terhubung menggunakan ${keyLabel}`);
+        onInfo(`Berhasil terhubung menggunakan ${keyLabel} (pool ${orderedKeys.length} keys)`);
       }
       return { ok: true, response: upstream, usedModel: targetModel };
     }
@@ -392,10 +493,10 @@ async function fetchGeminiWithRotationAndRetry({
         keyPointer += 1;
         const nextCandidate = orderedKeys[keyPointer % orderedKeys.length];
         const nextLabel = maskKeyLabel(nextCandidate.key, nextCandidate.idx);
-        const fastRotateDelay = ROTATE_IMMEDIATELY_STATUSES.has(upstream.status) || isBadKey ? 280 : 900;
+        const fastRotateDelay = ROTATE_IMMEDIATELY_STATUSES.has(upstream.status) || isBadKey ? 200 : 450;
 
         onStatus(
-          `${keyLabel} terkena (${upstream.status}). Merotasi otomatis ke ${nextLabel} (${attempt + 1}/${maxAttempts})...`
+          `${keyLabel} terkena (${upstream.status}). Merotasi ke ${nextLabel} (${attempt + 2}/${maxAttempts})...`
         );
         await sleep(fastRotateDelay, signal);
         continue;
@@ -634,6 +735,6 @@ if (process.env.NODE_ENV === 'production') {
 
 app.listen(PORT, () => {
   const envKeys = getServerEnvKeys();
-  console.log(`⚡ Adam Studio v5.1 SSE Server aktif di http://localhost:${PORT}`);
+  console.log(`⚡ Adam Studio SSE Server aktif di http://localhost:${PORT}`);
   console.log(`   Default model: ${DEFAULT_MODEL} | Server API Keys: ${envKeys.length}`);
 });

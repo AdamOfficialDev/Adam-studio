@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useMemo, useRef, type ReactNode } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, type ReactNode } from 'react';
 import {
   OverlayScrollbarsComponent,
   type OverlayScrollbarsComponentRef,
@@ -15,15 +15,23 @@ interface StudioScrollProps {
   axis?: 'y' | 'x' | 'both';
   autoHide?: 'never' | 'scroll' | 'leave' | 'move';
   onScroll?: (viewport: HTMLElement) => void;
+  onViewportReady?: (viewport: HTMLElement | null) => void;
 }
 
 export const StudioScroll = forwardRef<StudioScrollHandle, StudioScrollProps>(
-  ({ children, className, axis = 'y', autoHide = 'scroll', onScroll }, ref) => {
+  ({ children, className, axis = 'y', autoHide = 'scroll', onScroll, onViewportReady }, ref) => {
     const osRef = useRef<OverlayScrollbarsComponentRef<'div'> | null>(null);
 
     useImperativeHandle(ref, () => ({
       getViewport: () => osRef.current?.osInstance()?.elements().viewport ?? null,
     }));
+
+    useEffect(() => {
+      const vp = osRef.current?.osInstance()?.elements().viewport ?? null;
+      if (vp && onViewportReady) {
+        onViewportReady(vp);
+      }
+    }, [onViewportReady]);
 
     const options = useMemo(
       () => ({
@@ -43,13 +51,18 @@ export const StudioScroll = forwardRef<StudioScrollHandle, StudioScrollProps>(
 
     const events = useMemo(
       () => ({
+        initialized: (instance: { elements: () => { viewport: HTMLElement } }) => {
+          if (onViewportReady) {
+            onViewportReady(instance.elements().viewport);
+          }
+        },
         scroll: (instance: { elements: () => { viewport: HTMLElement } }) => {
           if (onScroll) {
             onScroll(instance.elements().viewport);
           }
         },
       }),
-      [onScroll]
+      [onScroll, onViewportReady]
     );
 
     return (

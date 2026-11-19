@@ -7,6 +7,7 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, MotionConfig, motion } from 'framer-motion';
 import { Toaster, toast } from 'sonner';
 import { useRegisterSW } from 'virtual:pwa-register/react';
@@ -170,6 +171,7 @@ export default function App() {
   const [visualTarget, setVisualTarget] = useState<VisualTarget | null>(null);
   const [activeStream, setActiveStream] = useState<ActiveStreamState | null>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const [scrollViewport, setScrollViewport] = useState<HTMLElement | null>(null);
 
   const { isStandalone, isIos, isOnline, canNativeInstall, triggerNativeInstall } = usePwaInstall();
 
@@ -243,6 +245,7 @@ export default function App() {
     [conversations, activeId]
   );
 
+  const messageList = activeConversation?.messages ?? [];
   const currentModelId = activeConversation?.model ?? selectedModel;
   const currentModelInfo = getModelInfo(currentModelId);
   const isStreamingActive = activeStream !== null;
@@ -252,6 +255,15 @@ export default function App() {
     countApiKeys(settings.apiKey) ||
     serverHealth?.serverKeyCount ||
     (serverHealth?.hasServerApiKey ? 1 : 0);
+
+  // Virtualizer hanya me-render pesan di sekitar viewport (mengatasi lag buka & scroll chat panjang)
+  const virtualizer = useVirtualizer({
+    count: messageList.length,
+    getScrollElement: () => scrollViewport,
+    estimateSize: () => 180,
+    overscan: 5,
+    getItemKey: (index) => messageList[index]?.id ?? index,
+  });
 
   const conversationArtifacts = useMemo(() => {
     if (!activeConversation) return [];
@@ -285,29 +297,47 @@ export default function App() {
     Math.max(1, Math.round((contextTokenEstimate / currentModelInfo.contextLimit) * 100))
   );
 
-  const scrollToBottom = useCallback((smooth = false) => {
-    const el = chatScrollRef.current?.getViewport();
-    if (!el) return;
-    el.scrollTo({
-      top: el.scrollHeight,
-      behavior: smooth ? 'smooth' : 'auto',
+  const scrollToBottom = useCallback(
+    (smooth = false) => {
+      const el = scrollViewport ?? chatScrollRef.current?.getViewport();
+      if (!el) return;
+      if (messageList.length > 0 && !smooth) {
+        virtualizer.scrollToIndex(messageList.length - 1, { align: 'end' });
+        requestAnimationFrame(() => {
+          el.scrollTop = el.scrollHeight;
+        });
+      } else {
+        el.scrollTo({
+          top: el.scrollHeight,
+          behavior: smooth ? 'smooth' : 'auto',
+        });
+      }
+    },
+    [messageList.length, scrollViewport, virtualizer]
+  );
+
+  // Langsung lompat ke pesan terbaru saat membuka chat panjang
+  useEffect(() => {
+    if (!activeId || messageList.length === 0 || !scrollViewport) return;
+    autoScrollEnabledRef.current = true;
+    setShowScrollBottom(false);
+    requestAnimationFrame(() => {
+      virtualizer.scrollToIndex(messageList.length - 1, { align: 'end' });
+      requestAnimationFrame(() => {
+        scrollViewport.scrollTop = scrollViewport.scrollHeight;
+      });
     });
-  }, []);
+  }, [activeId, scrollViewport]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (autoScrollEnabledRef.current) {
+    if (autoScrollEnabledRef.current && messageList.length > 0) {
       scrollToBottom(false);
     }
-  }, [
-    activeConversation?.messages.length,
-    activeStream?.content,
-    activeStream?.thought,
-    scrollToBottom,
-  ]);
+  }, [messageList.length, activeStream?.content, activeStream?.thought, scrollToBottom]);
 
   const handleViewportScroll = useCallback((el: HTMLElement) => {
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const nearBottom = distanceFromBottom < 90;
+    const nearBottom = distanceFromBottom < 95;
     autoScrollEnabledRef.current = nearBottom;
     setShowScrollBottom(!nearBottom);
   }, []);
@@ -939,12 +969,11 @@ export default function App() {
   }, []);
 
   const lastAssistantId = useMemo(() => {
-    const msgs = activeConversation?.messages ?? [];
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'assistant') return msgs[i].id;
+    for (let i = messageList.length - 1; i >= 0; i--) {
+      if (messageList[i].role === 'assistant') return messageList[i].id;
     }
     return null;
-  }, [activeConversation]);
+  }, [messageList]);
 
   const filteredStarterCards = useMemo(() => {
     if (welcomeTab === 'All') return STARTER_CARDS;
@@ -1186,11 +1215,12 @@ export default function App() {
             <div className="relative min-h-0 flex-1 overflow-hidden">
               <StudioScroll
                 ref={chatScrollRef}
+                onViewportReady={setScrollViewport}
                 onScroll={handleViewportScroll}
                 className="h-full w-full"
                 autoHide="scroll"
               >
-                {!activeConversation || activeConversation.messages.length === 0 ? (
+                {!activeConversation || messageList.length === 0 ? (
                   <div className="relative mx-auto flex min-h-[calc(100dvh-13rem)] w-full max-w-3xl flex-col items-center justify-center px-4 py-8 text-center">
                     <div className="pointer-events-none absolute inset-0 -z-10 bg-dot-matrix opacity-35 [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]" />
                     <div className="pointer-events-none absolute top-10 -z-10 h-56 w-56 rounded-full bg-primary/10 blur-3xl" />
@@ -1229,8 +1259,8 @@ export default function App() {
                       Adam Studio Workspace
                     </h1>
                     <p className="mt-2.5 max-w-lg text-sm leading-relaxed text-muted-foreground">
-                      Platform AI dengan Live Thinking, Auto-Rotate Key Pool, Per-File Token
-                      Counter, Visual Element Inspector, & Artifact Time-Machine Diff.
+                      Platform AI dengan Live Thinking, Gemini Audio Voice Input, Virtualized
+                      60fps Chat, Visual Inspector, & Per-File Token Counter.
                     </p>
 
                     {activeKeyPoolCount === 0 && !settings.demoMode && (
@@ -1301,65 +1331,84 @@ export default function App() {
                     </div>
                   </div>
                 ) : (
-                  <div
-                    className={cn(
-                      'mx-auto w-full min-w-0 max-w-3xl px-3 py-5 sm:px-5 sm:py-6',
-                      settings.density === 'compact' ? 'space-y-4' : 'space-y-6'
-                    )}
-                  >
-                    {activeConversation.messages.map((msg) => {
-                      const effectiveMsg =
-                        activeStream &&
-                        activeStream.convId === activeConversation.id &&
-                        activeStream.msgId === msg.id
-                          ? {
-                              ...msg,
-                              content: activeStream.content,
-                              thought: activeStream.thought || msg.thought,
-                              statusText: activeStream.statusText,
-                              metrics: activeStream.thinkingDurationMs
-                                ? {
-                                    ...msg.metrics,
-                                    thinkingDurationMs: activeStream.thinkingDurationMs,
-                                  }
-                                : msg.metrics,
-                              isStreaming: true,
-                            }
-                          : msg;
+                  <div className="mx-auto w-full min-w-0 max-w-3xl px-3 pt-5 sm:px-5 sm:pt-6">
+                    <div
+                      style={{
+                        height: `${virtualizer.getTotalSize()}px`,
+                        width: '100%',
+                        position: 'relative',
+                      }}
+                    >
+                      {virtualizer.getVirtualItems().map((virtualItem) => {
+                        const msg = messageList[virtualItem.index];
+                        if (!msg) return null;
 
-                      return (
-                        <ChatMessage
-                          key={msg.id}
-                          message={effectiveMsg}
-                          compact={settings.density === 'compact'}
-                          thinkingEnabled={thinkingEnabled}
-                          isLastAssistant={msg.id === lastAssistantId}
-                          onRegenerate={
-                            msg.id === lastAssistantId ? () => handleRegenerate() : undefined
-                          }
-                          onRetryWithModel={
-                            msg.id === lastAssistantId
-                              ? (mId) => handleRegenerate(mId)
-                              : undefined
-                          }
-                          onEditUserMessage={
-                            msg.role === 'user' && !isStreamingActive
-                              ? handleEditUserMessage
-                              : undefined
-                          }
-                          onForkFromMessage={
-                            msg.role === 'assistant' && !isStreamingActive
-                              ? handleForkFromMessage
-                              : undefined
-                          }
-                          onToggleStar={(msgId) =>
-                            handleToggleStar(activeConversation.id, msgId)
-                          }
-                          onOpenArtifact={setActiveArtifact}
-                          onPreviewImage={setLightboxUrl}
-                        />
-                      );
-                    })}
+                        const effectiveMsg =
+                          activeStream &&
+                          activeStream.convId === activeConversation.id &&
+                          activeStream.msgId === msg.id
+                            ? {
+                                ...msg,
+                                content: activeStream.content,
+                                thought: activeStream.thought || msg.thought,
+                                statusText: activeStream.statusText,
+                                metrics: activeStream.thinkingDurationMs
+                                  ? {
+                                      ...msg.metrics,
+                                      thinkingDurationMs: activeStream.thinkingDurationMs,
+                                    }
+                                  : msg.metrics,
+                                isStreaming: true,
+                              }
+                            : msg;
+
+                        return (
+                          <div
+                            key={virtualItem.key}
+                            data-index={virtualItem.index}
+                            ref={virtualizer.measureElement}
+                            style={{
+                              position: 'absolute',
+                              top: 0,
+                              left: 0,
+                              width: '100%',
+                              transform: `translateY(${virtualItem.start}px)`,
+                            }}
+                            className={settings.density === 'compact' ? 'pb-4' : 'pb-6'}
+                          >
+                            <ChatMessage
+                              message={effectiveMsg}
+                              compact={settings.density === 'compact'}
+                              thinkingEnabled={thinkingEnabled}
+                              isLastAssistant={msg.id === lastAssistantId}
+                              onRegenerate={
+                                msg.id === lastAssistantId ? () => handleRegenerate() : undefined
+                              }
+                              onRetryWithModel={
+                                msg.id === lastAssistantId
+                                  ? (mId) => handleRegenerate(mId)
+                                  : undefined
+                              }
+                              onEditUserMessage={
+                                msg.role === 'user' && !isStreamingActive
+                                  ? handleEditUserMessage
+                                  : undefined
+                              }
+                              onForkFromMessage={
+                                msg.role === 'assistant' && !isStreamingActive
+                                  ? handleForkFromMessage
+                                  : undefined
+                              }
+                              onToggleStar={(msgId) =>
+                                handleToggleStar(activeConversation.id, msgId)
+                              }
+                              onOpenArtifact={setActiveArtifact}
+                              onPreviewImage={setLightboxUrl}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
               </StudioScroll>
@@ -1402,6 +1451,7 @@ export default function App() {
               model={currentModelId}
               isStreaming={isStreamingActive}
               settings={settings}
+              hasApiKeyConfigured={activeKeyPoolCount > 0}
               externalDraft={externalDraft}
               visualTarget={visualTarget}
               onClearVisualTarget={() => setVisualTarget(null)}

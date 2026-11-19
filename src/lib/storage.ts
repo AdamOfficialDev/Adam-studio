@@ -14,6 +14,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoFallbackOnOverload: false,
   fallbackModel: 'gemini-2.5-pro',
   maxHistoryMessages: 0,
+  sttMode: 'ai',
   soundChime: true,
   demoMode: false,
   autoOpenArtifacts: false,
@@ -48,15 +49,12 @@ export function loadConversations(): Conversation[] {
 }
 
 export function saveConversations(conversations: Conversation[]): void {
-  // Jangan simpan base64 media besar (>350KB) ke localStorage agar tidak meledak kuota 5MB browser
   const compact = conversations.map((conv) => ({
     ...conv,
     messages: conv.messages.map((msg) => ({
       ...msg,
       attachments: msg.attachments?.map((att) =>
-        att.size > 350_000
-          ? { ...att, data: undefined, previewUrl: undefined }
-          : att
+        att.size > 350_000 ? { ...att, data: undefined, previewUrl: undefined } : att
       ),
     })),
   }));
@@ -78,7 +76,7 @@ export function saveConversations(conversations: Conversation[]): void {
       }));
       localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(stripped));
     } catch {
-      // Abaikan jika storage penuh
+      // Abaikan jika penuh
     }
   }
 }

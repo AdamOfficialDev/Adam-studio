@@ -182,7 +182,7 @@ async function fetchGeminiWithRotationAndRetry({
 
   let wantsThinking = Boolean(includeThoughts) && Number(thinkingBudget) !== 0;
   const orderedKeys = buildOrderedCandidateKeys(apiKeys);
-  const maxAttempts = Math.min(Math.max(orderedKeys.length * 2, 4), 10);
+  const maxAttempts = orderedKeys.length > 1 ? orderedKeys.length : 4;
 
   let keyPointer = 0;
   let lastStatus = 503;
@@ -214,7 +214,7 @@ async function fetchGeminiWithRotationAndRetry({
 
     if (upstream.ok) {
       if (attempt > 0 && orderedKeys.length > 1) {
-        onInfo(`Berhasil terhubung menggunakan ${keyLabel}`);
+        onInfo(`Berhasil terhubung menggunakan ${keyLabel} (pool ${orderedKeys.length} keys)`);
       }
       return { ok: true, response: upstream, usedModel: targetModel };
     }
@@ -246,10 +246,10 @@ async function fetchGeminiWithRotationAndRetry({
         keyPointer += 1;
         const nextCandidate = orderedKeys[keyPointer % orderedKeys.length];
         const nextLabel = maskKeyLabel(nextCandidate.key, nextCandidate.idx);
-        const fastRotateDelay = ROTATE_IMMEDIATELY_STATUSES.has(upstream.status) || isBadKey ? 280 : 900;
+        const fastRotateDelay = ROTATE_IMMEDIATELY_STATUSES.has(upstream.status) || isBadKey ? 200 : 450;
 
         onStatus(
-          `${keyLabel} terkena (${upstream.status}). Merotasi otomatis ke ${nextLabel} (${attempt + 1}/${maxAttempts})...`
+          `${keyLabel} terkena (${upstream.status}). Merotasi ke ${nextLabel} (${attempt + 2}/${maxAttempts})...`
         );
         await sleep(fastRotateDelay, signal);
         continue;
@@ -355,11 +355,11 @@ export default async function handler(request) {
           }
 
           const demoReply = [
-            `Respons **Demo SSE Mode (v5.1)** dari Vercel Edge Function untuk \`${model}\`.\n\n`,
+            `Respons **Demo SSE Mode** dari Vercel Edge Function untuk \`${model}\`.\n\n`,
             '```html\n',
             '<!doctype html><html><body style="margin:0;display:grid;place-items:center;min-height:100vh;background:#09090b;color:#fff;font-family:sans-serif">',
             '<div style="padding:24px;border-radius:16px;border:1px solid #27272a;background:#18181b;text-align:center">',
-            '<h3>Adam Studio v5.1</h3><button style="margin-top:12px;padding:10px 16px;border-radius:10px;border:0;background:#3b82f6;color:#fff;font-weight:600">Inspect Tombol Ini</button>',
+            '<h3>Adam Studio</h3><button style="margin-top:12px;padding:10px 16px;border-radius:10px;border:0;background:#3b82f6;color:#fff;font-weight:600">Inspect Tombol Ini</button>',
             '</div></body></html>\n',
             '```\n',
           ].join('');

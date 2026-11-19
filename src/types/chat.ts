@@ -84,6 +84,7 @@ export interface AppSettings {
   autoFallbackOnOverload: boolean;
   fallbackModel: string;
   maxHistoryMessages: number;
+  sttMode: 'ai' | 'browser';
   soundChime: boolean;
   demoMode: boolean;
   autoOpenArtifacts: boolean;

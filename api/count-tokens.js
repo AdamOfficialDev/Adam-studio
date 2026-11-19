@@ -2,6 +2,8 @@ export const config = {
   runtime: 'edge',
 };
 
+let roundRobinCursor = Math.floor(Math.random() * 1000);
+
 function parseKeyPool(...sources) {
   const pool = [];
   const seen = new Set();
@@ -74,8 +76,10 @@ export default async function handler(request) {
     model
   )}:countTokens`;
 
-  const startOffset = Math.floor(Math.random() * apiKeys.length);
-  for (let i = 0; i < Math.min(apiKeys.length, 3); i++) {
+  const startOffset = roundRobinCursor % apiKeys.length;
+  roundRobinCursor = (roundRobinCursor + 1) % apiKeys.length;
+
+  for (let i = 0; i < apiKeys.length; i++) {
     const key = apiKeys[(startOffset + i) % apiKeys.length];
     try {
       const upstream = await fetch(endpoint, {
