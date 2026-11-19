@@ -69,6 +69,8 @@ export interface Conversation {
   model: string;
   pinned?: boolean;
   personaId?: string;
+  sessionSystemInstruction?: string; // Konteks sistem khusus sesi hasil impor (tidak global)
+  importedSource?: string;
   messages: ChatMessage[];
   createdAt: number;
   updatedAt: number;

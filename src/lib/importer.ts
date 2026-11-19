@@ -1,0 +1,383 @@
+import { estimateTokens, generateId } from '@/lib/utils';
+import type { ChatMessage } from '@/types/chat';
+
+export interface ParsedImportResult {
+  ok: boolean;
+  sourceLabel?: string;
+  title?: string;
+  model?: string;
+  sessionSystemInstruction?: string;
+  messages: ChatMessage[];
+  estimatedTokens: number;
+  error?: string;
+}
+
+function extractTextFromParts(parts: unknown): { content: string; thought: string } {
+  if (!Array.isArray(parts)) return { content: '', thought: '' };
+  const textParts: string[] = [];
+  const thoughtParts: string[] = [];
+
+  for (const part of parts) {
+    if (!part || typeof part !== 'object') continue;
+    const p = part as { text?: unknown; thought?: unknown; isThought?: unknown };
+    if (typeof p.text !== 'string' || !p.text) continue;
+    if (p.thought || p.isThought) {
+      thoughtParts.push(p.text);
+    } else {
+      textParts.push(p.text);
+    }
+  }
+  return {
+    content: textParts.join(''),
+    thought: thoughtParts.join(''),
+  };
+}
+
+function cleanModelName(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  return raw.trim().replace(/^models\//i, '');
+}
+
+export function condenseLongCodeBlocks(text: string, maxLines = 80): string {
+  return text.replace(/```([\w-]*)\n([\s\S]*?)```/g, (full, lang: string, body: string) => {
+    const lines = body.split('\n');
+    if (lines.length <= maxLines) return full;
+    const preview = lines.slice(0, 12).join('\n');
+    return `\`\`\`${lang}\n${preview}\n// ... [${lines.length - 12} baris kode ${lang || 'text'} diringkas saat impor]\n\`\`\``;
+  });
+}
+
+function parseGoogleAiStudioJson(
+  obj: Record<string, unknown>,
+  fallbackTitle: string
+): ParsedImportResult | null {
+  const chunked = obj.chunkedPrompt as { chunks?: unknown[] } | undefined;
+  if (!chunked || !Array.isArray(chunked.chunks)) return null;
+
+  const messages: ChatMessage[] = [];
+  let pendingThought = '';
+  const now = Date.now();
+
+  for (let i = 0; i < chunked.chunks.length; i++) {
+    const rawChunk = chunked.chunks[i];
+    if (!rawChunk || typeof rawChunk !== 'object') continue;
+    const c = rawChunk as {
+      role?: string;
+      text?: string;
+      isThought?: boolean;
+      parts?: unknown[];
+    };
+
+    const roleRaw = (c.role || 'user').toLowerCase();
+    const role: 'user' | 'assistant' =
+      roleRaw === 'model' || roleRaw === 'assistant' ? 'assistant' : 'user';
+
+    let text = typeof c.text === 'string' ? c.text : '';
+    let thought = '';
+
+    if (Array.isArray(c.parts)) {
+      const extracted = extractTextFromParts(c.parts);
+      if (!text) text = extracted.content;
+      thought = extracted.thought;
+    }
+
+    if (c.isThought && role === 'assistant') {
+      pendingThought += (pendingThought ? '\n' : '') + text;
+      continue;
+    }
+
+    const combinedThought = [pendingThought, thought].filter(Boolean).join('\n').trim();
+    pendingThought = '';
+
+    if (!text.trim() && !combinedThought) continue;
+
+    // Gabungkan jika ada beberapa chunk berurutan dengan role yang sama
+    const prev = messages[messages.length - 1];
+    if (prev && prev.role === role && role === 'assistant' && !prev.content && combinedThought) {
+      prev.content = text;
+      prev.thought = [prev.thought, combinedThought].filter(Boolean).join('\n');
+      continue;
+    }
+
+    messages.push({
+      id: generateId(),
+      role,
+      content: text.trim(),
+      thought: combinedThought || undefined,
+      createdAt: now + i,
+    });
+  }
+
+  if (pendingThought && messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
+    const last = messages[messages.length - 1];
+    last.thought = [last.thought, pendingThought].filter(Boolean).join('\n');
+  }
+
+  if (messages.length === 0) return null;
+
+  const runSettings = obj.runSettings as { model?: unknown } | undefined;
+  const sysObj = obj.systemInstruction as { text?: unknown; parts?: unknown[] } | undefined;
+  let sysText = typeof sysObj?.text === 'string' ? sysObj.text : '';
+  if (!sysText && Array.isArray(sysObj?.parts)) {
+    sysText = extractTextFromParts(sysObj.parts).content;
+  }
+
+  const totalTok = messages.reduce(
+    (sum, m) => sum + estimateTokens(m.content) + estimateTokens(m.thought || ''),
+    0
+  );
+
+  return {
+    ok: true,
+    sourceLabel: 'Google AI Studio Drive JSON',
+    title: typeof obj.title === 'string' && obj.title.trim() ? obj.title.trim() : fallbackTitle,
+    model: cleanModelName(runSettings?.model),
+    sessionSystemInstruction: sysText.trim() || undefined,
+    messages,
+    estimatedTokens: totalTok,
+  };
+}
+
+function parseChatGptMappingJson(
+  obj: Record<string, unknown>,
+  fallbackTitle: string
+): ParsedImportResult | null {
+  const mapping = obj.mapping as Record<string, unknown> | undefined;
+  if (!mapping || typeof mapping !== 'object') return null;
+
+  const nodes = Object.values(mapping).filter(
+    (n): n is { message?: { author?: { role?: string }; content?: { parts?: unknown[] }; create_time?: number } } =>
+      Boolean(n && typeof n === 'object')
+  );
+
+  nodes.sort((a, b) => (a.message?.create_time ?? 0) - (b.message?.create_time ?? 0));
+
+  const messages: ChatMessage[] = [];
+  for (const node of nodes) {
+    const msg = node.message;
+    if (!msg) continue;
+    const roleRaw = msg.author?.role;
+    if (roleRaw !== 'user' && roleRaw !== 'assistant') continue;
+    const parts = Array.isArray(msg.content?.parts) ? msg.content.parts : [];
+    const text = parts.filter((p): p is string => typeof p === 'string').join('\n').trim();
+    if (!text) continue;
+    messages.push({
+      id: generateId(),
+      role: roleRaw,
+      content: text,
+      createdAt: msg.create_time ? Math.round(msg.create_time * 1000) : Date.now(),
+    });
+  }
+
+  if (messages.length === 0) return null;
+
+  const totalTok = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+  return {
+    ok: true,
+    sourceLabel: 'ChatGPT Export JSON',
+    title: typeof obj.title === 'string' && obj.title.trim() ? obj.title.trim() : fallbackTitle,
+    messages,
+    estimatedTokens: totalTok,
+  };
+}
+
+function parseGenericMessagesArray(
+  arr: unknown[],
+  sourceLabel: string,
+  title: string,
+  model?: string,
+  sessionSystemInstruction?: string
+): ParsedImportResult | null {
+  const messages: ChatMessage[] = [];
+  const now = Date.now();
+
+  for (let i = 0; i < arr.length; i++) {
+    const item = arr[i];
+    if (!item || typeof item !== 'object') continue;
+    const m = item as {
+      role?: string;
+      content?: unknown;
+      text?: unknown;
+      thought?: unknown;
+      parts?: unknown[];
+      model?: unknown;
+    };
+
+    const roleRaw = (m.role || '').toLowerCase();
+    if (roleRaw === 'system') continue;
+    const role: 'user' | 'assistant' =
+      roleRaw === 'assistant' || roleRaw === 'model' || roleRaw === 'ai' ? 'assistant' : 'user';
+
+    let content = '';
+    let thought = typeof m.thought === 'string' ? m.thought : '';
+
+    if (typeof m.content === 'string') {
+      content = m.content;
+    } else if (typeof m.text === 'string') {
+      content = m.text;
+    } else if (Array.isArray(m.parts)) {
+      const extracted = extractTextFromParts(m.parts);
+      content = extracted.content;
+      if (!thought) thought = extracted.thought;
+    }
+
+    if (!content.trim() && !thought.trim()) continue;
+    messages.push({
+      id: generateId(),
+      role,
+      content: content.trim(),
+      thought: thought.trim() || undefined,
+      model: cleanModelName(m.model),
+      createdAt: now + i,
+    });
+  }
+
+  if (messages.length === 0) return null;
+
+  const totalTok = messages.reduce(
+    (sum, m) => sum + estimateTokens(m.content) + estimateTokens(m.thought || ''),
+    0
+  );
+
+  return {
+    ok: true,
+    sourceLabel,
+    title,
+    model,
+    sessionSystemInstruction,
+    messages,
+    estimatedTokens: totalTok,
+  };
+}
+
+function parseMarkdownChat(raw: string, fallbackTitle: string): ParsedImportResult {
+  const text = raw.replace(/\r\n/g, '\n').trim();
+  const titleMatch = /^#\s+(.+)$/m.exec(text);
+  const extractedTitle = titleMatch ? titleMatch[1].trim() : fallbackTitle;
+
+  const roleHeaderRegex =
+    /^(?:#{1,4}\s*|\*\*)(User|Pengguna|You|Assistant|Model|AI|Gemini|Claude)(?:\*\*)?:?\s*$/gim;
+
+  const matches = Array.from(text.matchAll(roleHeaderRegex));
+  const messages: ChatMessage[] = [];
+  const now = Date.now();
+
+  if (matches.length >= 1) {
+    for (let i = 0; i < matches.length; i++) {
+      const curr = matches[i];
+      const next = matches[i + 1];
+      const start = (curr.index ?? 0) + curr[0].length;
+      const end = next ? (next.index ?? text.length) : text.length;
+      const body = text.slice(start, end).trim();
+      if (!body) continue;
+
+      const label = curr[1].toLowerCase();
+      const role: 'user' | 'assistant' =
+        label === 'user' || label === 'pengguna' || label === 'you' ? 'user' : 'assistant';
+
+      messages.push({
+        id: generateId(),
+        role,
+        content: body,
+        createdAt: now + i,
+      });
+    }
+  }
+
+  // Fallback untuk file .md dokumen biasa tanpa header User/Assistant
+  if (messages.length === 0) {
+    messages.push({
+      id: generateId(),
+      role: 'user',
+      content: `[Konteks Referensi dari Dokumen Markdown]\n\n${text}`,
+      createdAt: now,
+    });
+    messages.push({
+      id: generateId(),
+      role: 'assistant',
+      content:
+        'Siap! Konteks dokumen di atas sudah saya pahami untuk sesi ini. Silakan lanjutkan pertanyaan atau instruksi berikutnya.',
+      createdAt: now + 1,
+    });
+  }
+
+  const totalTok = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+  return {
+    ok: true,
+    sourceLabel: matches.length >= 1 ? 'Markdown Chat (.md)' : 'Markdown Context (.md)',
+    title: extractedTitle.slice(0, 64),
+    messages,
+    estimatedTokens: totalTok,
+  };
+}
+
+export function parseImportedChatContent(
+  rawText: string,
+  fileName = 'Imported Chat'
+): ParsedImportResult {
+  const trimmed = rawText.trim();
+  const baseTitle = fileName.replace(/\.(json|md|txt)$/i, '') || 'Imported Chat';
+
+  if (!trimmed) {
+    return { ok: false, messages: [], estimatedTokens: 0, error: 'Konten masih kosong.' };
+  }
+
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+
+      if (Array.isArray(parsed)) {
+        const res = parseGenericMessagesArray(parsed, 'Gemini / Chat Array JSON', baseTitle);
+        if (res) return res;
+      } else if (parsed && typeof parsed === 'object') {
+        const obj = parsed as Record<string, unknown>;
+
+        const aiStudioRes = parseGoogleAiStudioJson(obj, baseTitle);
+        if (aiStudioRes) return aiStudioRes;
+
+        if (Array.isArray(obj.messages)) {
+          const res = parseGenericMessagesArray(
+            obj.messages,
+            'Adam Studio / Chat JSON',
+            typeof obj.title === 'string' && obj.title.trim() ? obj.title.trim() : baseTitle,
+            cleanModelName(obj.model),
+            typeof obj.sessionSystemInstruction === 'string'
+              ? obj.sessionSystemInstruction
+              : undefined
+          );
+          if (res) return res;
+        }
+
+        if (Array.isArray(obj.contents)) {
+          const res = parseGenericMessagesArray(
+            obj.contents,
+            'Gemini API Contents JSON',
+            baseTitle,
+            cleanModelName(obj.model)
+          );
+          if (res) return res;
+        }
+
+        const gptRes = parseChatGptMappingJson(obj, baseTitle);
+        if (gptRes) return gptRes;
+      }
+
+      return {
+        ok: false,
+        messages: [],
+        estimatedTokens: 0,
+        error:
+          'Struktur JSON tidak dikenali. Pastikan berasal dari Google AI Studio (Drive JSON), Adam Studio Export, ChatGPT, atau array { role, content }.',
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        messages: [],
+        estimatedTokens: 0,
+        error: `JSON tidak valid: ${err instanceof Error ? err.message : 'Syntax error'}`,
+      };
+    }
+  }
+
+  return parseMarkdownChat(trimmed, baseTitle);
+}

@@ -20,9 +20,9 @@ while ((match = filePattern.exec(rawBundle)) !== null) {
   if (!target.startsWith(cwd + path.sep) && target !== cwd) process.exit(1);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, `${match[2]}\n`, 'utf8');
-  console.log(`  ✓ updated ${relPath}`);
+  console.log(`  ✓ ${relPath}`);
   count += 1;
 }
 
-console.log(`\n✅ ${count} file diperbarui untuk fix Vercel 504 /api/transcribe!`);
-console.log('   Jalankan `pnpm build`, lalu push ke GitHub untuk re-deploy ke Vercel.\n');
+console.log(`\n✅ Adam Studio v6.0 (${count} file) berhasil diterapkan!`);
+console.log('   Jalankan `pnpm build` untuk verifikasi atau `pnpm dev` untuk langsung mencobanya.\n');

@@ -1,7 +1,11 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo, useRef, useState, type TouchEvent } from 'react';
+import { motion } from 'framer-motion';
 import {
   Bookmark,
+  Check,
   Command,
+  FileUp,
+  Layers,
   MessageSquare,
   MonitorDown,
   MoreHorizontal,
@@ -34,6 +38,8 @@ import { estimateCostNumber } from '@/lib/models';
 import type { Conversation } from '@/types/chat';
 import { cn } from '@/lib/utils';
 
+type SidebarFilter = 'all' | 'pinned' | 'canvas';
+
 interface SidebarProps {
   open: boolean;
   mobileOpen: boolean;
@@ -42,6 +48,7 @@ interface SidebarProps {
   conversations: Conversation[];
   activeId: string | null;
   onNewChat: () => void;
+  onImportChat: () => void;
   onSelectConversation: (id: string) => void;
   onRenameConversation: (id: string, title: string) => void;
   onTogglePinConversation: (id: string) => void;
@@ -63,6 +70,32 @@ function getDateBucket(timestamp: number): 'Hari Ini' | 'Kemarin' | 'Sebelumnya'
   return 'Sebelumnya';
 }
 
+function formatRelativeShort(ts: number): string {
+  const diffMin = Math.floor((Date.now() - ts) / 60_000);
+  if (diffMin < 1) return 'baru saja';
+  if (diffMin < 60) return `${diffMin}m`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}j`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay === 1) return 'kemarin';
+  if (diffDay < 7) return `${diffDay}h`;
+  return new Date(ts).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' });
+}
+
+function shortModelTag(modelId: string): string {
+  if (modelId === 'gemini-4-hydrogen') return 'H4';
+  if (modelId === 'gemini-2.5-pro') return '2.5P';
+  if (modelId === 'gemini-2.5-flash') return '2.5F';
+  if (modelId === 'gemini-2.0-flash') return '2.0F';
+  return modelId.replace(/^gemini-/i, '').slice(0, 8);
+}
+
+function convHasCanvas(conv: Conversation): boolean {
+  return conv.messages.some(
+    (m) => m.role === 'assistant' && /```(?:html|htm|svg|mermaid|[a-z]+\n[\s\S]{150,})/i.test(m.content)
+  );
+}
+
 export const Sidebar = memo(function Sidebar({
   open,
   mobileOpen,
@@ -71,6 +104,7 @@ export const Sidebar = memo(function Sidebar({
   conversations,
   activeId,
   onNewChat,
+  onImportChat,
   onSelectConversation,
   onRenameConversation,
   onTogglePinConversation,
@@ -83,13 +117,23 @@ export const Sidebar = memo(function Sidebar({
   onInstallApp,
 }: SidebarProps) {
   const [search, setSearch] = useState('');
+  const [filterTab, setFilterTab] = useState<SidebarFilter>('all');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
 
-  const { pinned, grouped, totalTokens, totalCost } = useMemo(() => {
+  const touchStartXRef = useRef<number | null>(null);
+
+  const { pinned, grouped, totalTokens, totalCost, filteredTotal } = useMemo(() => {
     const q = search.trim().toLowerCase();
     const filtered = conversations
-      .filter((c) => !q || c.title.toLowerCase().includes(q))
+      .filter((c) => {
+        const matchesQuery = !q || c.title.toLowerCase().includes(q);
+        const matchesTab =
+          filterTab === 'all' ||
+          (filterTab === 'pinned' && Boolean(c.pinned)) ||
+          (filterTab === 'canvas' && convHasCanvas(c));
+        return matchesQuery && matchesTab;
+      })
       .sort((a, b) => b.updatedAt - a.updatedAt);
 
     let tokens = 0;
@@ -114,8 +158,14 @@ export const Sidebar = memo(function Sidebar({
       groups[getDateBucket(conv.updatedAt)].push(conv);
     }
 
-    return { pinned: pinnedList, grouped: groups, totalTokens: tokens, totalCost: cost };
-  }, [conversations, search]);
+    return {
+      pinned: pinnedList,
+      grouped: groups,
+      totalTokens: tokens,
+      totalCost: cost,
+      filteredTotal: filtered.length,
+    };
+  }, [conversations, filterTab, search]);
 
   const commitRename = (id: string) => {
     const trimmed = editingTitle.trim();
@@ -125,102 +175,171 @@ export const Sidebar = memo(function Sidebar({
     setEditingId(null);
   };
 
+  const cancelRename = () => {
+    setEditingId(null);
+    setEditingTitle('');
+  };
+
+  const handleTouchStart = (e: TouchEvent<HTMLElement>) => {
+    touchStartXRef.current = e.touches[0]?.clientX ?? null;
+  };
+
+  const handleTouchEnd = (e: TouchEvent<HTMLElement>) => {
+    if (touchStartXRef.current === null) return;
+    const endX = e.changedTouches[0]?.clientX ?? touchStartXRef.current;
+    if (touchStartXRef.current - endX > 65) {
+      onCloseMobile();
+    }
+    touchStartXRef.current = null;
+  };
+
   const renderConversationRow = (conv: Conversation) => {
     const isActive = conv.id === activeId;
     const isEditing = editingId === conv.id;
+    const hasCanvas = convHasCanvas(conv);
+
+    if (isEditing) {
+      return (
+        <div
+          key={conv.id}
+          className="flex items-center gap-1.5 rounded-xl border border-primary/50 bg-background/95 p-1.5 shadow-sm"
+        >
+          <Input
+            autoFocus
+            value={editingTitle}
+            onChange={(e) => setEditingTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitRename(conv.id);
+              if (e.key === 'Escape') cancelRename();
+            }}
+            placeholder="Judul sesi..."
+            className="h-7 flex-1 rounded-lg border-0 bg-muted/50 px-2 text-xs shadow-none focus-visible:ring-1"
+          />
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => commitRename(conv.id)}
+            className="h-7 w-7 shrink-0 rounded-lg text-emerald-400 hover:bg-emerald-500/15 hover:text-emerald-300"
+            title="Simpan"
+          >
+            <Check className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={cancelRename}
+            className="h-7 w-7 shrink-0 rounded-lg text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+            title="Batal"
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      );
+    }
 
     return (
       <div
         key={conv.id}
         className={cn(
-          'group flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-sm transition-colors',
+          'group relative flex items-center gap-2 rounded-xl border px-2.5 py-2 transition-all',
           isActive
-            ? 'bg-accent text-accent-foreground font-medium shadow-sm'
-            : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+            ? 'border-primary/30 bg-accent/85 text-accent-foreground shadow-sm'
+            : 'border-transparent text-muted-foreground hover:border-border/60 hover:bg-accent/45 hover:text-foreground'
         )}
       >
-        {conv.pinned ? (
-          <Pin className="h-3.5 w-3.5 shrink-0 text-primary" />
-        ) : (
-          <MessageSquare className="h-3.5 w-3.5 shrink-0 opacity-65" />
-        )}
-
-        {isEditing ? (
-          <input
-            autoFocus
-            value={editingTitle}
-            onChange={(e) => setEditingTitle(e.target.value)}
-            onBlur={() => commitRename(conv.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commitRename(conv.id);
-              if (e.key === 'Escape') setEditingId(null);
-            }}
-            className="w-full rounded bg-background px-2 py-1 text-xs text-foreground outline-none ring-1 ring-ring"
+        {/* Active Accent Indicator Rail */}
+        {isActive && (
+          <span
+            aria-hidden="true"
+            className="absolute left-1 top-2 bottom-2 w-0.5 rounded-full bg-primary"
           />
-        ) : (
-          <button
-            type="button"
-            onClick={() => {
-              onSelectConversation(conv.id);
-              onCloseMobile();
-            }}
-            className="min-w-0 flex-1 truncate text-left text-xs"
-          >
-            {conv.title}
-          </button>
         )}
 
-        {!isEditing && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                onClick={(e) => e.stopPropagation()}
-                className={cn(
-                  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-opacity hover:bg-background/80 focus:opacity-100',
-                  isActive
-                    ? 'opacity-100'
-                    : 'opacity-80 md:opacity-0 md:group-hover:opacity-100'
-                )}
-                aria-label="Opsi percakapan"
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuItem onClick={() => onTogglePinConversation(conv.id)}>
-                {conv.pinned ? (
-                  <>
-                    <PinOff className="h-3.5 w-3.5" />
-                    Lepas Sematan
-                  </>
-                ) : (
-                  <>
-                    <Pin className="h-3.5 w-3.5" />
-                    Sematkan Chat
-                  </>
-                )}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => {
-                  setEditingId(conv.id);
-                  setEditingTitle(conv.title);
-                }}
-              >
-                <Pencil className="h-3.5 w-3.5" />
-                Ubah Judul
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onClick={() => onDeleteConversation(conv.id)}
-                className="text-destructive focus:text-destructive"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                Hapus Chat
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
+        <div className={cn('shrink-0', isActive && 'pl-1')}>
+          {conv.pinned ? (
+            <Pin className="h-3.5 w-3.5 text-primary" />
+          ) : (
+            <MessageSquare className="h-3.5 w-3.5 opacity-65" />
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            onSelectConversation(conv.id);
+            onCloseMobile();
+          }}
+          className="min-w-0 flex-1 text-left"
+        >
+          <div className={cn('truncate text-xs leading-snug', isActive && 'font-semibold')}>
+            {conv.title}
+          </div>
+          <div className="mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+            <span className="rounded bg-background/80 px-1 py-0 font-mono text-[9px]">
+              {shortModelTag(conv.model)}
+            </span>
+            <span>•</span>
+            <span>{formatRelativeShort(conv.updatedAt)}</span>
+            {hasCanvas && (
+              <>
+                <span>•</span>
+                <Layers className="h-2.5 w-2.5 text-primary" />
+              </>
+            )}
+          </div>
+        </button>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              onClick={(e) => e.stopPropagation()}
+              className={cn(
+                'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-opacity hover:bg-background/80 focus:opacity-100',
+                isActive ? 'opacity-100' : 'opacity-80 md:opacity-0 md:group-hover:opacity-100'
+              )}
+              aria-label="Opsi percakapan"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuItem onClick={() => onTogglePinConversation(conv.id)}>
+              {conv.pinned ? (
+                <>
+                  <PinOff className="h-3.5 w-3.5" />
+                  Lepas Sematan
+                </>
+              ) : (
+                <>
+                  <Pin className="h-3.5 w-3.5" />
+                  Sematkan Chat
+                </>
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => {
+                setEditingId(conv.id);
+                setEditingTitle(conv.title);
+              }}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              Ubah Judul
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() => onDeleteConversation(conv.id)}
+              className="text-destructive focus:text-destructive"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Hapus Chat
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     );
   };
@@ -228,9 +347,13 @@ export const Sidebar = memo(function Sidebar({
   return (
     <>
       {mobileOpen && (
-        <div className="fixed inset-0 z-30 bg-black/60 md:hidden" onClick={onCloseMobile} />
+        <div
+          className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm md:hidden"
+          onClick={onCloseMobile}
+        />
       )}
 
+      {/* Desktop Collapsed Icon Rail */}
       {!open && (
         <aside className="hidden w-14 shrink-0 flex-col items-center justify-between border-r bg-card/85 py-3 md:flex">
           <div className="flex flex-col items-center gap-2">
@@ -256,6 +379,21 @@ export const Sidebar = memo(function Sidebar({
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">New Chat</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={onImportChat}
+                  className="rounded-xl"
+                >
+                  <FileUp className="h-4 w-4 text-primary" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">Import Chat (.json / .md)</TooltipContent>
             </Tooltip>
 
             <Tooltip>
@@ -340,9 +478,12 @@ export const Sidebar = memo(function Sidebar({
         </aside>
       )}
 
+      {/* Full Sidebar */}
       <aside
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
         className={cn(
-          'fixed inset-y-0 left-0 z-40 flex w-[82vw] max-w-72 shrink-0 flex-col border-r bg-card transition-transform duration-200 md:static md:w-72',
+          'fixed inset-y-0 left-0 z-40 flex w-[84vw] max-w-76 shrink-0 flex-col border-r bg-card/95 backdrop-blur-xl transition-transform duration-200 md:static md:w-72',
           mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
           !open && 'md:hidden'
         )}
@@ -353,7 +494,7 @@ export const Sidebar = memo(function Sidebar({
             <div>
               <div className="text-sm font-bold leading-none tracking-tight">Adam Studio</div>
               <div className="mt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                Gemini 4 Workspace
+                AI Workspace
               </div>
             </div>
           </div>
@@ -382,6 +523,7 @@ export const Sidebar = memo(function Sidebar({
         </div>
 
         <div className="space-y-2.5 px-3 pb-3">
+          {/* Primary Action Dock */}
           <div className="flex gap-1.5">
             <Button
               type="button"
@@ -389,32 +531,99 @@ export const Sidebar = memo(function Sidebar({
                 onNewChat();
                 onCloseMobile();
               }}
-              className="flex-1 justify-start gap-2 rounded-xl"
+              className="flex-1 justify-start gap-2 rounded-xl shadow-sm"
             >
               <Plus className="h-4 w-4" />
               New Chat
             </Button>
 
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              onClick={onOpenCommandPalette}
-              title="Command Palette (Ctrl+K)"
-              className="h-9 w-9 shrink-0 rounded-xl"
-            >
-              <Command className="h-4 w-4" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => {
+                    onImportChat();
+                    onCloseMobile();
+                  }}
+                  className="h-9 w-9 shrink-0 rounded-xl border-border/80"
+                  aria-label="Import Chat"
+                >
+                  <FileUp className="h-4 w-4 text-primary" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Import Konteks Chat (.json / .md)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={onOpenCommandPalette}
+                  className="h-9 w-9 shrink-0 rounded-xl border-border/80"
+                  aria-label="Command Palette"
+                >
+                  <Command className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Command Palette (Ctrl+K)</TooltipContent>
+            </Tooltip>
           </div>
 
+          {/* Search Input with Clear Button */}
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Cari riwayat chat..."
-              className="h-8 bg-background/60 pl-8 text-xs"
+              className="h-8 rounded-xl bg-background/60 pl-8 pr-8 text-xs"
             />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                aria-label="Clear search"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+
+          {/* Animated Filter Pills */}
+          <div className="grid grid-cols-3 gap-1 rounded-xl border bg-background/50 p-1">
+            {(
+              [
+                { id: 'all', label: 'Semua' },
+                { id: 'pinned', label: 'Pin' },
+                { id: 'canvas', label: 'Canvas' },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setFilterTab(tab.id)}
+                className={cn(
+                  'relative rounded-lg py-1 text-[11px] font-medium transition-colors',
+                  filterTab === tab.id
+                    ? 'text-primary-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {filterTab === tab.id && (
+                  <motion.span
+                    layoutId="sidebar-filter-pill"
+                    transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+                    className="absolute inset-0 -z-10 rounded-lg bg-primary shadow-sm"
+                  />
+                )}
+                {tab.label}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -422,10 +631,11 @@ export const Sidebar = memo(function Sidebar({
 
         <StudioScroll className="min-h-0 flex-1" autoHide="scroll">
           <div className="px-2.5 py-2.5">
-            {conversations.length === 0 ? (
-              <div className="px-3 py-8 text-center text-xs leading-relaxed text-muted-foreground">
-                Belum ada percakapan. Mulai chat baru atau tekan{' '}
-                <kbd className="rounded border px-1">Ctrl+K</kbd>.
+            {filteredTotal === 0 ? (
+              <div className="rounded-xl border border-dashed px-3 py-8 text-center text-xs leading-relaxed text-muted-foreground">
+                {conversations.length === 0
+                  ? 'Belum ada percakapan. Klik New Chat atau Import (.json / .md).'
+                  : 'Tidak ada percakapan yang cocok dengan filter atau pencarian.'}
               </div>
             ) : (
               <div className="space-y-4">
@@ -475,14 +685,17 @@ export const Sidebar = memo(function Sidebar({
           </div>
         )}
 
-        <div className="mx-3 mb-2 rounded-xl border bg-background/50 p-2.5 text-[11px]">
-          <div className="flex items-center justify-between text-muted-foreground">
-            <span>Workspace Usage</span>
-            <span className="font-mono text-foreground">{totalTokens.toLocaleString()} tok</span>
-          </div>
-          <div className="mt-1 flex items-center justify-between text-muted-foreground">
-            <span>Est. Cost</span>
+        {/* Upgraded Workspace Telemetry Card */}
+        <div className="mx-3 mb-2 space-y-1.5 rounded-xl border bg-background/60 p-3 text-[11px]">
+          <div className="flex items-center justify-between">
+            <span className="font-medium text-muted-foreground">
+              {conversations.length} Sesi Tersimpan
+            </span>
             <span className="font-mono text-emerald-400">${totalCost.toFixed(4)}</span>
+          </div>
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+            <span>Total Pemakaian</span>
+            <span className="font-mono text-foreground">{totalTokens.toLocaleString()} tok</span>
           </div>
         </div>
 

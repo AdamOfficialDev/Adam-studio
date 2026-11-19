@@ -20,6 +20,7 @@ import {
   Eye,
   FileJson,
   FileText,
+  FileUp,
   Image as ImageIcon,
   Maximize2,
   Menu,
@@ -34,6 +35,7 @@ import {
   Workflow,
 } from 'lucide-react';
 import { BrandLogo } from '@/components/BrandLogo';
+import { ImportChatDialog } from '@/components/ImportChatDialog';
 import { InstallAppDialog } from '@/components/InstallAppDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -158,6 +160,7 @@ export default function App() {
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
@@ -256,7 +259,6 @@ export default function App() {
     serverHealth?.serverKeyCount ||
     (serverHealth?.hasServerApiKey ? 1 : 0);
 
-  // Virtualizer hanya me-render pesan di sekitar viewport (mengatasi lag buka & scroll chat panjang)
   const virtualizer = useVirtualizer({
     count: messageList.length,
     getScrollElement: () => scrollViewport,
@@ -289,7 +291,12 @@ export default function App() {
         vtTokens
       );
     }, 0);
-    return textSum + estimateTokens(settings.systemInstruction);
+    return (
+      textSum +
+      estimateTokens(
+        activeConversation.sessionSystemInstruction || settings.systemInstruction
+      )
+    );
   }, [activeConversation, settings.systemInstruction]);
 
   const contextUsagePct = Math.min(
@@ -316,7 +323,6 @@ export default function App() {
     [messageList.length, scrollViewport, virtualizer]
   );
 
-  // Langsung lompat ke pesan terbaru saat membuka chat panjang
   useEffect(() => {
     if (!activeId || messageList.length === 0 || !scrollViewport) return;
     autoScrollEnabledRef.current = true;
@@ -445,7 +451,8 @@ export default function App() {
       convId: string,
       modelId: string,
       historyMessages: ChatMessageType[],
-      assistantMessageId: string
+      assistantMessageId: string,
+      sessionSystemInstruction?: string
     ) => {
       abortControllerRef.current?.abort();
       const controller = new AbortController();
@@ -456,6 +463,14 @@ export default function App() {
         settings.maxHistoryMessages > 0 && historyMessages.length > settings.maxHistoryMessages
           ? historyMessages.slice(-settings.maxHistoryMessages)
           : historyMessages;
+
+      // Gabungkan konteks sistem khusus sesi impor (hanya berlaku untuk sesi tersebut, bukan global Settings)
+      const effectiveSystemInstruction = [
+        settings.systemInstruction,
+        sessionSystemInstruction ? `[Konteks Sistem Sesi Impor]\n${sessionSystemInstruction}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n');
 
       const startedAt = performance.now();
       let firstThoughtAt: number | null = null;
@@ -513,7 +528,7 @@ export default function App() {
               visualTarget: m.visualTarget,
               attachments: m.attachments,
             })),
-            systemInstruction: settings.systemInstruction,
+            systemInstruction: effectiveSystemInstruction,
             temperature: settings.temperature,
             maxOutputTokens: settings.maxOutputTokens,
             includeThoughts: settings.includeThoughts,
@@ -768,7 +783,8 @@ export default function App() {
           activeConversation.id,
           currentModelId,
           historyForModel,
-          assistantMessageId
+          assistantMessageId,
+          activeConversation.sessionSystemInstruction
         );
       }
     },
@@ -813,7 +829,8 @@ export default function App() {
         activeConversation.id,
         targetModel,
         baseMessages,
-        assistantMessageId
+        assistantMessageId,
+        activeConversation.sessionSystemInstruction
       );
     },
     [activeConversation, isStreamingActive, runStreamForConversation]
@@ -857,7 +874,8 @@ export default function App() {
         activeConversation.id,
         activeConversation.model,
         baseHistory,
-        assistantMessageId
+        assistantMessageId,
+        activeConversation.sessionSystemInstruction
       );
     },
     [activeConversation, isStreamingActive, runStreamForConversation]
@@ -874,6 +892,7 @@ export default function App() {
         id: forkedId,
         title: `Branch: ${activeConversation.title}`.slice(0, 52),
         model: activeConversation.model,
+        sessionSystemInstruction: activeConversation.sessionSystemInstruction,
         messages: activeConversation.messages.slice(0, idx + 1).map((m) => ({
           ...m,
           id: generateId(),
@@ -886,6 +905,56 @@ export default function App() {
       toast.success('Cabang chat baru dibuat');
     },
     [activeConversation]
+  );
+
+  const handleConfirmImport = useCallback(
+    (payload: {
+      mode: 'new' | 'append';
+      title: string;
+      model: string;
+      sessionSystemInstruction?: string;
+      sourceLabel?: string;
+      messages: ChatMessageType[];
+    }) => {
+      if (isStreamingActive) handleStopStream();
+
+      if (payload.mode === 'append' && activeConversation) {
+        setConversations((prev) =>
+          prev.map((conv) =>
+            conv.id !== activeConversation.id
+              ? conv
+              : {
+                  ...conv,
+                  updatedAt: Date.now(),
+                  sessionSystemInstruction:
+                    payload.sessionSystemInstruction || conv.sessionSystemInstruction,
+                  messages: [...conv.messages, ...payload.messages],
+                }
+          )
+        );
+        toast.success(`${payload.messages.length} pesan digabungkan ke sesi aktif!`);
+      } else {
+        const newId = generateId();
+        const newConv: Conversation = {
+          id: newId,
+          title: payload.title,
+          model: payload.model || selectedModel,
+          sessionSystemInstruction: payload.sessionSystemInstruction,
+          importedSource: payload.sourceLabel,
+          messages: payload.messages,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        setConversations((prev) => [newConv, ...prev]);
+        setActiveId(newId);
+        setActiveArtifact(null);
+        setArtifactFullscreen(false);
+        toast.success(
+          `Berhasil impor ${payload.messages.length} pesan (${payload.sourceLabel || 'Konteks'}). Silakan lanjutkan chat!`
+        );
+      }
+    },
+    [activeConversation, handleStopStream, isStreamingActive, selectedModel]
   );
 
   const handleToggleStar = useCallback((convId: string, msgId: string) => {
@@ -999,6 +1068,7 @@ export default function App() {
               conversations={conversations}
               activeId={activeId}
               onNewChat={handleNewChat}
+              onImportChat={() => setImportDialogOpen(true)}
               onSelectConversation={(id) => {
                 if (isStreamingActive) handleStopStream();
                 setActiveId(id);
@@ -1076,6 +1146,24 @@ export default function App() {
                     <span className="hidden sm:inline">Offline</span>
                   </Badge>
                 )}
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setImportDialogOpen(true)}
+                      className="h-8 gap-1.5 rounded-full border border-border/60 bg-card/60 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      <FileUp className="h-3.5 w-3.5 text-primary" />
+                      <span className="hidden sm:inline">Import Chat</span>
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Impor history chat (.json / .md) sebagai konteks sesi ini
+                  </TooltipContent>
+                </Tooltip>
 
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1172,15 +1260,17 @@ export default function App() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-52">
+                    <DropdownMenuItem onClick={() => setImportDialogOpen(true)}>
+                      <FileUp className="h-3.5 w-3.5 text-primary" />
+                      Import Konteks (.json / .md)
+                    </DropdownMenuItem>
                     {!isStandalone && (
-                      <>
-                        <DropdownMenuItem onClick={() => void handleInstallAction()}>
-                          <MonitorDown className="h-3.5 w-3.5 text-primary" />
-                          Install Adam Studio App
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                      </>
+                      <DropdownMenuItem onClick={() => void handleInstallAction()}>
+                        <MonitorDown className="h-3.5 w-3.5 text-primary" />
+                        Install Adam Studio App
+                      </DropdownMenuItem>
                     )}
+                    <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={handleCycleSkin}>
                       <Palette className="h-3.5 w-3.5" />
                       Skin: {settings.skin}
@@ -1259,12 +1349,25 @@ export default function App() {
                       Adam Studio Workspace
                     </h1>
                     <p className="mt-2.5 max-w-lg text-sm leading-relaxed text-muted-foreground">
-                      Platform AI dengan Live Thinking, Gemini Audio Voice Input, Virtualized
-                      60fps Chat, Visual Inspector, & Per-File Token Counter.
+                      Platform AI dengan Live Thinking, Auto-Rotate Key Pool, Visual Inspector,
+                      Per-File Token Counter, & Impor Konteks AI Studio.
                     </p>
 
+                    <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setImportDialogOpen(true)}
+                        className="h-8 gap-1.5 rounded-full border-primary/35 bg-primary/5 text-xs text-primary hover:bg-primary/10"
+                      >
+                        <FileUp className="h-3.5 w-3.5" />
+                        Lanjutkan Chat dari Google AI Studio (.json / .md)
+                      </Button>
+                    </div>
+
                     {activeKeyPoolCount === 0 && !settings.demoMode && (
-                      <div className="mt-5 flex flex-wrap items-center justify-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-400">
+                      <div className="mt-4 flex flex-wrap items-center justify-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-400">
                         <span>API Key belum aktif.</span>
                         <button
                           type="button"
@@ -1332,6 +1435,25 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="mx-auto w-full min-w-0 max-w-3xl px-3 pt-5 sm:px-5 sm:pt-6">
+                    {activeConversation.importedSource && (
+                      <div className="mb-4 flex items-center justify-between gap-2 rounded-xl border border-primary/25 bg-primary/[0.06] px-3.5 py-2 text-xs text-muted-foreground">
+                        <span className="flex items-center gap-2">
+                          <FileUp className="h-3.5 w-3.5 text-primary" />
+                          <span>
+                            Sesi lanjutan dari{' '}
+                            <strong className="text-foreground">
+                              {activeConversation.importedSource}
+                            </strong>
+                          </span>
+                        </span>
+                        {activeConversation.sessionSystemInstruction && (
+                          <Badge variant="outline" className="text-[10px]">
+                            Session System Prompt
+                          </Badge>
+                        )}
+                      </div>
+                    )}
+
                     <div
                       style={{
                         height: `${virtualizer.getTotalSize()}px`,
@@ -1535,12 +1657,22 @@ export default function App() {
             onSave={setSettings}
           />
 
+          <ImportChatDialog
+            open={importDialogOpen}
+            onOpenChange={setImportDialogOpen}
+            hasActiveSession={Boolean(activeConversation && activeConversation.messages.length > 0)}
+            activeSessionTitle={activeConversation?.title}
+            defaultModel={currentModelId}
+            onConfirmImport={handleConfirmImport}
+          />
+
           <CommandPalette
             open={commandOpen}
             onOpenChange={setCommandOpen}
             conversations={conversations}
             activeSkin={settings.skin}
             onNewChat={handleNewChat}
+            onImportChat={() => setImportDialogOpen(true)}
             onSelectConversation={(id) => {
               if (isStreamingActive) handleStopStream();
               setActiveId(id);

@@ -2,6 +2,7 @@ import {
   Bookmark,
   Cpu,
   Download,
+  FileUp,
   Maximize2,
   MessageSquare,
   MonitorDown,
@@ -30,6 +31,7 @@ interface CommandPaletteProps {
   conversations: Conversation[];
   activeSkin: ThemeSkin;
   onNewChat: () => void;
+  onImportChat: () => void;
   onSelectConversation: (id: string) => void;
   onOpenModelSelector: () => void;
   onOpenSettings: () => void;
@@ -48,6 +50,7 @@ export function CommandPalette({
   conversations,
   activeSkin,
   onNewChat,
+  onImportChat,
   onSelectConversation,
   onOpenModelSelector,
   onOpenSettings,
@@ -66,7 +69,7 @@ export function CommandPalette({
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
-      <CommandInput placeholder="Ketik perintah, cari chat, template, atau install app..." />
+      <CommandInput placeholder="Ketik perintah, cari chat, import konteks, atau template..." />
       <CommandList>
         <CommandEmpty>Tidak ada perintah atau chat yang cocok.</CommandEmpty>
 
@@ -75,6 +78,10 @@ export function CommandPalette({
             <Plus className="text-primary" />
             <span>Buat Percakapan Baru</span>
             <CommandShortcut>Ctrl+Shift+O</CommandShortcut>
+          </CommandItem>
+          <CommandItem onSelect={() => run(onImportChat)}>
+            <FileUp className="text-primary" />
+            <span>Import Konteks Chat (.json / .md)</span>
           </CommandItem>
           {showInstallOption && onInstallApp && (
             <CommandItem onSelect={() => run(onInstallApp)}>
