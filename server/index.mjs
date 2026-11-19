@@ -42,7 +42,7 @@ function maskKeyLabel(key, idx) {
   return `Key #${idx + 1} (•••${tail})`;
 }
 
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 app.get('/api/health', (_req, res) => {
   const envKeys = getServerEnvKeys();
@@ -55,73 +55,82 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+function buildAttachmentParts(att) {
+  if (!att) return [];
+  if (att.kind === 'text' && typeof att.textContent === 'string') {
+    return [
+      {
+        text: `\n\n[Attached File: ${att.name}]\n\`\`\`\n${att.textContent}\n\`\`\``,
+      },
+    ];
+  }
+  if (att.mimeType && att.data) {
+    return [
+      {
+        inlineData: {
+          mimeType: att.mimeType,
+          data: att.data,
+        },
+      },
+    ];
+  }
+  if (att.name) {
+    return [{ text: `[Attached ${att.kind || 'file'}: ${att.name}]` }];
+  }
+  return [];
+}
+
+// Endpoint resmi hitung token per file ala Google AI Studio
 app.post('/api/count-tokens', async (req, res) => {
   const { model = DEFAULT_MODEL, attachment } = req.body || {};
+
   const headerKeys = parseKeyPool(
     typeof req.headers['x-gemini-api-keys'] === 'string' ? req.headers['x-gemini-api-keys'] : '',
     typeof req.headers['x-gemini-api-key'] === 'string' ? req.headers['x-gemini-api-key'] : ''
   );
   const apiKeys = headerKeys.length > 0 ? headerKeys : getServerEnvKeys();
 
-  if (apiKeys.length === 0 || !attachment) {
-    res.status(400).json({ error: 'API key atau attachment tidak tersedia.' });
+  if (!attachment || apiKeys.length === 0) {
+    res.status(400).json({ ok: false });
     return;
   }
 
-  const parts = [];
-  if (attachment.kind === 'text' && typeof attachment.textContent === 'string') {
-    parts.push({
-      text: `[Attached File: ${attachment.name}]\n\`\`\`\n${attachment.textContent}\n\`\`\``,
-    });
-  } else if (attachment.mimeType && attachment.data) {
-    parts.push({
-      inlineData: {
-        mimeType: attachment.mimeType,
-        data: attachment.data,
-      },
-    });
-  }
-
+  const parts = buildAttachmentParts(attachment);
   if (parts.length === 0) {
-    res.status(400).json({ error: 'Konten file kosong.' });
+    res.status(400).json({ ok: false });
     return;
   }
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    model
+  )}:countTokens`;
 
   const ordered = buildOrderedCandidateKeys(apiKeys);
-  const candidateModels = [model, 'gemini-2.5-flash'].filter((v, i, a) => a.indexOf(v) === i);
-
-  for (const targetModel of candidateModels) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      targetModel
-    )}:countTokens`;
-
-    for (const candidate of ordered.slice(0, 3)) {
-      try {
-        const upstream = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': candidate.key,
-          },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts }],
-          }),
-        });
-
-        if (upstream.ok) {
-          const data = await upstream.json();
-          if (typeof data?.totalTokens === 'number') {
-            res.json({ totalTokens: data.totalTokens, model: targetModel });
-            return;
-          }
+  for (const candidate of ordered.slice(0, Math.min(ordered.length, 3))) {
+    try {
+      const upstream = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': candidate.key,
+        },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts }],
+        }),
+      });
+      if (upstream.ok) {
+        const json = await upstream.json();
+        if (typeof json?.totalTokens === 'number') {
+          res.json({ ok: true, totalTokens: json.totalTokens });
+          return;
         }
-      } catch {
-        // Coba key atau model berikutnya
       }
+    } catch {
+      // Coba key berikutnya
     }
   }
 
-  res.status(502).json({ error: 'Gagal menghitung token via countTokens API.' });
+  res.status(502).json({ ok: false });
 });
 
 function writeSseEvent(res, event, data) {
@@ -157,7 +166,7 @@ async function runDemoSse({ res, model, messages, includeThoughts = true, signal
       `Pengguna meminta: "${userText.slice(0, 100)}".\n\n`,
       `**2. Merencanakan Struktur Respons (${model})**\n`,
       `- Menyiapkan HTML Artifact interaktif agar dapat diuji dengan **Visual Element Inspector**.\n`,
-      `- Mendemonstrasikan Time-Machine Diff & Auto-Rotate Multi-Key Pool.`,
+      `- Mendemonstrasikan Time-Machine Diff & Per-File Token Counter.`,
     ].join('');
 
     const thoughtTokens = demoThought.match(/\S+\s*/g) || [demoThought];
@@ -169,7 +178,6 @@ async function runDemoSse({ res, model, messages, includeThoughts = true, signal
 
   const demoReply = [
     `Berikut hasil **Adam Studio v5.1 (Demo SSE Mode)** pada model \`${model}\`.\n\n`,
-    `> **Tips Uji:** Klik **Run Preview**, aktifkan **Inspect (Crosshair)**, dan klik tombol biru di dalam kartu.\n\n`,
     '```html\n',
     '<!doctype html>\n',
     '<html>\n',
@@ -179,7 +187,6 @@ async function runDemoSse({ res, model, messages, includeThoughts = true, signal
     '    * { box-sizing: border-box; }\n',
     '    body { margin: 0; font-family: system-ui, sans-serif; background: #09090b; color: #fafafa; min-height: 100vh; display: grid; place-items: center; padding: 20px; }\n',
     '    .card { width: 100%; max-width: 360px; padding: 24px; border-radius: 20px; background: #18181b; border: 1px solid rgba(255,255,255,0.12); box-shadow: 0 20px 50px rgba(0,0,0,0.5); }\n',
-    '    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 11px; background: rgba(59,130,246,0.15); color: #93c5fd; margin-bottom: 12px; }\n',
     '    h2 { margin: 0 0 8px; font-size: 20px; }\n',
     '    p { margin: 0 0 18px; font-size: 13px; color: #a1a1aa; line-height: 1.5; }\n',
     '    .action-btn { width: 100%; padding: 12px; border-radius: 12px; border: 0; font-weight: 600; cursor: pointer; background: #3b82f6; color: #fff; }\n',
@@ -187,9 +194,8 @@ async function runDemoSse({ res, model, messages, includeThoughts = true, signal
     '</head>\n',
     '<body>\n',
     '  <div class="card">\n',
-    '    <span class="badge">Adam Studio v5.1</span>\n',
-    '    <h2>Visual Inspector Target</h2>\n',
-    '    <p>Aktifkan ikon Crosshair di atas preview ini, lalu klik tombol di bawah untuk mengeditnya langsung.</p>\n',
+    '    <h2>Adam Studio v5.1</h2>\n',
+    '    <p>Aktifkan ikon Crosshair untuk Inspect tombol di bawah ini.</p>\n',
     '    <button class="action-btn" id="main-cta">Tombol Utama</button>\n',
     '  </div>\n',
     '</body>\n',
@@ -221,18 +227,7 @@ function buildGeminiContents(messages) {
     }
     if (Array.isArray(msg.attachments)) {
       for (const att of msg.attachments) {
-        if (att?.kind === 'text' && typeof att?.textContent === 'string') {
-          parts.push({
-            text: `\n\n[Attached File: ${att.name}]\n\`\`\`\n${att.textContent}\n\`\`\``,
-          });
-        } else if (att?.mimeType && att?.data) {
-          parts.push({
-            inlineData: {
-              mimeType: att.mimeType,
-              data: att.data,
-            },
-          });
-        }
+        parts.push(...buildAttachmentParts(att));
       }
     }
     if (parts.length === 0) {

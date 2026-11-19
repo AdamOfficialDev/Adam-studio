@@ -2,8 +2,6 @@ export const config = {
   runtime: 'edge',
 };
 
-const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gemini-4-hydrogen';
-
 function parseKeyPool(...sources) {
   const pool = [];
   const seen = new Set();
@@ -20,6 +18,28 @@ function parseKeyPool(...sources) {
   return pool;
 }
 
+function buildAttachmentParts(att) {
+  if (!att) return [];
+  if (att.kind === 'text' && typeof att.textContent === 'string') {
+    return [
+      {
+        text: `\n\n[Attached File: ${att.name}]\n\`\`\`\n${att.textContent}\n\`\`\``,
+      },
+    ];
+  }
+  if (att.mimeType && att.data) {
+    return [
+      {
+        inlineData: {
+          mimeType: att.mimeType,
+          data: att.data,
+        },
+      },
+    ];
+  }
+  return [];
+}
+
 export default async function handler(request) {
   if (request.method !== 'POST') {
     return new Response('Method Not Allowed', { status: 405 });
@@ -29,13 +49,10 @@ export default async function handler(request) {
   try {
     body = await request.json();
   } catch {
-    return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return Response.json({ ok: false }, { status: 400 });
   }
 
-  const { model = DEFAULT_MODEL, attachment } = body || {};
+  const { model = process.env.DEFAULT_MODEL || 'gemini-4-hydrogen', attachment } = body || {};
 
   const headerKeys = parseKeyPool(
     request.headers.get('x-gemini-api-keys') || '',
@@ -44,74 +61,43 @@ export default async function handler(request) {
   const envKeys = parseKeyPool(process.env.GEMINI_API_KEYS, process.env.GEMINI_API_KEY);
   const apiKeys = headerKeys.length > 0 ? headerKeys : envKeys;
 
-  if (apiKeys.length === 0 || !attachment) {
-    return new Response(JSON.stringify({ error: 'API key atau attachment tidak tersedia.' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' },
-    });
+  if (!attachment || apiKeys.length === 0) {
+    return Response.json({ ok: false }, { status: 400 });
   }
 
-  const parts = [];
-  if (attachment.kind === 'text' && typeof attachment.textContent === 'string') {
-    parts.push({
-      text: `[Attached File: ${attachment.name}]\n\`\`\`\n${attachment.textContent}\n\`\`\``,
-    });
-  } else if (attachment.mimeType && attachment.data) {
-    parts.push({
-      inlineData: {
-        mimeType: attachment.mimeType,
-        data: attachment.data,
-      },
-    });
-  }
-
+  const parts = buildAttachmentParts(attachment);
   if (parts.length === 0) {
-    return new Response(JSON.stringify({ error: 'Konten file kosong.' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return Response.json({ ok: false }, { status: 400 });
   }
 
-  const candidateModels = [model, 'gemini-2.5-flash'].filter((v, i, a) => a.indexOf(v) === i);
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    model
+  )}:countTokens`;
 
-  for (const targetModel of candidateModels) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      targetModel
-    )}:countTokens`;
-
-    for (const key of apiKeys.slice(0, 3)) {
-      try {
-        const upstream = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': key,
-          },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts }],
-          }),
-        });
-
-        if (upstream.ok) {
-          const data = await upstream.json();
-          if (typeof data?.totalTokens === 'number') {
-            return new Response(
-              JSON.stringify({ totalTokens: data.totalTokens, model: targetModel }),
-              {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-              }
-            );
-          }
+  const startOffset = Math.floor(Math.random() * apiKeys.length);
+  for (let i = 0; i < Math.min(apiKeys.length, 3); i++) {
+    const key = apiKeys[(startOffset + i) % apiKeys.length];
+    try {
+      const upstream = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': key,
+        },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts }],
+        }),
+      });
+      if (upstream.ok) {
+        const json = await upstream.json();
+        if (typeof json?.totalTokens === 'number') {
+          return Response.json({ ok: true, totalTokens: json.totalTokens });
         }
-      } catch {
-        // Coba key atau model berikutnya
       }
+    } catch {
+      // Coba key berikutnya
     }
   }
 
-  return new Response(JSON.stringify({ error: 'Gagal menghitung token via countTokens API.' }), {
-    status: 502,
-    headers: { 'Content-Type': 'application/json' },
-  });
+  return Response.json({ ok: false }, { status: 502 });
 }

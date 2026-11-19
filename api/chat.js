@@ -48,6 +48,31 @@ function sleep(ms, signal) {
   });
 }
 
+function buildAttachmentParts(att) {
+  if (!att) return [];
+  if (att.kind === 'text' && typeof att.textContent === 'string') {
+    return [
+      {
+        text: `\n\n[Attached File: ${att.name}]\n\`\`\`\n${att.textContent}\n\`\`\``,
+      },
+    ];
+  }
+  if (att.mimeType && att.data) {
+    return [
+      {
+        inlineData: {
+          mimeType: att.mimeType,
+          data: att.data,
+        },
+      },
+    ];
+  }
+  if (att.name) {
+    return [{ text: `[Attached ${att.kind || 'file'}: ${att.name}]` }];
+  }
+  return [];
+}
+
 function buildGeminiContents(messages) {
   return messages.map((msg) => {
     const parts = [];
@@ -56,18 +81,7 @@ function buildGeminiContents(messages) {
     }
     if (Array.isArray(msg.attachments)) {
       for (const att of msg.attachments) {
-        if (att?.kind === 'text' && typeof att?.textContent === 'string') {
-          parts.push({
-            text: `\n\n[Attached File: ${att.name}]\n\`\`\`\n${att.textContent}\n\`\`\``,
-          });
-        } else if (att?.mimeType && att?.data) {
-          parts.push({
-            inlineData: {
-              mimeType: att.mimeType,
-              data: att.data,
-            },
-          });
-        }
+        parts.push(...buildAttachmentParts(att));
       }
     }
     if (parts.length === 0) {
@@ -341,11 +355,11 @@ export default async function handler(request) {
           }
 
           const demoReply = [
-            `Respons **Demo SSE Mode (v5.0)** dari Vercel Edge Function untuk \`${model}\`.\n\n`,
+            `Respons **Demo SSE Mode (v5.1)** dari Vercel Edge Function untuk \`${model}\`.\n\n`,
             '```html\n',
             '<!doctype html><html><body style="margin:0;display:grid;place-items:center;min-height:100vh;background:#09090b;color:#fff;font-family:sans-serif">',
             '<div style="padding:24px;border-radius:16px;border:1px solid #27272a;background:#18181b;text-align:center">',
-            '<h3>Adam Studio v5.0</h3><button style="margin-top:12px;padding:10px 16px;border-radius:10px;border:0;background:#3b82f6;color:#fff;font-weight:600">Inspect Tombol Ini</button>',
+            '<h3>Adam Studio v5.1</h3><button style="margin-top:12px;padding:10px 16px;border-radius:10px;border:0;background:#3b82f6;color:#fff;font-weight:600">Inspect Tombol Ini</button>',
             '</div></body></html>\n',
             '```\n',
           ].join('');

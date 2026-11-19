@@ -2,12 +2,14 @@ import { memo, useMemo, useState } from 'react';
 import {
   AlertCircle,
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
   Crosshair,
   FileAudio,
   FileCode2,
   FileText,
-  Film,
+  FileVideo,
   GitBranch,
   Layers,
   Pencil,
@@ -25,7 +27,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { CodeBlock, MarkdownRenderer } from '@/components/MarkdownRenderer';
+import { MarkdownRenderer } from '@/components/MarkdownRenderer';
 import { extractArtifactsFromMarkdown } from '@/lib/artifacts';
 import { estimateCostUsd } from '@/lib/models';
 import type { ArtifactItem, ChatMessage as ChatMessageType } from '@/types/chat';
@@ -45,51 +47,6 @@ interface ChatMessageProps {
   onPreviewImage: (url: string) => void;
 }
 
-type UserSegment =
-  | { type: 'text'; text: string }
-  | { type: 'target'; selector: string }
-  | { type: 'code'; language: string; code: string };
-
-function parseUserMessageSegments(content: string): UserSegment[] {
-  const segments: UserSegment[] = [];
-  const codeRegex = /```([\w-]*)\n([\s\S]*?)```/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  const pushTextWithTarget = (rawChunk: string) => {
-    const targetMatch = rawChunk.match(/^\[Visual Target Element:\s*`([^`]+)`\]\s*/);
-    if (targetMatch) {
-      segments.push({ type: 'target', selector: targetMatch[1] });
-      const rest = rawChunk.slice(targetMatch[0].length).trim();
-      if (rest) segments.push({ type: 'text', text: rest });
-    } else if (rawChunk.trim().length > 0) {
-      segments.push({ type: 'text', text: rawChunk.replace(/^\n+|\n+$/g, '') });
-    }
-  };
-
-  while ((match = codeRegex.exec(content)) !== null) {
-    if (match.index > lastIndex) {
-      pushTextWithTarget(content.slice(lastIndex, match.index));
-    }
-    segments.push({
-      type: 'code',
-      language: match[1] || 'text',
-      code: match[2].replace(/\n$/, ''),
-    });
-    lastIndex = codeRegex.lastIndex;
-  }
-
-  if (lastIndex < content.length) {
-    pushTextWithTarget(content.slice(lastIndex));
-  }
-
-  if (segments.length === 0 && content) {
-    segments.push({ type: 'text', text: content });
-  }
-
-  return segments;
-}
-
 export const ChatMessage = memo(function ChatMessage({
   message,
   isLastAssistant,
@@ -107,19 +64,10 @@ export const ChatMessage = memo(function ChatMessage({
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.content);
   const [speaking, setSpeaking] = useState(false);
+  const [targetCodeOpen, setTargetCodeOpen] = useState(true);
 
   const isUser = message.role === 'user';
   const costLabel = estimateCostUsd(message.model || 'gemini-4-hydrogen', message.usage);
-
-  const userSegments = useMemo(() => {
-    if (!isUser) return [];
-    return parseUserMessageSegments(message.content);
-  }, [isUser, message.content]);
-
-  const userHasCodeBlock = useMemo(
-    () => userSegments.some((s) => s.type === 'code'),
-    [userSegments]
-  );
 
   const artifacts = useMemo(() => {
     if (isUser || message.isStreaming || !message.content) return [];
@@ -166,12 +114,19 @@ export const ChatMessage = memo(function ChatMessage({
   };
 
   if (isUser) {
+    const hasMarkdownCode = message.content.includes('```');
+    const visualTargetMarkdown = message.visualTarget
+      ? `\`\`\`html\n${message.visualTarget.outerHtml}\n\`\`\``
+      : '';
+
     return (
       <div className="group flex w-full min-w-0 justify-end gap-2.5 sm:gap-3">
         <div
           className={cn(
             'min-w-0 space-y-2',
-            userHasCodeBlock ? 'w-full max-w-[92%] sm:max-w-[84%]' : 'max-w-[88%] sm:max-w-[76%]'
+            message.visualTarget || hasMarkdownCode
+              ? 'w-full max-w-[92%] sm:max-w-[82%]'
+              : 'max-w-[88%] sm:max-w-[76%]'
           )}
         >
           {message.attachments && message.attachments.length > 0 && (
@@ -188,7 +143,7 @@ export const ChatMessage = memo(function ChatMessage({
                     </button>
                     {typeof att.tokenCount === 'number' && (
                       <span className="absolute bottom-1.5 right-1.5 rounded-md bg-black/75 px-1.5 py-0.5 font-mono text-[10px] text-white backdrop-blur-sm">
-                        {att.tokenStatus === 'estimated' ? '~' : ''}
+                        {att.tokenExact ? '' : '~'}
                         {att.tokenCount.toLocaleString()} tok
                       </span>
                     )}
@@ -196,10 +151,10 @@ export const ChatMessage = memo(function ChatMessage({
                 ) : (
                   <div
                     key={att.id}
-                    className="inline-flex max-w-full items-center gap-1.5 rounded-xl border bg-card px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm"
+                    className="inline-flex max-w-full items-center gap-2 rounded-xl border bg-card px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm"
                   >
                     {att.kind === 'video' ? (
-                      <Film className="h-3.5 w-3.5 shrink-0 text-primary" />
+                      <FileVideo className="h-3.5 w-3.5 shrink-0 text-primary" />
                     ) : att.kind === 'audio' ? (
                       <FileAudio className="h-3.5 w-3.5 shrink-0 text-primary" />
                     ) : att.kind === 'pdf' ? (
@@ -207,14 +162,14 @@ export const ChatMessage = memo(function ChatMessage({
                     ) : (
                       <FileCode2 className="h-3.5 w-3.5 shrink-0 text-primary" />
                     )}
-                    <span className="max-w-[140px] truncate font-mono text-foreground">
+                    <span className="max-w-[160px] truncate font-mono text-foreground">
                       {att.name}
                     </span>
                     {typeof att.tokenCount === 'number' && (
-                      <span className="rounded bg-primary/15 px-1.5 py-0.5 font-mono text-[10px] text-primary">
-                        {att.tokenStatus === 'estimated' ? '~' : ''}
+                      <Badge variant="secondary" className="px-1.5 py-0 font-mono text-[10px]">
+                        {att.tokenExact ? '' : '~'}
                         {att.tokenCount.toLocaleString()} tok
-                      </span>
+                      </Badge>
                     )}
                   </div>
                 )
@@ -226,7 +181,7 @@ export const ChatMessage = memo(function ChatMessage({
             <div className="w-full min-w-[240px] space-y-2 rounded-2xl border bg-card p-3 shadow-lg sm:min-w-[420px]">
               <Textarea
                 autoFocus
-                rows={4}
+                rows={3}
                 value={editDraft}
                 onChange={(e) => setEditDraft(e.target.value)}
                 className="text-sm"
@@ -252,43 +207,51 @@ export const ChatMessage = memo(function ChatMessage({
             <div className="relative min-w-0">
               <div
                 className={cn(
-                  'rounded-2xl rounded-tr-sm border border-border/70 bg-secondary/90 px-4 text-[15px] leading-relaxed text-secondary-foreground shadow-sm',
+                  'min-w-0 overflow-hidden rounded-2xl rounded-tr-sm border border-border/70 bg-secondary/90 px-4 text-[15px] leading-relaxed text-secondary-foreground shadow-sm',
                   compact ? 'py-2.5' : 'py-3'
                 )}
               >
-                <div className="space-y-2.5">
-                  {userSegments.map((seg, idx) => {
-                    if (seg.type === 'target') {
-                      return (
-                        <div
-                          key={idx}
-                          className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/15 px-2.5 py-1 text-xs font-medium text-primary"
-                        >
-                          <Crosshair className="h-3.5 w-3.5 shrink-0" />
-                          <span className="truncate font-mono">Target: &lt;{seg.selector}&gt;</span>
-                        </div>
-                      );
-                    }
-                    if (seg.type === 'code') {
-                      return (
-                        <CodeBlock
-                          key={idx}
-                          language={seg.language}
-                          code={seg.code}
-                          defaultCollapsed={false}
+                {message.visualTarget && (
+                  <div className="mb-3 overflow-hidden rounded-xl border border-primary/30 bg-background/50">
+                    <button
+                      type="button"
+                      onClick={() => setTargetCodeOpen((o) => !o)}
+                      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/10"
+                    >
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <Crosshair className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate font-mono">
+                          Visual Target: &lt;{message.visualTarget.selector}&gt;
+                        </span>
+                      </span>
+                      {targetCodeOpen ? (
+                        <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+                      )}
+                    </button>
+
+                    {targetCodeOpen && (
+                      <div className="border-t border-border/50 px-2 pb-1 [&_div.my-4]:my-2">
+                        <MarkdownRenderer
+                          content={visualTargetMarkdown}
+                          onOpenArtifact={onOpenArtifact}
                         />
-                      );
-                    }
-                    return (
-                      <p
-                        key={idx}
-                        className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
-                      >
-                        {seg.text}
-                      </p>
-                    );
-                  })}
-                </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {hasMarkdownCode ? (
+                  <MarkdownRenderer
+                    content={message.content}
+                    onOpenArtifact={onOpenArtifact}
+                  />
+                ) : (
+                  <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                    {message.content}
+                  </p>
+                )}
               </div>
 
               {onEditUserMessage && (
@@ -422,8 +385,8 @@ export const ChatMessage = memo(function ChatMessage({
                 <p className="break-words leading-relaxed opacity-90">{message.error}</p>
                 {isCapacityError && (
                   <p className="pt-1 text-[11px] leading-relaxed text-muted-foreground">
-                    Server Google Developer API sedang padat (503/429). Web{' '}
-                    <code>aistudio.google.com</code> memakai pool konsol internal terpisah.
+                    Server Google Developer API sedang mengalami lonjakan trafik (503/429). Web{' '}
+                    <code>aistudio.google.com</code> memakai pool konsol terpisah.
                   </p>
                 )}
               </div>

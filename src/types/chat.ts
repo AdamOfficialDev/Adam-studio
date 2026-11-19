@@ -11,7 +11,8 @@ export interface Attachment {
   previewUrl?: string;
   durationSec?: number;
   tokenCount?: number;
-  tokenStatus?: 'counting' | 'exact' | 'estimated';
+  tokenExact?: boolean;
+  countingTokens?: boolean;
 }
 
 export interface VisualTarget {
@@ -50,6 +51,7 @@ export interface ChatMessage {
   content: string;
   thought?: string;
   statusText?: string;
+  visualTarget?: VisualTarget;
   attachments?: Attachment[];
   createdAt: number;
   model?: string;

@@ -26,7 +26,7 @@ if (extractedFiles.length === 0) {
   process.exit(1);
 }
 
-console.log(`🔧 Menerapkan Patch v5.1 (Inspector Code Block + Per-File Token Counter) (${extractedFiles.length} file)...\n`);
+console.log(`🔧 Menerapkan Patch v5.1 (User CodeBlock + Per-File Token Counter + Video/Audio/PDF) (${extractedFiles.length} file)...\n`);
 
 for (const file of extractedFiles) {
   const target = path.resolve(cwd, file.relativePath);
@@ -39,5 +39,4 @@ for (const file of extractedFiles) {
   console.log(`  ✓ ${file.relativePath}`);
 }
 
-console.log('\n✅ Patch v5.1 selesai! Tidak perlu install library baru.');
-console.log('   Jalankan `pnpm build` untuk verifikasi atau `pnpm dev` untuk langsung mencobanya.\n');
+console.log('\n✅ Patch v5.1 selesai! Jalankan `pnpm build` atau `pnpm dev`.\n');

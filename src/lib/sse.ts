@@ -1,10 +1,11 @@
-import type { Attachment, TokenUsage } from '@/types/chat';
+import type { Attachment, TokenUsage, VisualTarget } from '@/types/chat';
 
 export interface StreamChatPayload {
   model: string;
   messages: Array<{
     role: 'user' | 'assistant';
     content: string;
+    visualTarget?: VisualTarget;
     attachments?: Attachment[];
   }>;
   systemInstruction: string;
@@ -37,7 +38,6 @@ export async function streamChatCompletion(
     'Content-Type': 'application/json',
   };
 
-  // Normalisasi multi-line API key menjadi satu baris koma-separated agar valid sebagai HTTP header
   const normalizedKeys = (payload.apiKey || '')
     .split(/[\r\n,;]+/)
     .map((k) => k.trim())
@@ -52,17 +52,22 @@ export async function streamChatCompletion(
     headers,
     body: JSON.stringify({
       model: payload.model,
-      messages: payload.messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-        attachments: m.attachments?.map((a) => ({
-          kind: a.kind,
-          name: a.name,
-          mimeType: a.mimeType,
-          data: a.data,
-          textContent: a.textContent,
-        })),
-      })),
+      messages: payload.messages.map((m) => {
+        const textContent = m.visualTarget
+          ? `[Visual Target Element: \`${m.visualTarget.selector}\`]\n\`\`\`html\n${m.visualTarget.outerHtml}\n\`\`\`\n\n${m.content}`
+          : m.content;
+        return {
+          role: m.role,
+          content: textContent,
+          attachments: m.attachments?.map((a) => ({
+            kind: a.kind,
+            name: a.name,
+            mimeType: a.mimeType,
+            data: a.data,
+            textContent: a.textContent,
+          })),
+        };
+      }),
       systemInstruction: payload.systemInstruction,
       temperature: payload.temperature,
       maxOutputTokens: payload.maxOutputTokens,

@@ -267,9 +267,15 @@ export default function App() {
   const contextTokenEstimate = useMemo(() => {
     if (!activeConversation) return estimateTokens(settings.systemInstruction);
     const textSum = activeConversation.messages.reduce((acc, m) => {
-      const attTokens =
-        m.attachments?.reduce((s, a) => s + (a.tokenCount ?? 0), 0) ?? 0;
-      return acc + estimateTokens(m.content) + estimateTokens(m.thought || '') + attTokens;
+      const attTokens = (m.attachments || []).reduce((s, a) => s + (a.tokenCount ?? 0), 0);
+      const vtTokens = m.visualTarget ? estimateTokens(m.visualTarget.outerHtml) : 0;
+      return (
+        acc +
+        estimateTokens(m.content) +
+        estimateTokens(m.thought || '') +
+        attTokens +
+        vtTokens
+      );
     }, 0);
     return textSum + estimateTokens(settings.systemInstruction);
   }, [activeConversation, settings.systemInstruction]);
@@ -474,6 +480,7 @@ export default function App() {
             messages: trimmedHistory.map((m) => ({
               role: m.role,
               content: m.content,
+              visualTarget: m.visualTarget,
               attachments: m.attachments,
             })),
             systemInstruction: settings.systemInstruction,
@@ -677,16 +684,14 @@ export default function App() {
     (text: string, attachments: Attachment[]) => {
       if (isStreamingActive) return;
 
-      const composedText = visualTarget
-        ? `[Visual Target Element: \`${visualTarget.selector}\`]\n\`\`\`html\n${visualTarget.outerHtml}\n\`\`\`\n\n${text}`
-        : text;
-
+      const currentVisualTarget = visualTarget;
       setVisualTarget(null);
 
       const userMessage: ChatMessageType = {
         id: generateId(),
         role: 'user',
-        content: composedText,
+        content: text,
+        visualTarget: currentVisualTarget || undefined,
         attachments: attachments.length > 0 ? attachments : undefined,
         createdAt: Date.now(),
       };
@@ -1224,8 +1229,8 @@ export default function App() {
                       Adam Studio Workspace
                     </h1>
                     <p className="mt-2.5 max-w-lg text-sm leading-relaxed text-muted-foreground">
-                      Platform AI dengan Live Thinking, Auto-Rotate Key Pool, Visual Element
-                      Inspector, Token Counter per file, & Artifact Time-Machine Diff.
+                      Platform AI dengan Live Thinking, Auto-Rotate Key Pool, Per-File Token
+                      Counter, Visual Element Inspector, & Artifact Time-Machine Diff.
                     </p>
 
                     {activeKeyPoolCount === 0 && !settings.demoMode && (
