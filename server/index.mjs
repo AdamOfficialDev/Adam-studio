@@ -132,6 +132,20 @@ app.post('/api/count-tokens', async (req, res) => {
   res.status(502).json({ ok: false });
 });
 
+async function fetchWithTimeout(url, options, parentSignal, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onParentAbort = () => controller.abort();
+  parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener('abort', onParentAbort);
+  }
+}
+
 app.post('/api/transcribe', async (req, res) => {
   const { model, mimeType = 'audio/wav', data = '' } = req.body || {};
 
@@ -154,10 +168,21 @@ app.post('/api/transcribe', async (req, res) => {
     return;
   }
 
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const abortController = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) abortController.abort();
+  });
+
   const sttModels = Array.from(
     new Set(['gemini-2.5-flash', model || DEFAULT_MODEL, 'gemini-2.0-flash'].filter(Boolean))
   );
-  const ordered = buildOrderedCandidateKeys(apiKeys);
+  const orderedKeys = buildOrderedCandidateKeys(apiKeys);
   const cleanMime = String(mimeType).split(';')[0].trim() || 'audio/wav';
 
   const promptText = [
@@ -167,70 +192,126 @@ app.post('/api/transcribe', async (req, res) => {
     'Output ONLY the transcribed text with natural punctuation and proper technical capitalization. Do not answer the prompt or add commentary.',
   ].join(' ');
 
-  let lastStatus = 502;
+  const primaryQueue = [];
+  const overflowQueue = [];
+  for (const sttModel of sttModels) {
+    orderedKeys.forEach((entry, idx) => {
+      if (idx < 3) primaryQueue.push({ sttModel, entry });
+      else overflowQueue.push({ sttModel, entry });
+    });
+  }
+  const attempts = [...primaryQueue, ...overflowQueue];
+  const disabledModels = new Set();
   let lastError = 'Transkripsi AI Audio gagal.';
 
-  for (const sttModel of sttModels) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      sttModel
-    )}:generateContent`;
+  try {
+    for (const { sttModel, entry } of attempts) {
+      if (abortController.signal.aborted) return;
+      if (disabledModels.has(sttModel)) continue;
 
-    for (const candidate of ordered) {
-      try {
-        const upstream = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': candidate.key,
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  { text: promptText },
-                  { inlineData: { mimeType: cleanMime, data } },
-                ],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.1,
-              maxOutputTokens: 1024,
-            },
-          }),
-        });
+      const label = maskKeyLabel(entry.key, entry.idx);
+      writeSseEvent(res, 'status', {
+        message: `Mentranskrip via ${sttModel} (${label})...`,
+      });
 
-        if (upstream.ok) {
-          const json = await upstream.json();
-          const textOut = json?.candidates?.[0]?.content?.parts
-            ?.map((p) => p?.text || '')
-            .join('')
-            .trim();
-          if (textOut) {
-            res.json({ ok: true, text: textOut });
-            return;
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+        sttModel
+      )}:generateContent`;
+
+      let useZeroThinking = sttModel.includes('2.5');
+      let triedWithoutThinking = false;
+
+      while (true) {
+        try {
+          const generationConfig = {
+            temperature: 0.1,
+            maxOutputTokens: 1024,
+          };
+          if (useZeroThinking) {
+            generationConfig.thinkingConfig = { thinkingBudget: 0 };
           }
-          lastError = 'Suara tidak terdeteksi / hasil transkrip kosong.';
-        } else {
-          lastStatus = upstream.status;
+
+          const upstream = await fetchWithTimeout(
+            endpoint,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': entry.key,
+              },
+              body: JSON.stringify({
+                contents: [
+                  {
+                    role: 'user',
+                    parts: [
+                      { text: promptText },
+                      { inlineData: { mimeType: cleanMime, data } },
+                    ],
+                  },
+                ],
+                generationConfig,
+              }),
+            },
+            abortController.signal,
+            10000
+          );
+
+          if (upstream.ok) {
+            const json = await upstream.json();
+            const textOut = json?.candidates?.[0]?.content?.parts
+              ?.filter((p) => !p?.thought)
+              ?.map((p) => p?.text || '')
+              .join('')
+              .trim();
+            if (textOut) {
+              writeSseEvent(res, 'result', { ok: true, text: textOut, model: sttModel });
+              return;
+            }
+            lastError = 'Suara tidak terdeteksi / hasil transkrip kosong.';
+            break;
+          }
+
           const errRaw = await upstream.text();
           lastError = extractGeminiError(errRaw, upstream.status);
           console.error(`[STT ${sttModel}] ${upstream.status}: ${lastError}`);
-          if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
-            keyCooldownMap.set(candidate.key, Date.now() + 60_000);
+
+          if (
+            upstream.status === 400 &&
+            useZeroThinking &&
+            !triedWithoutThinking &&
+            /thinking/i.test(errRaw)
+          ) {
+            useZeroThinking = false;
+            triedWithoutThinking = true;
+            continue;
           }
-          if (upstream.status === 404) break;
+
+          if (upstream.status === 404) {
+            disabledModels.add(sttModel);
+            break;
+          }
+
+          if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
+            keyCooldownMap.set(entry.key, Date.now() + 60_000);
+          }
+          break;
+        } catch (err) {
+          if (abortController.signal.aborted) return;
+          lastError =
+            err instanceof Error && err.name === 'AbortError'
+              ? `Timeout ${sttModel} (${label})`
+              : err instanceof Error
+                ? err.message
+                : 'Network error';
+          break;
         }
-      } catch (err) {
-        lastError = err instanceof Error ? err.message : 'Network error';
       }
     }
-  }
 
-  res.status(lastStatus >= 400 && lastStatus < 600 ? lastStatus : 502).json({
-    ok: false,
-    message: lastError,
-  });
+    writeSseEvent(res, 'error', { ok: false, message: lastError });
+  } finally {
+    if (!res.writableEnded) res.end();
+  }
 });
 
 function writeSseEvent(res, event, data) {
@@ -428,7 +509,6 @@ async function fetchGeminiWithRotationAndRetry({
 
   let wantsThinking = Boolean(includeThoughts) && Number(thinkingBudget) !== 0;
   const orderedKeys = buildOrderedCandidateKeys(apiKeys);
-  // Mengikuti penuh seluruh jumlah key yang dimasukkan user di Settings (1 key tetap retry 4x)
   const maxAttempts = orderedKeys.length > 1 ? orderedKeys.length : 4;
 
   let keyPointer = 0;
@@ -735,6 +815,6 @@ if (process.env.NODE_ENV === 'production') {
 
 app.listen(PORT, () => {
   const envKeys = getServerEnvKeys();
-  console.log(`⚡ Adam Studio SSE Server aktif di http://localhost:${PORT}`);
+  console.log(`⚡ Adam Studio v5.4 SSE Server aktif di http://localhost:${PORT}`);
   console.log(`   Default model: ${DEFAULT_MODEL} | Server API Keys: ${envKeys.length}`);
 });

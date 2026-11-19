@@ -57,9 +57,9 @@ function encodeWav16kHz(chunks: Float32Array[], inputSampleRate: number): Blob {
   view.setUint32(4, 36 + outLength * 2, true);
   writeAscii(view, 8, 'WAVE');
   writeAscii(view, 12, 'fmt ');
-  view.setUint32(16, 16, true); // PCM chunk size
-  view.setUint16(20, 1, true); // PCM format
-  view.setUint16(22, 1, true); // Mono
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
   view.setUint32(24, targetRate, true);
   view.setUint32(28, targetRate * 2, true);
   view.setUint16(32, 2, true);
@@ -179,6 +179,7 @@ export async function transcribeAudioWithAI(params: {
   audioBlob: Blob;
   model?: string;
   apiKey?: string;
+  onStatus?: (message: string) => void;
 }): Promise<{ ok: boolean; text?: string; error?: string }> {
   const base64 = await blobToBase64(params.audioBlob);
   if (!base64) {
@@ -207,6 +208,56 @@ export async function transcribeAudioWithAI(params: {
       data: base64,
     }),
   });
+
+  const contentType = res.headers.get('content-type') || '';
+
+  if (contentType.includes('text/event-stream') && res.body) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalText = '';
+    let errorMsg = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+
+      let boundaryIndex: number;
+      while ((boundaryIndex = buffer.indexOf('\n\n')) !== -1) {
+        const rawBlock = buffer.slice(0, boundaryIndex);
+        buffer = buffer.slice(boundaryIndex + 2);
+        if (!rawBlock.trim() || rawBlock.startsWith(':')) continue;
+
+        let eventName = 'message';
+        const dataLines: string[] = [];
+        for (const line of rawBlock.split('\n')) {
+          if (line.startsWith('event:')) eventName = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+        }
+
+        if (dataLines.length === 0) continue;
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(dataLines.join('\n'));
+        } catch {
+          continue;
+        }
+
+        if (eventName === 'status' && typeof parsed.message === 'string') {
+          params.onStatus?.(parsed.message);
+        } else if (eventName === 'result' && typeof parsed.text === 'string') {
+          finalText = parsed.text.trim();
+        } else if (eventName === 'error' && typeof parsed.message === 'string') {
+          errorMsg = parsed.message;
+        }
+      }
+    }
+
+    if (finalText) return { ok: true, text: finalText };
+    return { ok: false, error: errorMsg || 'Transkripsi AI Audio gagal.' };
+  }
 
   const data = (await res.json().catch(() => ({}))) as {
     ok?: boolean;

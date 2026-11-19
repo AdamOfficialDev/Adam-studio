@@ -24,5 +24,5 @@ while ((match = filePattern.exec(rawBundle)) !== null) {
   count += 1;
 }
 
-console.log(`\n✅ ${count} file rotasi API Key diperbarui!`);
-console.log('   Restart `pnpm dev` agar server/index.mjs memuat aturan rotasi baru.\n');
+console.log(`\n✅ ${count} file diperbarui untuk fix Vercel 504 /api/transcribe!`);
+console.log('   Jalankan `pnpm build`, lalu push ke GitHub untuk re-deploy ke Vercel.\n');

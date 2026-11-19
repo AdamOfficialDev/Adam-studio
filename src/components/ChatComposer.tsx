@@ -175,6 +175,7 @@ export function ChatComposer({
 
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcribeStatus, setTranscribeStatus] = useState('');
   const [recordSeconds, setRecordSeconds] = useState(0);
   const [interimText, setInterimText] = useState('');
   const [slashIndex, setSlashIndex] = useState(0);
@@ -450,12 +451,15 @@ export function ChatComposer({
     }
 
     setIsTranscribing(true);
+    setTranscribeStatus('Mengirim audio ke Gemini AI...');
     const result = await transcribeAudioWithAI({
       audioBlob: wavBlob,
       model,
       apiKey: settings.apiKey,
+      onStatus: (msg) => setTranscribeStatus(msg),
     });
     setIsTranscribing(false);
+    setTranscribeStatus('');
 
     if (result.ok && result.text) {
       setInput((prev) => (prev ? `${prev} ${result.text}` : result.text!));
@@ -698,7 +702,7 @@ export function ChatComposer({
               )}
               <span className="truncate font-medium text-foreground">
                 {isTranscribing
-                  ? 'Mentranskrip suara dengan Gemini AI...'
+                  ? transcribeStatus || 'Mentranskrip suara dengan Gemini AI...'
                   : useAiStt
                     ? `Merekam WAV (${formatDuration(recordSeconds)}) — sebutkan istilah teknik apa saja`
                     : interimText

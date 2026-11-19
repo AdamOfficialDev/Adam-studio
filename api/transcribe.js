@@ -29,11 +29,18 @@ function buildOrderedKeys(keys) {
   const rotated = [...keys.slice(start), ...keys.slice(0, start)];
   const ready = [];
   const cooling = [];
-  for (const k of rotated) {
-    if ((keyCooldownMap.get(k) || 0) > now) cooling.push(k);
-    else ready.push(k);
+  for (let i = 0; i < rotated.length; i++) {
+    const k = rotated[i];
+    const origIdx = keys.indexOf(k);
+    if ((keyCooldownMap.get(k) || 0) > now) cooling.push({ key: k, idx: origIdx });
+    else ready.push({ key: k, idx: origIdx });
   }
   return [...ready, ...cooling];
+}
+
+function maskKeyLabel(key, idx) {
+  const tail = key.length >= 4 ? key.slice(-4) : '****';
+  return `Key #${idx + 1} (•••${tail})`;
 }
 
 function extractGeminiError(rawText, status) {
@@ -45,6 +52,20 @@ function extractGeminiError(rawText, status) {
     if (rawText) msg = rawText;
   }
   return msg;
+}
+
+async function fetchWithTimeout(url, options, parentSignal, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onParentAbort = () => controller.abort();
+  parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener('abort', onParentAbort);
+  }
 }
 
 export default async function handler(request) {
@@ -92,66 +113,166 @@ export default async function handler(request) {
   ].join(' ');
 
   const orderedKeys = buildOrderedKeys(apiKeys);
-  let lastStatus = 502;
-  let lastError = 'Transkripsi AI Audio gagal.';
+  const encoder = new TextEncoder();
 
-  for (const sttModel of sttModels) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      sttModel
-    )}:generateContent`;
-
-    for (const key of orderedKeys) {
-      try {
-        const upstream = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': key,
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  { text: promptText },
-                  { inlineData: { mimeType: cleanMime, data } },
-                ],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.1,
-              maxOutputTokens: 1024,
-            },
-          }),
-        });
-
-        if (upstream.ok) {
-          const json = await upstream.json();
-          const textOut = json?.candidates?.[0]?.content?.parts
-            ?.map((p) => p?.text || '')
-            .join('')
-            .trim();
-          if (textOut) {
-            return Response.json({ ok: true, text: textOut });
-          }
-          lastError = 'Suara tidak terdeteksi / hasil transkrip kosong.';
-        } else {
-          lastStatus = upstream.status;
-          const errRaw = await upstream.text();
-          lastError = extractGeminiError(errRaw, upstream.status);
-          if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
-            keyCooldownMap.set(key, Date.now() + 60_000);
-          }
-          if (upstream.status === 404) break;
+  // Kembalikan stream segera (0ms) agar Vercel Edge tidak terkena batas 25s initial response timeout
+  const stream = new ReadableStream({
+    async start(controller) {
+      const sendEvent = (event, payload) => {
+        try {
+          controller.enqueue(
+            encoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`)
+          );
+        } catch {
+          // Stream ditutup
         }
-      } catch (err) {
-        lastError = err instanceof Error ? err.message : 'Network error';
-      }
-    }
-  }
+      };
 
-  return Response.json(
-    { ok: false, message: lastError },
-    { status: lastStatus >= 400 && lastStatus < 600 ? lastStatus : 502 }
-  );
+      // Kirim byte awal segera
+      try {
+        controller.enqueue(encoder.encode(': init\n\n'));
+      } catch {
+        return;
+      }
+
+      let lastError = 'Transkripsi AI Audio gagal.';
+      let attemptCount = 0;
+
+      // Susun antrean: uji 3 key pertama per model dulu sebelum habiskan sisa key
+      const primaryQueue = [];
+      const overflowQueue = [];
+      for (const sttModel of sttModels) {
+        orderedKeys.forEach((entry, idx) => {
+          if (idx < 3) primaryQueue.push({ sttModel, entry });
+          else overflowQueue.push({ sttModel, entry });
+        });
+      }
+      const attempts = [...primaryQueue, ...overflowQueue];
+      const disabledModels = new Set();
+
+      try {
+        for (const { sttModel, entry } of attempts) {
+          if (request.signal.aborted) return;
+          if (disabledModels.has(sttModel)) continue;
+
+          attemptCount += 1;
+          const label = maskKeyLabel(entry.key, entry.idx);
+          sendEvent('status', {
+            message: `Mentranskrip via ${sttModel} (${label})...`,
+          });
+
+          const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+            sttModel
+          )}:generateContent`;
+
+          let useZeroThinking = sttModel.includes('2.5');
+          let triedWithoutThinking = false;
+
+          while (true) {
+            try {
+              const generationConfig = {
+                temperature: 0.1,
+                maxOutputTokens: 1024,
+              };
+              if (useZeroThinking) {
+                generationConfig.thinkingConfig = { thinkingBudget: 0 };
+              }
+
+              const upstream = await fetchWithTimeout(
+                endpoint,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': entry.key,
+                  },
+                  body: JSON.stringify({
+                    contents: [
+                      {
+                        role: 'user',
+                        parts: [
+                          { text: promptText },
+                          { inlineData: { mimeType: cleanMime, data } },
+                        ],
+                      },
+                    ],
+                    generationConfig,
+                  }),
+                },
+                request.signal,
+                10000
+              );
+
+              if (upstream.ok) {
+                const json = await upstream.json();
+                const textOut = json?.candidates?.[0]?.content?.parts
+                  ?.filter((p) => !p?.thought)
+                  ?.map((p) => p?.text || '')
+                  .join('')
+                  .trim();
+                if (textOut) {
+                  sendEvent('result', { ok: true, text: textOut, model: sttModel });
+                  return;
+                }
+                lastError = 'Suara tidak terdeteksi / hasil transkrip kosong.';
+                break;
+              }
+
+              const errRaw = await upstream.text();
+              lastError = extractGeminiError(errRaw, upstream.status);
+
+              if (
+                upstream.status === 400 &&
+                useZeroThinking &&
+                !triedWithoutThinking &&
+                /thinking/i.test(errRaw)
+              ) {
+                useZeroThinking = false;
+                triedWithoutThinking = true;
+                continue;
+              }
+
+              if (upstream.status === 404) {
+                disabledModels.add(sttModel);
+                break;
+              }
+
+              if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
+                keyCooldownMap.set(entry.key, Date.now() + 60_000);
+              }
+              break;
+            } catch (err) {
+              if (request.signal.aborted) return;
+              lastError =
+                err instanceof Error && err.name === 'AbortError'
+                  ? `Timeout ${sttModel} (${label})`
+                  : err instanceof Error
+                    ? err.message
+                    : 'Network error';
+              break;
+            }
+          }
+
+          if (attemptCount >= orderedKeys.length * sttModels.length) break;
+        }
+
+        sendEvent('error', { ok: false, message: lastError });
+      } finally {
+        try {
+          controller.close();
+        } catch {
+          // Abaikan
+        }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+    },
+  });
 }
