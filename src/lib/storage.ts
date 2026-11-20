@@ -12,7 +12,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   includeThoughts: true,
   thinkingBudget: -1,
   autoFallbackOnOverload: false,
-  fallbackModel: 'gemini-2.5-pro',
+  fallbackModel: 'gemini-3.8-flash',
   maxHistoryMessages: 0,
   sttMode: 'ai',
   soundChime: true,

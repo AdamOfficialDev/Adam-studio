@@ -35,6 +35,7 @@ import {
   Workflow,
 } from 'lucide-react';
 import { BrandLogo } from '@/components/BrandLogo';
+import { ContextManagerDialog } from '@/components/ContextManagerDialog';
 import { ImportChatDialog } from '@/components/ImportChatDialog';
 import { InstallAppDialog } from '@/components/InstallAppDialog';
 import { Badge } from '@/components/ui/badge';
@@ -59,6 +60,7 @@ import { SettingsDialog } from '@/components/SettingsDialog';
 import { Sidebar } from '@/components/Sidebar';
 import { usePwaInstall } from '@/hooks/usePwaInstall';
 import { extractArtifactsFromMarkdown } from '@/lib/artifacts';
+import { buildEffectiveApiHistory, estimateMessagesTokenTotal } from '@/lib/importer';
 import { DEFAULT_MODEL_ID, getModelInfo } from '@/lib/models';
 import { playCompletionChime } from '@/lib/sound';
 import { streamChatCompletion } from '@/lib/sse';
@@ -75,6 +77,7 @@ import type {
   ArtifactItem,
   Attachment,
   ChatMessage as ChatMessageType,
+  CompactedContextState,
   Conversation,
   ServerHealth,
   ThemeSkin,
@@ -161,6 +164,7 @@ export default function App() {
   const [commandOpen, setCommandOpen] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [contextDialogOpen, setContextDialogOpen] = useState(false);
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
@@ -280,22 +284,13 @@ export default function App() {
 
   const contextTokenEstimate = useMemo(() => {
     if (!activeConversation) return estimateTokens(settings.systemInstruction);
-    const textSum = activeConversation.messages.reduce((acc, m) => {
-      const attTokens = (m.attachments || []).reduce((s, a) => s + (a.tokenCount ?? 0), 0);
-      const vtTokens = m.visualTarget ? estimateTokens(m.visualTarget.outerHtml) : 0;
-      return (
-        acc +
-        estimateTokens(m.content) +
-        estimateTokens(m.thought || '') +
-        attTokens +
-        vtTokens
-      );
-    }, 0);
+    const effective = buildEffectiveApiHistory(
+      activeConversation.messages,
+      activeConversation.compactedContext
+    );
     return (
-      textSum +
-      estimateTokens(
-        activeConversation.sessionSystemInstruction || settings.systemInstruction
-      )
+      estimateMessagesTokenTotal(effective) +
+      estimateTokens(activeConversation.sessionSystemInstruction || settings.systemInstruction)
     );
   }, [activeConversation, settings.systemInstruction]);
 
@@ -303,6 +298,8 @@ export default function App() {
     100,
     Math.max(1, Math.round((contextTokenEstimate / currentModelInfo.contextLimit) * 100))
   );
+
+  const isContextOverFreeTier = contextTokenEstimate > 235_000;
 
   const scrollToBottom = useCallback(
     (smooth = false) => {
@@ -452,19 +449,20 @@ export default function App() {
       modelId: string,
       historyMessages: ChatMessageType[],
       assistantMessageId: string,
-      sessionSystemInstruction?: string
+      sessionSystemInstruction?: string,
+      compactedContext?: CompactedContextState
     ) => {
       abortControllerRef.current?.abort();
       const controller = new AbortController();
       abortControllerRef.current = controller;
       autoScrollEnabledRef.current = true;
 
+      const effectiveHistory = buildEffectiveApiHistory(historyMessages, compactedContext);
       const trimmedHistory =
-        settings.maxHistoryMessages > 0 && historyMessages.length > settings.maxHistoryMessages
-          ? historyMessages.slice(-settings.maxHistoryMessages)
-          : historyMessages;
+        settings.maxHistoryMessages > 0 && effectiveHistory.length > settings.maxHistoryMessages
+          ? effectiveHistory.slice(-settings.maxHistoryMessages)
+          : effectiveHistory;
 
-      // Gabungkan konteks sistem khusus sesi impor (hanya berlaku untuk sesi tersebut, bukan global Settings)
       const effectiveSystemInstruction = [
         settings.systemInstruction,
         sessionSystemInstruction ? `[Konteks Sistem Sesi Impor]\n${sessionSystemInstruction}` : '',
@@ -768,12 +766,22 @@ export default function App() {
         void runStreamForConversation(newId, currentModelId, [userMessage], assistantMessageId);
       } else {
         const historyForModel = [...activeConversation.messages, userMessage];
+        const nextCompacted: CompactedContextState | undefined = activeConversation.compactedContext
+          ? activeConversation.compactedContext.mode === 'ai-summary'
+            ? {
+                ...activeConversation.compactedContext,
+                keepRecentCount: activeConversation.compactedContext.keepRecentCount + 2,
+              }
+            : activeConversation.compactedContext
+          : undefined;
+
         setConversations((prev) =>
           prev.map((conv) =>
             conv.id !== activeConversation.id
               ? conv
               : {
                   ...conv,
+                  compactedContext: nextCompacted,
                   updatedAt: Date.now(),
                   messages: [...conv.messages, userMessage, assistantPlaceholder],
                 }
@@ -784,7 +792,8 @@ export default function App() {
           currentModelId,
           historyForModel,
           assistantMessageId,
-          activeConversation.sessionSystemInstruction
+          activeConversation.sessionSystemInstruction,
+          nextCompacted
         );
       }
     },
@@ -830,7 +839,8 @@ export default function App() {
         targetModel,
         baseMessages,
         assistantMessageId,
-        activeConversation.sessionSystemInstruction
+        activeConversation.sessionSystemInstruction,
+        activeConversation.compactedContext
       );
     },
     [activeConversation, isStreamingActive, runStreamForConversation]
@@ -875,7 +885,8 @@ export default function App() {
         activeConversation.model,
         baseHistory,
         assistantMessageId,
-        activeConversation.sessionSystemInstruction
+        activeConversation.sessionSystemInstruction,
+        activeConversation.compactedContext
       );
     },
     [activeConversation, isStreamingActive, runStreamForConversation]
@@ -893,6 +904,7 @@ export default function App() {
         title: `Branch: ${activeConversation.title}`.slice(0, 52),
         model: activeConversation.model,
         sessionSystemInstruction: activeConversation.sessionSystemInstruction,
+        compactedContext: activeConversation.compactedContext,
         messages: activeConversation.messages.slice(0, idx + 1).map((m) => ({
           ...m,
           id: generateId(),
@@ -914,6 +926,7 @@ export default function App() {
       model: string;
       sessionSystemInstruction?: string;
       sourceLabel?: string;
+      compactedContext?: CompactedContextState;
       messages: ChatMessageType[];
     }) => {
       if (isStreamingActive) handleStopStream();
@@ -928,6 +941,7 @@ export default function App() {
                   updatedAt: Date.now(),
                   sessionSystemInstruction:
                     payload.sessionSystemInstruction || conv.sessionSystemInstruction,
+                  compactedContext: payload.compactedContext || conv.compactedContext,
                   messages: [...conv.messages, ...payload.messages],
                 }
           )
@@ -941,6 +955,7 @@ export default function App() {
           model: payload.model || selectedModel,
           sessionSystemInstruction: payload.sessionSystemInstruction,
           importedSource: payload.sourceLabel,
+          compactedContext: payload.compactedContext,
           messages: payload.messages,
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -955,6 +970,15 @@ export default function App() {
       }
     },
     [activeConversation, handleStopStream, isStreamingActive, selectedModel]
+  );
+
+  const handleApplyCompaction = useCallback(
+    (convId: string, compacted?: CompactedContextState) => {
+      setConversations((prev) =>
+        prev.map((c) => (c.id === convId ? { ...c, compactedContext: compacted } : c))
+      );
+    },
+    []
   );
 
   const handleToggleStar = useCallback((convId: string, msgId: string) => {
@@ -1165,25 +1189,45 @@ export default function App() {
                   </TooltipContent>
                 </Tooltip>
 
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <div className="hidden items-center gap-2 rounded-full border bg-card/60 px-2.5 py-1 text-[11px] text-muted-foreground lg:flex">
-                      <span className="font-mono">
-                        {(contextTokenEstimate / 1000).toFixed(1)}k ctx
-                      </span>
-                      <div className="h-1.5 w-12 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-primary transition-all"
-                          style={{ width: `${contextUsagePct}%` }}
-                        />
-                      </div>
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Estimasi context (~{contextTokenEstimate.toLocaleString()} /{' '}
-                    {currentModelInfo.contextLimit.toLocaleString()} tokens)
-                  </TooltipContent>
-                </Tooltip>
+                {/* Context Meter Pill — Klik untuk buka Context Window Manager (Kompres <250k Free Tier) */}
+                {activeConversation && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={() => setContextDialogOpen(true)}
+                        className={cn(
+                          'flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] transition-colors',
+                          isContextOverFreeTier
+                            ? 'border-amber-500/60 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25'
+                            : activeConversation.compactedContext
+                              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                              : 'bg-card/60 text-muted-foreground hover:bg-accent hover:text-foreground'
+                        )}
+                      >
+                        <span className="font-mono">
+                          {(contextTokenEstimate / 1000).toFixed(1)}k ctx
+                        </span>
+                        <div className="hidden h-1.5 w-10 overflow-hidden rounded-full bg-muted sm:block">
+                          <div
+                            className={cn(
+                              'h-full rounded-full transition-all',
+                              isContextOverFreeTier ? 'bg-amber-400' : 'bg-primary'
+                            )}
+                            style={{ width: `${contextUsagePct}%` }}
+                          />
+                        </div>
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {isContextOverFreeTier
+                        ? 'Melebihi batas Free Tier 250k TPM! Klik untuk ringkas / kompres konteks.'
+                        : activeConversation.compactedContext
+                          ? 'Konteks dioptimalkan untuk API. Klik untuk kelola.'
+                          : `Estimasi context (~${contextTokenEstimate.toLocaleString()} tok). Klik untuk kelola.`}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
 
                 {conversationArtifacts.length > 0 && !activeArtifact && (
                   <Button
@@ -1264,6 +1308,12 @@ export default function App() {
                       <FileUp className="h-3.5 w-3.5 text-primary" />
                       Import Konteks (.json / .md)
                     </DropdownMenuItem>
+                    {activeConversation && (
+                      <DropdownMenuItem onClick={() => setContextDialogOpen(true)}>
+                        <Cpu className="h-3.5 w-3.5 text-primary" />
+                        Context Window Manager
+                      </DropdownMenuItem>
+                    )}
                     {!isStandalone && (
                       <DropdownMenuItem onClick={() => void handleInstallAction()}>
                         <MonitorDown className="h-3.5 w-3.5 text-primary" />
@@ -1379,29 +1429,33 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* Welcome Tabs dengan fix kontras isolate + z-0/z-10 */}
                     <div className="mt-6 inline-flex flex-wrap items-center justify-center gap-1 rounded-full border bg-card/80 p-1">
-                      {WELCOME_TABS.map((tab) => (
-                        <button
-                          key={tab}
-                          type="button"
-                          onClick={() => setWelcomeTab(tab)}
-                          className={cn(
-                            'relative rounded-full px-3 py-1 text-xs font-medium transition-colors sm:px-3.5',
-                            welcomeTab === tab
-                              ? 'text-primary-foreground'
-                              : 'text-muted-foreground hover:text-foreground'
-                          )}
-                        >
-                          {welcomeTab === tab && (
-                            <motion.span
-                              layoutId="welcome-tab-pill"
-                              transition={{ type: 'spring', stiffness: 380, damping: 30 }}
-                              className="absolute inset-0 -z-10 rounded-full bg-primary shadow-sm"
-                            />
-                          )}
-                          {tab}
-                        </button>
-                      ))}
+                      {WELCOME_TABS.map((tab) => {
+                        const active = welcomeTab === tab;
+                        return (
+                          <button
+                            key={tab}
+                            type="button"
+                            onClick={() => setWelcomeTab(tab)}
+                            className={cn(
+                              'relative isolate rounded-full px-3 py-1 text-xs font-semibold transition-colors sm:px-3.5',
+                              active
+                                ? 'text-primary-foreground'
+                                : 'text-muted-foreground hover:text-foreground'
+                            )}
+                          >
+                            {active && (
+                              <motion.span
+                                layoutId="welcome-tab-pill"
+                                transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                                className="absolute inset-0 z-0 rounded-full bg-primary shadow-sm"
+                              />
+                            )}
+                            <span className="relative z-10">{tab}</span>
+                          </button>
+                        );
+                      })}
                     </div>
 
                     <div className="mt-5 grid w-full grid-cols-1 gap-3 text-left sm:grid-cols-2">
@@ -1435,21 +1489,31 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="mx-auto w-full min-w-0 max-w-3xl px-3 pt-5 sm:px-5 sm:pt-6">
-                    {activeConversation.importedSource && (
-                      <div className="mb-4 flex items-center justify-between gap-2 rounded-xl border border-primary/25 bg-primary/[0.06] px-3.5 py-2 text-xs text-muted-foreground">
+                    {(activeConversation.importedSource || isContextOverFreeTier) && (
+                      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/25 bg-primary/[0.06] px-3.5 py-2 text-xs text-muted-foreground">
                         <span className="flex items-center gap-2">
-                          <FileUp className="h-3.5 w-3.5 text-primary" />
+                          <FileUp className="h-3.5 w-3.5 shrink-0 text-primary" />
                           <span>
-                            Sesi lanjutan dari{' '}
-                            <strong className="text-foreground">
-                              {activeConversation.importedSource}
-                            </strong>
+                            {activeConversation.importedSource
+                              ? `Sesi lanjutan dari ${activeConversation.importedSource}`
+                              : 'Sesi berkapasitas besar'}
+                            {activeConversation.compactedContext && (
+                              <span className="ml-2 text-emerald-400">
+                                • Dioptimalkan ({(contextTokenEstimate / 1000).toFixed(1)}k API tok)
+                              </span>
+                            )}
                           </span>
                         </span>
-                        {activeConversation.sessionSystemInstruction && (
-                          <Badge variant="outline" className="text-[10px]">
-                            Session System Prompt
-                          </Badge>
+                        {isContextOverFreeTier && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setContextDialogOpen(true)}
+                            className="h-6 rounded-lg border-amber-500/40 bg-amber-500/15 px-2 text-[11px] text-amber-300 hover:bg-amber-500/25"
+                          >
+                            Kompres &lt;250k Free Tier
+                          </Button>
                         )}
                       </div>
                     )}
@@ -1599,7 +1663,7 @@ export default function App() {
                   initial={{ opacity: 0, x: 20 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: 20 }}
-                  transition={{ duration: 0.16 }}
+                  transition={{ duration: 0.14 }}
                   className={cn(
                     'fixed inset-0 z-40 border-l lg:static',
                     artifactFullscreen ? 'lg:flex-1' : 'lg:shrink-0'
@@ -1664,6 +1728,15 @@ export default function App() {
             activeSessionTitle={activeConversation?.title}
             defaultModel={currentModelId}
             onConfirmImport={handleConfirmImport}
+          />
+
+          <ContextManagerDialog
+            open={contextDialogOpen}
+            onOpenChange={setContextDialogOpen}
+            conversation={activeConversation}
+            apiKey={settings.apiKey}
+            hasApiKey={activeKeyPoolCount > 0}
+            onApplyCompaction={handleApplyCompaction}
           />
 
           <CommandPalette

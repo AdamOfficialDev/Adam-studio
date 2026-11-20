@@ -63,14 +63,23 @@ export interface ChatMessage {
   starred?: boolean;
 }
 
+export interface CompactedContextState {
+  mode: 'keep-latest-code' | 'ai-summary';
+  summaryPrefix?: string;
+  keepRecentCount: number;
+  estimatedTokens: number;
+  updatedAt: number;
+}
+
 export interface Conversation {
   id: string;
   title: string;
   model: string;
   pinned?: boolean;
   personaId?: string;
-  sessionSystemInstruction?: string; // Konteks sistem khusus sesi hasil impor (tidak global)
+  sessionSystemInstruction?: string;
   importedSource?: string;
+  compactedContext?: CompactedContextState;
   messages: ChatMessage[];
   createdAt: number;
   updatedAt: number;

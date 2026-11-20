@@ -25,7 +25,6 @@ import { BrandLogo } from '@/components/BrandLogo';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
-import { StudioScroll } from '@/components/ui/studio-scroll';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -86,13 +85,15 @@ function shortModelTag(modelId: string): string {
   if (modelId === 'gemini-4-hydrogen') return 'H4';
   if (modelId === 'gemini-2.5-pro') return '2.5P';
   if (modelId === 'gemini-2.5-flash') return '2.5F';
-  if (modelId === 'gemini-2.0-flash') return '2.0F';
+  if (modelId === 'gemini-3.8-flash') return '2.0F';
   return modelId.replace(/^gemini-/i, '').slice(0, 8);
 }
 
 function convHasCanvas(conv: Conversation): boolean {
   return conv.messages.some(
-    (m) => m.role === 'assistant' && /```(?:html|htm|svg|mermaid|[a-z]+\n[\s\S]{150,})/i.test(m.content)
+    (m) =>
+      m.role === 'assistant' &&
+      /```(?:html|htm|svg|mermaid|[a-z]+\n[\s\S]{150,})/i.test(m.content)
   );
 }
 
@@ -245,17 +246,16 @@ export const Sidebar = memo(function Sidebar({
       <div
         key={conv.id}
         className={cn(
-          'group relative flex items-center gap-2 rounded-xl border px-2.5 py-2 transition-all',
+          'group relative flex items-center gap-2 rounded-xl border px-2.5 py-2 transition-colors',
           isActive
-            ? 'border-primary/30 bg-accent/85 text-accent-foreground shadow-sm'
+            ? 'border-primary/35 bg-accent/90 text-accent-foreground shadow-sm'
             : 'border-transparent text-muted-foreground hover:border-border/60 hover:bg-accent/45 hover:text-foreground'
         )}
       >
-        {/* Active Accent Indicator Rail */}
         {isActive && (
           <span
             aria-hidden="true"
-            className="absolute left-1 top-2 bottom-2 w-0.5 rounded-full bg-primary"
+            className="absolute bottom-2 left-1 top-2 w-0.5 rounded-full bg-primary"
           />
         )}
 
@@ -347,13 +347,9 @@ export const Sidebar = memo(function Sidebar({
   return (
     <>
       {mobileOpen && (
-        <div
-          className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm md:hidden"
-          onClick={onCloseMobile}
-        />
+        <div className="fixed inset-0 z-30 bg-black/65 md:hidden" onClick={onCloseMobile} />
       )}
 
-      {/* Desktop Collapsed Icon Rail */}
       {!open && (
         <aside className="hidden w-14 shrink-0 flex-col items-center justify-between border-r bg-card/85 py-3 md:flex">
           <div className="flex flex-col items-center gap-2">
@@ -478,12 +474,11 @@ export const Sidebar = memo(function Sidebar({
         </aside>
       )}
 
-      {/* Full Sidebar */}
       <aside
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
         className={cn(
-          'fixed inset-y-0 left-0 z-40 flex w-[84vw] max-w-76 shrink-0 flex-col border-r bg-card/95 backdrop-blur-xl transition-transform duration-200 md:static md:w-72',
+          'fixed inset-y-0 left-0 z-40 flex w-[84vw] max-w-76 shrink-0 flex-col border-r bg-card transition-transform duration-200 md:static md:w-72',
           mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
           !open && 'md:hidden'
         )}
@@ -523,7 +518,6 @@ export const Sidebar = memo(function Sidebar({
         </div>
 
         <div className="space-y-2.5 px-3 pb-3">
-          {/* Primary Action Dock */}
           <div className="flex gap-1.5">
             <Button
               type="button"
@@ -573,7 +567,6 @@ export const Sidebar = memo(function Sidebar({
             </Tooltip>
           </div>
 
-          {/* Search Input with Clear Button */}
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -594,77 +587,78 @@ export const Sidebar = memo(function Sidebar({
             )}
           </div>
 
-          {/* Animated Filter Pills */}
-          <div className="grid grid-cols-3 gap-1 rounded-xl border bg-background/50 p-1">
+          {/* Perbaikan Kontras Pill Aktif (isolate + z-0/z-10, bukan -z-10) */}
+          <div className="grid grid-cols-3 gap-1 rounded-xl border bg-background/60 p-1">
             {(
               [
                 { id: 'all', label: 'Semua' },
                 { id: 'pinned', label: 'Pin' },
                 { id: 'canvas', label: 'Canvas' },
               ] as const
-            ).map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setFilterTab(tab.id)}
-                className={cn(
-                  'relative rounded-lg py-1 text-[11px] font-medium transition-colors',
-                  filterTab === tab.id
-                    ? 'text-primary-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-              >
-                {filterTab === tab.id && (
-                  <motion.span
-                    layoutId="sidebar-filter-pill"
-                    transition={{ type: 'spring', stiffness: 420, damping: 32 }}
-                    className="absolute inset-0 -z-10 rounded-lg bg-primary shadow-sm"
-                  />
-                )}
-                {tab.label}
-              </button>
-            ))}
+            ).map((tab) => {
+              const active = filterTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setFilterTab(tab.id)}
+                  className={cn(
+                    'relative isolate rounded-lg py-1 text-[11px] font-semibold transition-colors',
+                    active
+                      ? 'text-primary-foreground'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="sidebar-filter-pill"
+                      transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+                      className="absolute inset-0 z-0 rounded-lg bg-primary shadow-sm"
+                    />
+                  )}
+                  <span className="relative z-10">{tab.label}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
         <Separator />
 
-        <StudioScroll className="min-h-0 flex-1" autoHide="scroll">
-          <div className="px-2.5 py-2.5">
-            {filteredTotal === 0 ? (
-              <div className="rounded-xl border border-dashed px-3 py-8 text-center text-xs leading-relaxed text-muted-foreground">
-                {conversations.length === 0
-                  ? 'Belum ada percakapan. Klik New Chat atau Import (.json / .md).'
-                  : 'Tidak ada percakapan yang cocok dengan filter atau pencarian.'}
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {pinned.length > 0 && (
-                  <div className="space-y-1">
-                    <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-primary">
-                      Disematkan
-                    </div>
-                    {pinned.map(renderConversationRow)}
+        <div className="min-h-0 flex-1 overflow-y-auto px-2.5 py-2.5 overscroll-contain">
+          {filteredTotal === 0 ? (
+            <div className="rounded-xl border border-dashed px-3 py-8 text-center text-xs leading-relaxed text-muted-foreground">
+              {conversations.length === 0
+                ? 'Belum ada percakapan. Klik New Chat atau Import (.json / .md).'
+                : 'Tidak ada percakapan yang cocok dengan filter atau pencarian.'}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {pinned.length > 0 && (
+                <div className="space-y-1">
+                  <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-primary">
+                    Disematkan
                   </div>
-                )}
+                  {pinned.map(renderConversationRow)}
+                </div>
+              )}
 
-                {(['Hari Ini', 'Kemarin', 'Sebelumnya'] as const).map((label) => {
-                  const items = grouped[label];
-                  if (items.length === 0) return null;
+              {(['Hari Ini', 'Kemarin', 'Sebelumnya'] as const).map((label) => {
+                const items = grouped[label];
+                if (items.length === 0) return null;
 
-                  return (
-                    <div key={label} className="space-y-1">
-                      <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                        {label}
-                      </div>
-                      {items.map(renderConversationRow)}
+                return (
+                  <div key={label} className="space-y-1">
+                    <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      {label}
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </StudioScroll>
+                    {items.map(renderConversationRow)}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
         {showInstallButton && onInstallApp && (
           <div className="mx-3 mb-2">
@@ -685,7 +679,6 @@ export const Sidebar = memo(function Sidebar({
           </div>
         )}
 
-        {/* Upgraded Workspace Telemetry Card */}
         <div className="mx-3 mb-2 space-y-1.5 rounded-xl border bg-background/60 p-3 text-[11px]">
           <div className="flex items-center justify-between">
             <span className="font-medium text-muted-foreground">

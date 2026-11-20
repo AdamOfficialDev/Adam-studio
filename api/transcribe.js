@@ -102,7 +102,7 @@ export default async function handler(request) {
 
   const defaultModel = process.env.DEFAULT_MODEL || 'gemini-4-hydrogen';
   const sttModels = Array.from(
-    new Set(['gemini-2.5-flash', model || defaultModel, 'gemini-2.0-flash'].filter(Boolean))
+    new Set(['gemini-3.8-flash', model || defaultModel].filter(Boolean))
   );
   const cleanMime = String(mimeType).split(';')[0].trim() || 'audio/wav';
   const promptText = [

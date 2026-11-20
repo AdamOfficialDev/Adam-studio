@@ -1,5 +1,5 @@
 import { estimateTokens, generateId } from '@/lib/utils';
-import type { ChatMessage } from '@/types/chat';
+import type { ChatMessage, CompactedContextState } from '@/types/chat';
 
 export interface ParsedImportResult {
   ok: boolean;
@@ -43,8 +43,212 @@ export function condenseLongCodeBlocks(text: string, maxLines = 80): string {
     const lines = body.split('\n');
     if (lines.length <= maxLines) return full;
     const preview = lines.slice(0, 12).join('\n');
-    return `\`\`\`${lang}\n${preview}\n// ... [${lines.length - 12} baris kode ${lang || 'text'} diringkas saat impor]\n\`\`\``;
+    return `\`\`\`${lang}\n${preview}\n// ... [${lines.length - 12} baris kode ${lang || 'text'} diringkas]\n\`\`\``;
   });
+}
+
+// Pertahankan N blok kode besar terakhir secara utuh (zero-loss untuk kode terbaru & seluruh teks chat)
+export function applyKeepLatestCodeToMessages(
+  messages: ChatMessage[],
+  keepLatestBlocks = 2
+): ChatMessage[] {
+  const codeBlockLocations: Array<{ msgIdx: number; matchIndex: number }> = [];
+  const regex = /```[\w-]*\n[\s\S]*?```/g;
+
+  messages.forEach((msg, msgIdx) => {
+    let m: RegExpExecArray | null;
+    regex.lastIndex = 0;
+    while ((m = regex.exec(msg.content)) !== null) {
+      if (m[0].split('\n').length > 25) {
+        codeBlockLocations.push({ msgIdx, matchIndex: m.index });
+      }
+    }
+  });
+
+  if (codeBlockLocations.length <= keepLatestBlocks) {
+    return messages;
+  }
+
+  const preserveSet = new Set(
+    codeBlockLocations.slice(-keepLatestBlocks).map((loc) => `${loc.msgIdx}:${loc.matchIndex}`)
+  );
+
+  return messages.map((msg, msgIdx) => {
+    let replaced = false;
+    const nextContent = msg.content.replace(
+      /```([\w-]*)\n([\s\S]*?)```/g,
+      (full, lang: string, body: string, offset: number) => {
+        const lineCount = body.split('\n').length;
+        if (lineCount <= 25 || preserveSet.has(`${msgIdx}:${offset}`)) {
+          return full;
+        }
+        replaced = true;
+        return `[Versi kode ${lang || 'text'} lama (${lineCount} baris) sudah diperbarui pada versi terbaru di akhir percakapan]`;
+      }
+    );
+    return replaced ? { ...msg, content: nextContent } : msg;
+  });
+}
+
+export function estimateMessagesTokenTotal(messages: ChatMessage[]): number {
+  return messages.reduce((acc, m) => {
+    const attTokens = (m.attachments || []).reduce((s, a) => s + (a.tokenCount ?? 0), 0);
+    const vtTokens = m.visualTarget ? estimateTokens(m.visualTarget.outerHtml) : 0;
+    return acc + estimateTokens(m.content) + attTokens + vtTokens;
+  }, 0);
+}
+
+export function buildEffectiveApiHistory(
+  messages: ChatMessage[],
+  compacted?: CompactedContextState
+): ChatMessage[] {
+  if (!compacted) return messages;
+
+  if (compacted.mode === 'keep-latest-code') {
+    return applyKeepLatestCodeToMessages(messages, 2);
+  }
+
+  const keepCount = Math.max(2, compacted.keepRecentCount);
+  const recentRaw = messages.slice(-keepCount);
+  const recentClean = applyKeepLatestCodeToMessages(recentRaw, 2);
+
+  if (!compacted.summaryPrefix) {
+    return recentClean;
+  }
+
+  const prefixMessages: ChatMessage[] = [
+    {
+      id: 'compacted-history-user',
+      role: 'user',
+      content: `[Ringkasan Konteks Historis Lengkap dari Sesi Sebelumnya]\n\n${compacted.summaryPrefix}`,
+      createdAt: messages[0]?.createdAt ?? Date.now(),
+    },
+    {
+      id: 'compacted-history-assistant',
+      role: 'assistant',
+      content:
+        'Konteks historis lengkap dan spesifikasi proyek di atas sudah saya pahami sepenuhnya. Saya siap melanjutkan dari percakapan terbaru di bawah.',
+      createdAt: messages[0]?.createdAt ?? Date.now(),
+    },
+  ];
+
+  return [...prefixMessages, ...recentClean];
+}
+
+export function buildCompactionChunks(messages: ChatMessage[], maxChunkTokens = 105_000): string[] {
+  const deduped = applyKeepLatestCodeToMessages(messages, 1);
+  const chunks: string[] = [];
+  let currentText = '';
+  let currentTokens = 0;
+
+  for (let i = 0; i < deduped.length; i++) {
+    const m = deduped[i];
+    const speaker = m.role === 'user' ? 'USER' : 'ASSISTANT';
+    const entry = `[Turn #${i + 1} - ${speaker}]\n${m.content}\n\n`;
+    const entryTokens = estimateTokens(entry);
+
+    if (currentTokens + entryTokens > maxChunkTokens && currentText) {
+      chunks.push(currentText.trim());
+      currentText = entry;
+      currentTokens = entryTokens;
+    } else {
+      currentText += entry;
+      currentTokens += entryTokens;
+    }
+  }
+
+  if (currentText.trim()) {
+    chunks.push(currentText.trim());
+  }
+  return chunks;
+}
+
+export async function runLosslessContextCompaction(params: {
+  messages: ChatMessage[];
+  keepRecentCount: number;
+  model: string;
+  apiKey?: string;
+  onStatus?: (msg: string) => void;
+}): Promise<{ ok: boolean; summary?: string; error?: string }> {
+  const olderMessages =
+    params.messages.length > params.keepRecentCount
+      ? params.messages.slice(0, -params.keepRecentCount)
+      : params.messages;
+
+  const chunks = buildCompactionChunks(olderMessages, 105_000);
+  if (chunks.length === 0) {
+    return { ok: false, error: 'Tidak ada pesan lama untuk dirangkum.' };
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  const normalizedKeys = (params.apiKey || '')
+    .split(/[\r\n,;]+/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+  if (normalizedKeys.length > 0) {
+    headers['x-gemini-api-key'] = normalizedKeys.join(',');
+  }
+
+  const res = await fetch('/api/compact', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: params.model,
+      chunks,
+    }),
+  });
+
+  if (!res.ok || !res.body) {
+    const txt = await res.text().catch(() => '');
+    return { ok: false, error: txt || `Gagal merangkum konteks (${res.status})` };
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalSummary = '';
+  let errorMsg = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+
+    let boundaryIndex: number;
+    while ((boundaryIndex = buffer.indexOf('\n\n')) !== -1) {
+      const rawBlock = buffer.slice(0, boundaryIndex);
+      buffer = buffer.slice(boundaryIndex + 2);
+      if (!rawBlock.trim() || rawBlock.startsWith(':')) continue;
+
+      let eventName = 'message';
+      const dataLines: string[] = [];
+      for (const line of rawBlock.split('\n')) {
+        if (line.startsWith('event:')) eventName = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+      }
+      if (dataLines.length === 0) continue;
+
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(dataLines.join('\n'));
+      } catch {
+        continue;
+      }
+
+      if (eventName === 'status' && typeof parsed.message === 'string') {
+        params.onStatus?.(parsed.message);
+      } else if (eventName === 'result' && typeof parsed.summary === 'string') {
+        finalSummary = parsed.summary;
+      } else if (eventName === 'error' && typeof parsed.message === 'string') {
+        errorMsg = parsed.message;
+      }
+    }
+  }
+
+  if (finalSummary) return { ok: true, summary: finalSummary };
+  return { ok: false, error: errorMsg || 'Ringkasan gagal dihasilkan.' };
 }
 
 function parseGoogleAiStudioJson(
@@ -91,7 +295,6 @@ function parseGoogleAiStudioJson(
 
     if (!text.trim() && !combinedThought) continue;
 
-    // Gabungkan jika ada beberapa chunk berurutan dengan role yang sama
     const prev = messages[messages.length - 1];
     if (prev && prev.role === role && role === 'assistant' && !prev.content && combinedThought) {
       prev.content = text;
@@ -122,10 +325,7 @@ function parseGoogleAiStudioJson(
     sysText = extractTextFromParts(sysObj.parts).content;
   }
 
-  const totalTok = messages.reduce(
-    (sum, m) => sum + estimateTokens(m.content) + estimateTokens(m.thought || ''),
-    0
-  );
+  const totalTok = estimateMessagesTokenTotal(messages);
 
   return {
     ok: true,
@@ -146,8 +346,13 @@ function parseChatGptMappingJson(
   if (!mapping || typeof mapping !== 'object') return null;
 
   const nodes = Object.values(mapping).filter(
-    (n): n is { message?: { author?: { role?: string }; content?: { parts?: unknown[] }; create_time?: number } } =>
-      Boolean(n && typeof n === 'object')
+    (n): n is {
+      message?: {
+        author?: { role?: string };
+        content?: { parts?: unknown[] };
+        create_time?: number;
+      };
+    } => Boolean(n && typeof n === 'object')
   );
 
   nodes.sort((a, b) => (a.message?.create_time ?? 0) - (b.message?.create_time ?? 0));
@@ -171,13 +376,12 @@ function parseChatGptMappingJson(
 
   if (messages.length === 0) return null;
 
-  const totalTok = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
   return {
     ok: true,
     sourceLabel: 'ChatGPT Export JSON',
     title: typeof obj.title === 'string' && obj.title.trim() ? obj.title.trim() : fallbackTitle,
     messages,
-    estimatedTokens: totalTok,
+    estimatedTokens: estimateMessagesTokenTotal(messages),
   };
 }
 
@@ -234,11 +438,6 @@ function parseGenericMessagesArray(
 
   if (messages.length === 0) return null;
 
-  const totalTok = messages.reduce(
-    (sum, m) => sum + estimateTokens(m.content) + estimateTokens(m.thought || ''),
-    0
-  );
-
   return {
     ok: true,
     sourceLabel,
@@ -246,7 +445,7 @@ function parseGenericMessagesArray(
     model,
     sessionSystemInstruction,
     messages,
-    estimatedTokens: totalTok,
+    estimatedTokens: estimateMessagesTokenTotal(messages),
   };
 }
 
@@ -284,7 +483,6 @@ function parseMarkdownChat(raw: string, fallbackTitle: string): ParsedImportResu
     }
   }
 
-  // Fallback untuk file .md dokumen biasa tanpa header User/Assistant
   if (messages.length === 0) {
     messages.push({
       id: generateId(),
@@ -301,13 +499,12 @@ function parseMarkdownChat(raw: string, fallbackTitle: string): ParsedImportResu
     });
   }
 
-  const totalTok = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
   return {
     ok: true,
     sourceLabel: matches.length >= 1 ? 'Markdown Chat (.md)' : 'Markdown Context (.md)',
     title: extractedTitle.slice(0, 64),
     messages,
-    estimatedTokens: totalTok,
+    estimatedTokens: estimateMessagesTokenTotal(messages),
   };
 }
 

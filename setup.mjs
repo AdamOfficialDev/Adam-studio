@@ -24,5 +24,5 @@ while ((match = filePattern.exec(rawBundle)) !== null) {
   count += 1;
 }
 
-console.log(`\n✅ Adam Studio v6.0 (${count} file) berhasil diterapkan!`);
-console.log('   Jalankan `pnpm build` untuk verifikasi atau `pnpm dev` untuk langsung mencobanya.\n');
+console.log(`\n✅ Patch v6.1 (${count} file) berhasil diterapkan!`);
+console.log('   Jalankan `pnpm build` untuk verifikasi, lalu `pnpm dev` (restart server) atau push ke Vercel.\n');

@@ -406,27 +406,16 @@ export const ChatMessage = memo(function ChatMessage({
                     Coba Lagi
                   </Button>
                 )}
-                {isCapacityError && onRetryWithModel && (
-                  <>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => onRetryWithModel('gemini-2.5-pro')}
-                      className="h-7 rounded-lg border-primary/30 bg-background/60 px-2.5 text-[11px] text-foreground hover:bg-background"
-                    >
-                      Coba Gemini 2.5 Pro
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => onRetryWithModel('gemini-2.5-flash')}
-                      className="h-7 rounded-lg border-primary/30 bg-background/60 px-2.5 text-[11px] text-foreground hover:bg-background"
-                    >
-                      Coba Gemini 2.5 Flash
-                    </Button>
-                  </>
+                {isCapacityError && onRetryWithModel && message.model !== 'gemini-3.8-flash' && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onRetryWithModel('gemini-3.8-flash')}
+                    className="h-7 rounded-lg border-primary/30 bg-background/60 px-2.5 text-[11px] text-foreground hover:bg-background"
+                  >
+                    Coba Gemini 3.8 Flash
+                  </Button>
                 )}
               </div>
             )}

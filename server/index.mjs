@@ -146,6 +146,146 @@ async function fetchWithTimeout(url, options, parentSignal, timeoutMs = 10000) {
   }
 }
 
+app.post('/api/compact', async (req, res) => {
+  const { model, chunks = [] } = req.body || {};
+
+  const headerKeys = parseKeyPool(
+    typeof req.headers['x-gemini-api-keys'] === 'string' ? req.headers['x-gemini-api-keys'] : '',
+    typeof req.headers['x-gemini-api-key'] === 'string' ? req.headers['x-gemini-api-key'] : ''
+  );
+  const apiKeys = headerKeys.length > 0 ? headerKeys : getServerEnvKeys();
+
+  if (!Array.isArray(chunks) || chunks.length === 0) {
+    res.status(400).json({ ok: false, message: 'Chunks kosong.' });
+    return;
+  }
+  if (apiKeys.length === 0) {
+    res.status(401).json({ ok: false, message: 'API Key belum tersedia.' });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const abortController = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) abortController.abort();
+  });
+
+  const candidates = Array.from(
+    new Set(['gemini-3.8-flash', model || DEFAULT_MODEL].filter(Boolean))
+  );
+  const ordered = buildOrderedCandidateKeys(apiKeys);
+
+  try {
+    const partSummaries = [];
+
+    for (let i = 0; i < chunks.length; i++) {
+      writeSseEvent(res, 'status', {
+        message: `Meringkas riwayat bagian ${i + 1}/${chunks.length} tanpa menghilangkan detail teknis...`,
+      });
+
+      const prompt = [
+        'Kamu adalah sistem Lossless Technical Context Compactor.',
+        'Tugasmu merangkum potongan riwayat percakapan berikut agar sesi AI dapat dilanjutkan TANPA KEHILANGAN KONTEKS PENTING.',
+        'WAJIB pertahankan secara lengkap:',
+        '1. Semua permintaan, aturan UI/UX, preferensi gaya bahasa, tech stack, dan batasan dari User.',
+        '2. Semua nama file, path, komponen, variabel, API endpoint, dan keputusan arsitektur.',
+        '3. Semua bug yang ditemukan, penyebabnya, serta status perbaikannya (sudah fix / belum).',
+        '4. Jangan sertakan kode panjang ulang—cukup ringkas fungsi & kontrak perubahannya.',
+        '',
+        `--- MULAI BAGIAN ${i + 1}/${chunks.length} ---`,
+        chunks[i],
+        `--- AKHIR BAGIAN ${i + 1}/${chunks.length} ---`,
+      ].join('\n');
+
+      let chunkDone = false;
+      let lastErr = 'Gagal meringkas bagian chat.';
+
+      for (const targetModel of candidates) {
+        if (chunkDone) break;
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+          targetModel
+        )}:generateContent`;
+
+        for (const entry of ordered) {
+          let useZeroThinking = targetModel.includes('2.5');
+          let triedNoThinking = false;
+
+          while (true) {
+            try {
+              const generationConfig = { temperature: 0.2, maxOutputTokens: 4096 };
+              if (useZeroThinking) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+
+              const upstream = await fetchWithTimeout(
+                endpoint,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': entry.key,
+                  },
+                  body: JSON.stringify({
+                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                    generationConfig,
+                  }),
+                },
+                abortController.signal,
+                25000
+              );
+
+              if (upstream.ok) {
+                const json = await upstream.json();
+                const text = json?.candidates?.[0]?.content?.parts
+                  ?.filter((p) => !p?.thought)
+                  ?.map((p) => p?.text || '')
+                  .join('')
+                  .trim();
+                if (text) {
+                  partSummaries.push(`### Ringkasan Bagian ${i + 1}\n${text}`);
+                  chunkDone = true;
+                  break;
+                }
+              } else {
+                const errRaw = await upstream.text();
+                lastErr = extractGeminiError(errRaw, upstream.status);
+                if (
+                  upstream.status === 400 &&
+                  useZeroThinking &&
+                  !triedNoThinking &&
+                  /thinking/i.test(errRaw)
+                ) {
+                  useZeroThinking = false;
+                  triedNoThinking = true;
+                  continue;
+                }
+                if (upstream.status === 404) break;
+              }
+            } catch (err) {
+              if (abortController.signal.aborted) return;
+              lastErr = err instanceof Error ? err.message : 'Network error';
+            }
+            break;
+          }
+          if (chunkDone) break;
+        }
+      }
+
+      if (!chunkDone) {
+        writeSseEvent(res, 'error', { message: lastErr });
+        return;
+      }
+    }
+
+    writeSseEvent(res, 'result', { ok: true, summary: partSummaries.join('\n\n') });
+  } finally {
+    if (!res.writableEnded) res.end();
+  }
+});
+
 app.post('/api/transcribe', async (req, res) => {
   const { model, mimeType = 'audio/wav', data = '' } = req.body || {};
 
@@ -180,7 +320,7 @@ app.post('/api/transcribe', async (req, res) => {
   });
 
   const sttModels = Array.from(
-    new Set(['gemini-2.5-flash', model || DEFAULT_MODEL, 'gemini-2.0-flash'].filter(Boolean))
+    new Set(['gemini-3.8-flash', model || DEFAULT_MODEL].filter(Boolean))
   );
   const orderedKeys = buildOrderedCandidateKeys(apiKeys);
   const cleanMime = String(mimeType).split(';')[0].trim() || 'audio/wav';
@@ -273,7 +413,6 @@ app.post('/api/transcribe', async (req, res) => {
 
           const errRaw = await upstream.text();
           lastError = extractGeminiError(errRaw, upstream.status);
-          console.error(`[STT ${sttModel}] ${upstream.status}: ${lastError}`);
 
           if (
             upstream.status === 400 &&
@@ -346,8 +485,7 @@ async function runDemoSse({ res, model, messages, includeThoughts = true, signal
       `**1. Memahami Intent Prompt**\n`,
       `Pengguna meminta: "${userText.slice(0, 100)}".\n\n`,
       `**2. Merencanakan Struktur Respons (${model})**\n`,
-      `- Menyiapkan HTML Artifact interaktif agar dapat diuji dengan **Visual Element Inspector**.\n`,
-      `- Mendemonstrasikan Time-Machine Diff & Virtualized 60fps UI.`,
+      `- Menyiapkan HTML Artifact interaktif agar dapat diuji dengan **Visual Element Inspector**.`,
     ].join('');
 
     const thoughtTokens = demoThought.match(/\S+\s*/g) || [demoThought];
@@ -360,27 +498,10 @@ async function runDemoSse({ res, model, messages, includeThoughts = true, signal
   const demoReply = [
     `Berikut hasil **Adam Studio (Demo SSE Mode)** pada model \`${model}\`.\n\n`,
     '```html\n',
-    '<!doctype html>\n',
-    '<html>\n',
-    '<head>\n',
-    '  <meta charset="utf-8" />\n',
-    '  <style>\n',
-    '    * { box-sizing: border-box; }\n',
-    '    body { margin: 0; font-family: system-ui, sans-serif; background: #09090b; color: #fafafa; min-height: 100vh; display: grid; place-items: center; padding: 20px; }\n',
-    '    .card { width: 100%; max-width: 360px; padding: 24px; border-radius: 20px; background: #18181b; border: 1px solid rgba(255,255,255,0.12); box-shadow: 0 20px 50px rgba(0,0,0,0.5); }\n',
-    '    h2 { margin: 0 0 8px; font-size: 20px; }\n',
-    '    p { margin: 0 0 18px; font-size: 13px; color: #a1a1aa; line-height: 1.5; }\n',
-    '    .action-btn { width: 100%; padding: 12px; border-radius: 12px; border: 0; font-weight: 600; cursor: pointer; background: #3b82f6; color: #fff; }\n',
-    '  </style>\n',
-    '</head>\n',
-    '<body>\n',
-    '  <div class="card">\n',
-    '    <h2>Adam Studio</h2>\n',
-    '    <p>Aktifkan ikon Crosshair untuk Inspect tombol di bawah ini.</p>\n',
-    '    <button class="action-btn" id="main-cta">Tombol Utama</button>\n',
-    '  </div>\n',
-    '</body>\n',
-    '</html>\n',
+    '<!doctype html><html><body style="margin:0;display:grid;place-items:center;min-height:100vh;background:#09090b;color:#fff;font-family:sans-serif">',
+    '<div style="padding:24px;border-radius:16px;border:1px solid #27272a;background:#18181b;text-align:center">',
+    '<h3>Adam Studio v6.1</h3><button style="margin-top:12px;padding:10px 16px;border-radius:10px;border:0;background:#3b82f6;color:#fff;font-weight:600">Inspect Tombol Ini</button>',
+    '</div></body></html>\n',
     '```\n',
   ].join('');
 
@@ -617,7 +738,7 @@ app.post('/api/chat', async (req, res) => {
     includeThoughts = true,
     thinkingBudget = -1,
     autoFallbackOnOverload = false,
-    fallbackModel = 'gemini-2.5-pro',
+    fallbackModel = 'gemini-3.8-flash',
     demoMode = false,
   } = req.body || {};
 
@@ -815,6 +936,6 @@ if (process.env.NODE_ENV === 'production') {
 
 app.listen(PORT, () => {
   const envKeys = getServerEnvKeys();
-  console.log(`⚡ Adam Studio v5.4 SSE Server aktif di http://localhost:${PORT}`);
+  console.log(`⚡ Adam Studio v6.1 SSE Server aktif di http://localhost:${PORT}`);
   console.log(`   Default model: ${DEFAULT_MODEL} | Server API Keys: ${envKeys.length}`);
 });

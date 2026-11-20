@@ -301,7 +301,7 @@ export default async function handler(request) {
     includeThoughts = true,
     thinkingBudget = -1,
     autoFallbackOnOverload = false,
-    fallbackModel = 'gemini-2.5-pro',
+    fallbackModel = 'gemini-3.8-flash',
     demoMode = false,
   } = body || {};
 

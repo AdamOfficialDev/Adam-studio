@@ -32,40 +32,16 @@ export const PRESET_MODELS: ModelInfo[] = [
     categories: ['Featured', 'Gemini'],
   },
   {
-    id: 'gemini-2.5-pro',
-    name: 'Gemini 2.5 Pro',
+    id: 'gemini-3.8-flash',
+    name: 'Gemini 3.8 Flash',
     description:
-      'Flagship reasoning & coding model for deep multi-step architecture, debugging, and large repository synthesis.',
-    inputPricePerMillion: 1.25,
-    outputPricePerMillion: 10.0,
-    contextLimit: 1_000_000,
-    contextLabel: '1M context',
-    releaseDate: '2025',
-    categories: ['Featured', 'Gemini'],
-  },
-  {
-    id: 'gemini-2.5-flash',
-    name: 'Gemini 2.5 Flash',
-    description:
-      'High-speed multimodal model tuned for low-latency SSE interactivity and cost-efficient daily tasks.',
+      'Model Flash generasi terbaru berlatensi rendah untuk chat real-time, transkripsi audio, dan ringkasan konteks cepat.',
     inputPricePerMillion: 0.15,
     outputPricePerMillion: 0.6,
     contextLimit: 1_000_000,
     contextLabel: '1M context',
-    releaseDate: '2025',
+    releaseDate: '2026',
     categories: ['Featured', 'Gemini'],
-  },
-  {
-    id: 'gemini-2.0-flash',
-    name: 'Gemini 2.0 Flash',
-    description:
-      'Dependable fast model for general multimodal prompts, summarization, and real-time chat.',
-    inputPricePerMillion: 0.1,
-    outputPricePerMillion: 0.4,
-    contextLimit: 1_000_000,
-    contextLabel: '1M context',
-    releaseDate: '2024',
-    categories: ['Gemini'],
   },
 ];
 
