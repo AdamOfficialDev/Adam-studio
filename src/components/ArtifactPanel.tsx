@@ -7,9 +7,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Code2,
+  Columns2,
   Copy,
+  CornerDownLeft,
   Crosshair,
   Download,
+  ExternalLink,
   Eye,
   Filter,
   GitCompare,
@@ -19,6 +22,7 @@ import {
   Minimize2,
   Monitor,
   Moon,
+  MoreVertical,
   RefreshCw,
   RotateCcw,
   Smartphone,
@@ -27,7 +31,10 @@ import {
   Tablet,
   Terminal,
   Trash2,
+  Wand2,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
@@ -36,15 +43,16 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { StudioScroll } from '@/components/ui/studio-scroll';
 import { MarkdownRenderer } from '@/components/MarkdownRenderer';
 import { buildPreviewSrcDoc, getExtensionForLanguage } from '@/lib/artifacts';
 import { computeLineDiff } from '@/lib/diff';
 import type { ArtifactItem, VisualTarget } from '@/types/chat';
-import { cn, generateId } from '@/lib/utils';
+import { cn, formatBytes, generateId } from '@/lib/utils';
 
-// Lazy-load CodeMirror agar buka Canvas di tab Preview tetap instan 0ms
 const LazyCodeMirrorEditor = lazy(() => import('@/components/CodeMirrorEditor'));
 
 interface ConsoleEntry {
@@ -52,6 +60,8 @@ interface ConsoleEntry {
   level: 'log' | 'warn' | 'error';
   message: string;
 }
+
+type CanvasTab = 'preview' | 'code' | 'split' | 'diff' | 'console';
 
 interface ArtifactPanelProps {
   artifact: ArtifactItem;
@@ -61,6 +71,8 @@ interface ArtifactPanelProps {
   onToggleFullscreen: () => void;
   onSelectArtifact: (artifact: ArtifactItem) => void;
   onSelectVisualTarget?: (target: VisualTarget) => void;
+  onFixErrorWithAi?: (errorMessage: string, artifact: ArtifactItem) => void;
+  onInsertToChat?: (text: string) => void;
   onClose: () => void;
 }
 
@@ -72,17 +84,21 @@ export function ArtifactPanel({
   onToggleFullscreen,
   onSelectArtifact,
   onSelectVisualTarget,
+  onFixErrorWithAi,
+  onInsertToChat,
   onClose,
 }: ArtifactPanelProps) {
   const canPreview =
     artifact.kind === 'html' || artifact.kind === 'svg' || artifact.kind === 'markdown';
+  const isHtmlOrSvg = artifact.kind === 'html' || artifact.kind === 'svg';
 
-  const [tab, setTab] = useState<'preview' | 'code' | 'diff' | 'console'>(
-    canPreview ? 'preview' : 'code'
-  );
+  const [tab, setTab] = useState<CanvasTab>(canPreview ? 'preview' : 'code');
   const [viewport, setViewport] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
+  const [zoomPct, setZoomPct] = useState<50 | 75 | 100>(100);
   const [previewBg, setPreviewBg] = useState<'dark' | 'light'>('dark');
+
   const [editableContent, setEditableContent] = useState(artifact.content);
+  const [debouncedContent, setDebouncedContent] = useState(artifact.content);
   const [refreshSeed, setRefreshSeed] = useState(0);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [consoleLogs, setConsoleLogs] = useState<ConsoleEntry[]>([]);
@@ -100,9 +116,11 @@ export function ArtifactPanel({
 
   useEffect(() => {
     setEditableContent(artifact.content);
+    setDebouncedContent(artifact.content);
     setRuntimeError(null);
     setConsoleLogs([]);
     setInspectMode(false);
+    setZoomPct(100);
     if (currentVersionIdx > 0 && allArtifacts[currentVersionIdx - 1]) {
       setCompareBaselineId(allArtifacts[currentVersionIdx - 1].id);
     } else {
@@ -115,6 +133,16 @@ export function ArtifactPanel({
     );
   }, [artifact.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Debounce 250ms saat mengedit di IDE/Split agar iframe preview tidak kedip per ketukan
+  useEffect(() => {
+    if (editableContent === artifact.content) {
+      setDebouncedContent(editableContent);
+      return;
+    }
+    const t = window.setTimeout(() => setDebouncedContent(editableContent), 250);
+    return () => window.clearTimeout(t);
+  }, [editableContent, artifact.content]);
+
   const sendInspectToggleToIframe = (enabled: boolean) => {
     iframeRef.current?.contentWindow?.postMessage(
       { type: 'hydrogen-inspector-toggle', enabled },
@@ -124,6 +152,9 @@ export function ArtifactPanel({
 
   const toggleInspectMode = () => {
     const next = !inspectMode;
+    if (next && zoomPct !== 100) {
+      setZoomPct(100);
+    }
     setInspectMode(next);
     sendInspectToggleToIframe(next);
   };
@@ -212,7 +243,7 @@ export function ArtifactPanel({
 
   const currentArtifact: ArtifactItem = {
     ...artifact,
-    content: editableContent,
+    content: debouncedContent,
   };
 
   const handleCopy = async () => {
@@ -238,28 +269,132 @@ export function ArtifactPanel({
     toast.success(`Mengunduh artifact.${ext}`);
   };
 
+  const handleOpenNewTab = () => {
+    if (!isHtmlOrSvg) return;
+    const htmlStr = buildPreviewSrcDoc(currentArtifact, previewBg);
+    const blob = new Blob([htmlStr], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank', 'noopener,noreferrer');
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  };
+
+  const lineCount = useMemo(() => editableContent.split('\n').length, [editableContent]);
+  const isModified = editableContent !== artifact.content;
   const viewportWidthLabel =
     viewport === 'mobile' ? '375px' : viewport === 'tablet' ? '768px' : '100%';
 
-  const tabItems: Array<{ id: 'preview' | 'code' | 'diff' | 'console'; label: string; icon: typeof Eye }> = [
+  const tabItems: Array<{
+    id: CanvasTab;
+    label: string;
+    icon: typeof Eye;
+    desktopOnly?: boolean;
+  }> = [
     ...(canPreview ? [{ id: 'preview' as const, label: 'Preview', icon: Eye }] : []),
     { id: 'code', label: 'IDE', icon: Code2 },
-    { id: 'diff', label: 'Diff', icon: GitCompare },
-    ...((artifact.kind === 'html' || artifact.kind === 'svg')
-      ? [{ id: 'console' as const, label: 'Console', icon: Terminal }]
+    ...(canPreview
+      ? [{ id: 'split' as const, label: 'Split', icon: Columns2, desktopOnly: true }]
       : []),
+    { id: 'diff', label: 'Diff', icon: GitCompare },
+    ...(isHtmlOrSvg ? [{ id: 'console' as const, label: 'Console', icon: Terminal }] : []),
   ];
+
+  const renderPreviewFrame = () => {
+    if (artifact.kind === 'markdown') {
+      return (
+        <StudioScroll className="h-full w-full" autoHide="scroll">
+          <div className="p-4 sm:p-6">
+            <div className="mx-auto max-w-2xl rounded-2xl border bg-card p-5 shadow-sm">
+              <MarkdownRenderer content={debouncedContent} />
+            </div>
+          </div>
+        </StudioScroll>
+      );
+    }
+
+    const showDeviceFrame = viewport !== 'desktop';
+
+    return (
+      <div className="flex h-full w-full items-center justify-center p-2 sm:p-3.5">
+        <div
+          className={cn(
+            'flex h-full flex-col overflow-hidden border bg-zinc-950 shadow-2xl transition-all duration-200',
+            showDeviceFrame ? 'rounded-2xl border-zinc-700/80 ring-1 ring-white/10' : 'rounded-xl',
+            viewport === 'mobile'
+              ? 'w-[375px] max-w-full'
+              : viewport === 'tablet'
+                ? 'w-[768px] max-w-full'
+                : 'w-full'
+          )}
+        >
+          {showDeviceFrame && (
+            <div className="flex h-6 shrink-0 items-center justify-between border-b border-zinc-800 bg-zinc-900/90 px-3 text-[10px] font-mono text-zinc-400">
+              <span className="flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                {viewport === 'mobile' ? 'Mobile Viewport' : 'Tablet Viewport'}
+              </span>
+              <span>{viewportWidthLabel}</span>
+            </div>
+          )}
+
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            <div
+              style={
+                zoomPct === 100
+                  ? { width: '100%', height: '100%' }
+                  : {
+                      width: `${(100 / zoomPct) * 100}%`,
+                      height: `${(100 / zoomPct) * 100}%`,
+                      transform: `scale(${zoomPct / 100})`,
+                      transformOrigin: 'top left',
+                    }
+              }
+            >
+              <iframe
+                ref={iframeRef}
+                key={`${artifact.id}-${refreshSeed}`}
+                title={artifact.title}
+                sandbox="allow-scripts"
+                onLoad={() => sendInspectToggleToIframe(inspectMode)}
+                srcDoc={buildPreviewSrcDoc(currentArtifact, previewBg)}
+                className={cn('h-full w-full border-0', isResizing && 'pointer-events-none')}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderEditor = () => (
+    <Suspense
+      fallback={
+        <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin text-primary" />
+          <span>Memuat IDE Editor...</span>
+        </div>
+      }
+    >
+      <LazyCodeMirrorEditor
+        value={editableContent}
+        language={artifact.language}
+        onChange={(val) => {
+          setEditableContent(val);
+          setRuntimeError(null);
+        }}
+      />
+    </Suspense>
+  );
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
-      {/* Row 1: Header Utama Canvas */}
-      <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b bg-card px-3.5">
-        <div className="flex min-w-0 items-center gap-2.5">
+      {/* Row 1: Compact Responsive Header (anti-sesak di HP) */}
+      <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b bg-card px-3 sm:px-3.5">
+        <div className="flex min-w-0 items-center gap-2">
           <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
             <Sparkles className="h-3.5 w-3.5" />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <span className="truncate text-xs font-semibold">{artifact.title}</span>
               <Badge
                 variant="outline"
@@ -267,105 +402,21 @@ export function ArtifactPanel({
               >
                 {artifact.language}
               </Badge>
-            </div>
-            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <span>{editableContent.split('\n').length} lines</span>
-              {editableContent !== artifact.content && (
-                <span className="font-medium text-amber-400">• Modified</span>
+              {isModified && (
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" title="Modified" />
               )}
             </div>
           </div>
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
-          {editableContent !== artifact.content && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={() => {
-                setEditableContent(artifact.content);
-                setRuntimeError(null);
-              }}
-              title="Reset ke versi asli"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-            </Button>
-          )}
-          <Button type="button" variant="ghost" size="icon" onClick={handleCopy} title="Copy code">
-            {copied ? <Check className="h-4 w-4 text-emerald-500" /> : <Copy className="h-4 w-4" />}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={handleDownload}
-            title="Download"
-          >
-            <Download className="h-4 w-4" />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={onToggleFullscreen}
-            className="hidden lg:inline-flex"
-            title={isFullscreen ? 'Keluar Fullscreen' : 'Fullscreen Canvas'}
-          >
-            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-          </Button>
-          <Button type="button" variant="ghost" size="icon" onClick={onClose} title="Tutup Canvas">
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
-
-      {/* Row 2: Segmented Tabs + Preview Tools + Version Stepper */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/25 px-3 py-2">
-        <div className="inline-flex items-center gap-1 rounded-xl border bg-background/70 p-0.5">
-          {tabItems.map((item) => {
-            const Icon = item.icon;
-            const active = tab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => {
-                  setTab(item.id);
-                  if (item.id !== 'preview') setInspectMode(false);
-                }}
-                className={cn(
-                  'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
-                  active
-                    ? 'bg-primary text-primary-foreground shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-              >
-                <Icon className="h-3 w-3" />
-                <span>{item.label}</span>
-                {item.id === 'console' && consoleLogs.length > 0 && (
-                  <span
-                    className={cn(
-                      'rounded-full px-1.5 text-[10px]',
-                      active ? 'bg-black/20 text-white' : 'bg-primary/20 text-primary'
-                    )}
-                  >
-                    {consoleLogs.length}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1.5">
           {allArtifacts.length > 1 && (
-            <div className="flex items-center rounded-xl border bg-background/70 p-0.5">
+            <div className="flex items-center rounded-lg border bg-background/70 p-0.5">
               <button
                 type="button"
                 disabled={currentVersionIdx <= 0}
                 onClick={() => onSelectArtifact(allArtifacts[currentVersionIdx - 1])}
-                className="rounded-lg p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
+                className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
                 title="Versi Sebelumnya"
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
@@ -375,9 +426,9 @@ export function ArtifactPanel({
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
-                    className="inline-flex items-center gap-1 px-2 py-0.5 font-mono text-[11px] font-medium hover:text-primary"
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[11px] font-medium hover:text-primary"
                   >
-                    <Layers className="h-3 w-3 text-primary" />
+                    <Layers className="hidden h-3 w-3 text-primary sm:inline" />
                     <span>
                       v{currentVersionIdx + 1}/{allArtifacts.length}
                     </span>
@@ -404,7 +455,7 @@ export function ArtifactPanel({
                 type="button"
                 disabled={currentVersionIdx >= allArtifacts.length - 1}
                 onClick={() => onSelectArtifact(allArtifacts[currentVersionIdx + 1])}
-                className="rounded-lg p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
+                className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
                 title="Versi Berikutnya"
               >
                 <ChevronRight className="h-3.5 w-3.5" />
@@ -412,166 +463,290 @@ export function ArtifactPanel({
             </div>
           )}
 
-          {tab === 'preview' && (artifact.kind === 'html' || artifact.kind === 'svg') && (
-            <div className="flex items-center gap-1">
-              {onSelectVisualTarget && (
-                <Button
-                  type="button"
-                  variant={inspectMode ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={toggleInspectMode}
-                  className="h-7 gap-1 rounded-lg px-2 text-[11px]"
-                  title="Klik elemen di preview untuk mengeditnya langsung dengan AI"
-                >
-                  <Crosshair className="h-3.5 w-3.5" />
-                  <span>{inspectMode ? 'Pilih...' : 'Inspect'}</span>
-                </Button>
-              )}
+          <Button type="button" variant="ghost" size="icon" onClick={handleCopy} title="Copy code">
+            {copied ? <Check className="h-4 w-4 text-emerald-500" /> : <Copy className="h-4 w-4" />}
+          </Button>
 
-              <div className="hidden items-center rounded-lg border bg-background/70 p-0.5 sm:flex">
-                <button
-                  type="button"
-                  onClick={() => setViewport('desktop')}
-                  className={cn(
-                    'rounded-md p-1 transition-colors',
-                    viewport === 'desktop'
-                      ? 'bg-accent text-foreground shadow-sm'
-                      : 'text-muted-foreground'
-                  )}
-                  title="Desktop (100%)"
-                >
-                  <Monitor className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewport('tablet')}
-                  className={cn(
-                    'rounded-md p-1 transition-colors',
-                    viewport === 'tablet'
-                      ? 'bg-accent text-foreground shadow-sm'
-                      : 'text-muted-foreground'
-                  )}
-                  title="Tablet (768px)"
-                >
-                  <Tablet className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewport('mobile')}
-                  className={cn(
-                    'rounded-md p-1 transition-colors',
-                    viewport === 'mobile'
-                      ? 'bg-accent text-foreground shadow-sm'
-                      : 'text-muted-foreground'
-                  )}
-                  title="Mobile (375px)"
-                >
-                  <Smartphone className="h-3.5 w-3.5" />
-                </button>
-              </div>
-
-              <span className="hidden font-mono text-[10px] text-muted-foreground md:inline">
-                {viewportWidthLabel}
-              </span>
-
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => {
-                  setRuntimeError(null);
-                  setConsoleLogs([]);
-                  setRefreshSeed((s) => s + 1);
-                }}
-                className="h-7 w-7"
-                title="Reload Preview"
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-              </Button>
-
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => setPreviewBg((b) => (b === 'dark' ? 'light' : 'dark'))}
-                className="h-7 w-7"
-                title="Toggle Backdrop Light/Dark"
-              >
-                {previewBg === 'dark' ? (
-                  <Sun className="h-3.5 w-3.5" />
-                ) : (
-                  <Moon className="h-3.5 w-3.5" />
-                )}
-              </Button>
-            </div>
+          {/* Desktop Quick Actions */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={handleDownload}
+            className="hidden sm:inline-flex"
+            title="Download"
+          >
+            <Download className="h-4 w-4" />
+          </Button>
+          {isHtmlOrSvg && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={handleOpenNewTab}
+              className="hidden sm:inline-flex"
+              title="Buka di Tab Baru"
+            >
+              <ExternalLink className="h-4 w-4" />
+            </Button>
           )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onToggleFullscreen}
+            className="hidden lg:inline-flex"
+            title={isFullscreen ? 'Keluar Fullscreen' : 'Fullscreen Canvas'}
+          >
+            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </Button>
+
+          {/* Mobile Overflow Actions */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="sm:hidden"
+                aria-label="Aksi Canvas"
+              >
+                <MoreVertical className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              {isHtmlOrSvg && (
+                <DropdownMenuItem onClick={handleOpenNewTab}>
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Buka di Tab Baru
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onClick={handleDownload}>
+                <Download className="h-3.5 w-3.5" />
+                Download File
+              </DropdownMenuItem>
+              {isModified && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setEditableContent(artifact.content);
+                      setRuntimeError(null);
+                    }}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Reset Perubahan
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <Button type="button" variant="ghost" size="icon" onClick={onClose} title="Tutup Canvas">
+            <X className="h-4 w-4" />
+          </Button>
         </div>
       </div>
 
-      {inspectMode && tab === 'preview' && (
+      {/* Row 2: Segmented Tabs + Preview Tools */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/25 px-3 py-2">
+        <div className="inline-flex items-center gap-0.5 rounded-xl border bg-background/70 p-0.5">
+          {tabItems.map((item) => {
+            const Icon = item.icon;
+            const active = tab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  setTab(item.id);
+                  if (item.id !== 'preview' && item.id !== 'split') setInspectMode(false);
+                }}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                  item.desktopOnly && 'hidden lg:inline-flex',
+                  active
+                    ? 'bg-primary text-primary-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <Icon className="h-3 w-3" />
+                <span>{item.label}</span>
+                {item.id === 'console' && consoleLogs.length > 0 && (
+                  <span
+                    className={cn(
+                      'rounded-full px-1.5 text-[10px]',
+                      active ? 'bg-black/20 text-white' : 'bg-primary/20 text-primary'
+                    )}
+                  >
+                    {consoleLogs.length}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {(tab === 'preview' || tab === 'split') && isHtmlOrSvg && (
+          <div className="flex items-center gap-1">
+            {onSelectVisualTarget && (
+              <Button
+                type="button"
+                variant={inspectMode ? 'default' : 'outline'}
+                size="sm"
+                onClick={toggleInspectMode}
+                className="h-7 gap-1 rounded-lg px-2 text-[11px]"
+                title="Klik elemen di preview untuk mengeditnya langsung dengan AI"
+              >
+                <Crosshair className="h-3.5 w-3.5" />
+                <span>{inspectMode ? 'Pilih...' : 'Inspect'}</span>
+              </Button>
+            )}
+
+            {/* Preview Zoom Toggle (50% / 75% / 100%) — sangat berguna di HP & Split Pane */}
+            <div className="flex items-center rounded-lg border bg-background/70 p-0.5">
+              <button
+                type="button"
+                onClick={() => setZoomPct((z) => (z === 100 ? 75 : z === 75 ? 50 : 100))}
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                title="Ubah Zoom Preview (50% / 75% / 100%)"
+              >
+                {zoomPct < 100 ? (
+                  <ZoomIn className="h-3 w-3 text-primary" />
+                ) : (
+                  <ZoomOut className="h-3 w-3" />
+                )}
+                <span>{zoomPct}%</span>
+              </button>
+            </div>
+
+            <div className="hidden items-center rounded-lg border bg-background/70 p-0.5 sm:flex">
+              <button
+                type="button"
+                onClick={() => setViewport('desktop')}
+                className={cn(
+                  'rounded-md p-1 transition-colors',
+                  viewport === 'desktop'
+                    ? 'bg-accent text-foreground shadow-sm'
+                    : 'text-muted-foreground'
+                )}
+                title="Desktop (100%)"
+              >
+                <Monitor className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewport('tablet')}
+                className={cn(
+                  'rounded-md p-1 transition-colors',
+                  viewport === 'tablet'
+                    ? 'bg-accent text-foreground shadow-sm'
+                    : 'text-muted-foreground'
+                )}
+                title="Tablet (768px)"
+              >
+                <Tablet className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewport('mobile')}
+                className={cn(
+                  'rounded-md p-1 transition-colors',
+                  viewport === 'mobile'
+                    ? 'bg-accent text-foreground shadow-sm'
+                    : 'text-muted-foreground'
+                )}
+                title="Mobile (375px)"
+              >
+                <Smartphone className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                setRuntimeError(null);
+                setConsoleLogs([]);
+                setRefreshSeed((s) => s + 1);
+              }}
+              className="h-7 w-7"
+              title="Reload Preview"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </Button>
+
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => setPreviewBg((b) => (b === 'dark' ? 'light' : 'dark'))}
+              className="h-7 w-7"
+              title="Toggle Backdrop Light/Dark"
+            >
+              {previewBg === 'dark' ? (
+                <Sun className="h-3.5 w-3.5" />
+              ) : (
+                <Moon className="h-3.5 w-3.5" />
+              )}
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {inspectMode && (tab === 'preview' || tab === 'split') && (
         <div className="flex items-center justify-between border-b border-primary/30 bg-primary/10 px-3.5 py-1.5 text-[11px] text-primary">
           <span className="flex items-center gap-1.5 font-medium">
-            <Crosshair className="h-3.5 w-3.5" />
-            Inspector Aktif: Ketuk atau klik elemen mana saja pada preview untuk diedit AI.
+            <Crosshair className="h-3.5 w-3.5 shrink-0" />
+            <span>Inspector Aktif: Ketuk elemen di preview untuk edit langsung via AI.</span>
           </span>
-          <button type="button" onClick={toggleInspectMode} className="underline">
+          <button type="button" onClick={toggleInspectMode} className="shrink-0 underline">
             Batal
           </button>
         </div>
       )}
 
       {runtimeError && (
-        <div className="flex items-center justify-between gap-2 border-b border-destructive/30 bg-destructive/10 px-3.5 py-2 text-xs text-destructive">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-destructive/30 bg-destructive/10 px-3.5 py-2 text-xs text-destructive">
           <div className="flex min-w-0 items-center gap-2">
             <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate font-mono">{runtimeError}</span>
           </div>
-          <button
-            type="button"
-            onClick={() => setTab('console')}
-            className="shrink-0 text-[11px] font-semibold underline"
-          >
-            Lihat Console
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {onFixErrorWithAi && (
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => onFixErrorWithAi(runtimeError, currentArtifact)}
+                className="h-6 gap-1 rounded-md px-2 text-[11px]"
+              >
+                <Wand2 className="h-3 w-3" />
+                Fix with AI
+              </Button>
+            )}
+            <button
+              type="button"
+              onClick={() => setTab('console')}
+              className="text-[11px] font-semibold underline"
+            >
+              Console
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Body */}
+      {/* Main Content */}
       <div className="min-h-0 flex-1 overflow-hidden bg-muted/15">
         {tab === 'preview' && canPreview ? (
-          artifact.kind === 'markdown' ? (
-            <div className="h-full w-full overflow-y-auto p-4 sm:p-6">
-              <div className="mx-auto max-w-2xl rounded-2xl border bg-card p-5 shadow-sm">
-                <MarkdownRenderer content={editableContent} />
-              </div>
-            </div>
-          ) : (
-            <div className="flex h-full items-center justify-center p-2.5 sm:p-4">
-              <div
-                className={cn(
-                  'h-full overflow-hidden rounded-xl border bg-zinc-950 shadow-2xl transition-all duration-200',
-                  viewport === 'mobile'
-                    ? 'w-[375px] max-w-full'
-                    : viewport === 'tablet'
-                      ? 'w-[768px] max-w-full'
-                      : 'w-full'
-                )}
-              >
-                <iframe
-                  ref={iframeRef}
-                  key={`${artifact.id}-${refreshSeed}`}
-                  title={artifact.title}
-                  sandbox="allow-scripts"
-                  onLoad={() => sendInspectToggleToIframe(inspectMode)}
-                  srcDoc={buildPreviewSrcDoc(currentArtifact, previewBg)}
-                  className={cn('h-full w-full border-0', isResizing && 'pointer-events-none')}
-                />
-              </div>
-            </div>
-          )
+          renderPreviewFrame()
+        ) : tab === 'split' && canPreview ? (
+          <div className="grid h-full w-full grid-cols-2 divide-x overflow-hidden">
+            <div className="h-full min-w-0 overflow-hidden">{renderEditor()}</div>
+            <div className="h-full min-w-0 overflow-hidden">{renderPreviewFrame()}</div>
+          </div>
         ) : tab === 'diff' ? (
           <div className="flex h-full flex-col overflow-hidden">
-            {/* Upgraded Shadcn Diff Toolbar */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-card/70 px-3.5 py-2 text-xs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="flex items-center gap-1 text-muted-foreground">
@@ -587,7 +762,7 @@ export function ArtifactPanel({
                       size="sm"
                       className="h-7 gap-1.5 rounded-lg px-2.5 text-xs font-normal"
                     >
-                      <span className="max-w-[170px] truncate font-mono">{baselineLabel}</span>
+                      <span className="max-w-[160px] truncate font-mono">{baselineLabel}</span>
                       <ChevronDown className="h-3 w-3 opacity-60" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -645,7 +820,7 @@ export function ArtifactPanel({
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-auto bg-[#0b0d12]">
+            <StudioScroll axis="both" autoHide="never" className="min-h-0 flex-1 bg-[#0b0d12]">
               {displayedDiffLines.length === 0 ? (
                 <div className="py-16 text-center text-xs text-zinc-500">
                   Tidak ada perbedaan baris dengan versi pembanding.
@@ -676,72 +851,127 @@ export function ArtifactPanel({
                   ))}
                 </div>
               )}
-            </div>
+            </StudioScroll>
           </div>
         ) : tab === 'console' ? (
           <div className="flex h-full flex-col overflow-hidden">
-            <div className="flex shrink-0 items-center justify-between border-b bg-card/50 px-3.5 py-2 text-xs text-muted-foreground">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b bg-card/50 px-3.5 py-2 text-xs text-muted-foreground">
               <span>Live Sandbox Console Output</span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setConsoleLogs([]);
-                  setRuntimeError(null);
-                }}
-                className="h-6 gap-1 px-2 text-[11px]"
-              >
-                <Trash2 className="h-3 w-3" />
-                Clear
-              </Button>
-            </div>
-            <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-3 font-mono text-xs">
-              {consoleLogs.length === 0 ? (
-                <div className="py-10 text-center text-muted-foreground">
-                  Belum ada log atau error dari preview iframe.
-                </div>
-              ) : (
-                consoleLogs.map((entry) => (
-                  <div
-                    key={entry.id}
-                    className={cn(
-                      'rounded-lg border px-3 py-2 break-words',
-                      entry.level === 'error'
-                        ? 'border-destructive/40 bg-destructive/10 text-destructive'
-                        : entry.level === 'warn'
-                          ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
-                          : 'bg-card text-foreground'
-                    )}
+              <div className="flex items-center gap-1.5">
+                {onInsertToChat && consoleLogs.some((e) => e.level === 'error') && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const errs = consoleLogs
+                        .filter((e) => e.level === 'error')
+                        .map((e) => `- ${e.message}`)
+                        .join('\n');
+                      onInsertToChat(
+                        `[Console Errors pada \`${artifact.title}\`]:\n\`\`\`\n${errs}\n\`\`\`\nTolong perbaiki error di atas:`
+                      );
+                      toast.success('Semua error dimasukkan ke chat');
+                    }}
+                    className="h-6 gap-1 rounded-md border-destructive/40 bg-destructive/10 px-2 text-[11px] text-destructive hover:bg-destructive/20"
                   >
-                    <span className="mr-2 text-[10px] uppercase opacity-70">[{entry.level}]</span>
-                    {entry.message}
-                  </div>
-                ))
-              )}
+                    <CornerDownLeft className="h-3 w-3" />
+                    <span>Kirim Semua Error</span>
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setConsoleLogs([]);
+                    setRuntimeError(null);
+                  }}
+                  className="h-6 gap-1 px-2 text-[11px]"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Clear
+                </Button>
+              </div>
             </div>
+            <StudioScroll className="min-h-0 flex-1" autoHide="scroll">
+              <div className="space-y-1.5 p-3 font-mono text-xs">
+                {consoleLogs.length === 0 ? (
+                  <div className="py-10 text-center text-muted-foreground">
+                    Belum ada log atau error dari preview iframe.
+                  </div>
+                ) : (
+                  consoleLogs.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className={cn(
+                        'group flex items-start justify-between gap-2 rounded-lg border px-3 py-2 break-words',
+                        entry.level === 'error'
+                          ? 'border-destructive/40 bg-destructive/10 text-destructive'
+                          : entry.level === 'warn'
+                            ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
+                            : 'bg-card text-foreground'
+                      )}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <span className="mr-2 text-[10px] uppercase opacity-70">[{entry.level}]</span>
+                        {entry.message}
+                      </div>
+                      {onInsertToChat && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onInsertToChat(
+                              `[Console ${entry.level.toUpperCase()} pada \`${artifact.title}\`]:\n\`\`\`\n${entry.message}\n\`\`\`\nTolong cek / perbaiki bagian ini:`
+                            );
+                            toast.success('Log dimasukkan ke kolom chat');
+                          }}
+                          className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border/60 bg-background/80 px-2 py-0.5 font-sans text-[10px] font-medium text-foreground opacity-90 transition-opacity hover:bg-accent md:opacity-0 md:group-hover:opacity-100"
+                          title="Masukkan ke kolom chat"
+                        >
+                          <CornerDownLeft className="h-3 w-3 text-primary" />
+                          <span>Ke Chat</span>
+                        </button>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </StudioScroll>
           </div>
         ) : (
-          <div className="h-full w-full overflow-hidden">
-            <Suspense
-              fallback={
-                <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                  <span>Memuat IDE Editor...</span>
-                </div>
-              }
-            >
-              <LazyCodeMirrorEditor
-                value={editableContent}
-                language={artifact.language}
-                onChange={(val) => {
-                  setEditableContent(val);
+          <div className="h-full w-full overflow-hidden">{renderEditor()}</div>
+        )}
+      </div>
+
+      {/* Bottom Status Bar */}
+      <div className="flex h-7 shrink-0 items-center justify-between border-t bg-card/80 px-3 font-mono text-[10px] text-muted-foreground">
+        <div className="flex items-center gap-2.5">
+          <span>{lineCount.toLocaleString()} lines</span>
+          <span>•</span>
+          <span>{formatBytes(editableContent.length)}</span>
+          {isModified && (
+            <>
+              <span>•</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditableContent(artifact.content);
                   setRuntimeError(null);
                 }}
-              />
-            </Suspense>
-          </div>
-        )}
+                className="text-amber-400 hover:underline"
+              >
+                Reset edits
+              </button>
+            </>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {isHtmlOrSvg && <span>{viewportWidthLabel}</span>}
+          <span className={runtimeError ? 'text-destructive' : 'text-emerald-400'}>
+            {runtimeError ? '● Error' : '● Ready'}
+          </span>
+        </div>
       </div>
     </div>
   );

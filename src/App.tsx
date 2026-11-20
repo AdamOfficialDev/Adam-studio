@@ -1688,6 +1688,27 @@ export default function App() {
                       isFullscreen={artifactFullscreen}
                       onToggleFullscreen={() => setArtifactFullscreen((f) => !f)}
                       onSelectArtifact={setActiveArtifact}
+                      onInsertToChat={(snippet) => {
+                        setExternalDraft(snippet);
+                        if (window.innerWidth < 1024) {
+                          setActiveArtifact(null);
+                          setArtifactFullscreen(false);
+                        }
+                      }}
+                      onFixErrorWithAi={(errMsg, art) => {
+                        handleSend(
+                          `Terjadi error runtime saat menjalankan Preview pada \`${art.title}\`:
+\`\`\`
+${errMsg}
+\`\`\`
+Tolong perbaiki bug tersebut secara lengkap.`,
+                          []
+                        );
+                        if (window.innerWidth < 1024) {
+                          setActiveArtifact(null);
+                          setArtifactFullscreen(false);
+                        }
+                      }}
                       onSelectVisualTarget={(target) => {
                         setVisualTarget(target);
                         if (window.innerWidth < 1024) {
