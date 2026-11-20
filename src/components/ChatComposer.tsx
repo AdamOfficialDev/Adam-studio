@@ -1,13 +1,11 @@
-import {
-  useEffect,
+import { memo, useEffect,
   useMemo,
   useRef,
   useState,
   type ChangeEvent,
   type ClipboardEvent,
   type DragEvent,
-  type KeyboardEvent,
-} from 'react';
+  type KeyboardEvent, } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowUp,
@@ -155,7 +153,7 @@ function readMediaDuration(file: File, kind: 'video' | 'audio'): Promise<number 
   });
 }
 
-export function ChatComposer({
+export const ChatComposer = memo(function ChatComposer({
   model,
   isStreaming,
   settings,
@@ -1151,29 +1149,61 @@ export function ChatComposer({
               </span>
             )}
 
-            {isStreaming ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="destructive"
-                onClick={onStop}
-                className="h-8 gap-1.5 rounded-xl px-3"
-              >
-                <Square className="h-3.5 w-3.5 fill-current" />
-                <span>Stop</span>
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                size="icon"
-                onClick={submit}
-                disabled={(!input.trim() && attachments.length === 0) || isRecording || isTranscribing}
-                className="h-8 w-8 rounded-xl shadow-md"
-                aria-label="Kirim pesan"
-              >
-                <ArrowUp className="h-4 w-4" />
-              </Button>
-            )}
+            <AnimatePresence mode="wait" initial={false}>
+              {isStreaming ? (
+                <motion.button
+                  key="stop-btn"
+                  type="button"
+                  onClick={onStop}
+                  initial={{ scale: 0.85, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.85, opacity: 0 }}
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.94 }}
+                  transition={{ type: 'spring', stiffness: 450, damping: 28 }}
+                  className="group relative inline-flex h-9 items-center gap-2 rounded-xl border border-rose-500/45 bg-rose-500/15 px-3.5 text-xs font-semibold text-rose-400 shadow-[0_0_20px_-5px_rgba(244,63,94,0.5)] transition-colors hover:border-rose-500/80 hover:bg-rose-500/25 hover:text-rose-300"
+                  aria-label="Hentikan respon AI"
+                >
+                  <span className="relative flex h-4 w-4 items-center justify-center">
+                    <span className="absolute inset-0 animate-ping rounded-full bg-rose-500/45" />
+                    <span className="relative flex h-3.5 w-3.5 items-center justify-center rounded-full border border-rose-400/70">
+                      <Square className="h-2 w-2 fill-current" />
+                    </span>
+                  </span>
+                  <span>Stop</span>
+                </motion.button>
+              ) : (
+                <motion.button
+                  key="send-btn"
+                  type="button"
+                  onClick={submit}
+                  disabled={(!input.trim() && attachments.length === 0) || isRecording || isTranscribing}
+                  initial={{ scale: 0.85, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.85, opacity: 0 }}
+                  whileHover={
+                    (input.trim() || attachments.length > 0) && !isRecording && !isTranscribing
+                      ? { scale: 1.06 }
+                      : undefined
+                  }
+                  whileTap={
+                    (input.trim() || attachments.length > 0) && !isRecording && !isTranscribing
+                      ? { scale: 0.92 }
+                      : undefined
+                  }
+                  transition={{ type: 'spring', stiffness: 450, damping: 26 }}
+                  className={cn(
+                    'group inline-flex h-9 w-9 items-center justify-center rounded-xl transition-all',
+                    (input.trim() || attachments.length > 0) && !isRecording && !isTranscribing
+                      ? 'bg-primary text-primary-foreground shadow-[0_4px_18px_-3px_hsl(var(--primary)/0.65)] hover:brightness-110'
+                      : 'cursor-not-allowed bg-muted/70 text-muted-foreground/45'
+                  )}
+                  aria-label="Kirim pesan"
+                >
+                  <ArrowUp className="h-4 w-4 transition-transform group-hover:-translate-y-0.5" />
+                </motion.button>
+              )}
+            </AnimatePresence>
           </div>
         </div>
       </div>
@@ -1188,4 +1218,4 @@ export function ChatComposer({
       </div>
     </div>
   );
-}
+});

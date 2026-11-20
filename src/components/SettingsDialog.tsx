@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import {
   Brain,
   Check,
@@ -99,7 +99,7 @@ const HISTORY_LIMIT_OPTIONS = [
   { label: '6 Pesan', value: 6 },
 ];
 
-export function SettingsDialog({
+export const SettingsDialog = memo(function SettingsDialog({
   open,
   onOpenChange,
   settings,
@@ -615,4 +615,4 @@ export function SettingsDialog({
       </DialogContent>
     </Dialog>
   );
-}
+});

@@ -53,7 +53,14 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { ArtifactPanel } from '@/components/ArtifactPanel';
 import { BookmarksDialog } from '@/components/BookmarksDialog';
 import { ChatComposer } from '@/components/ChatComposer';
-import { ChatMessage } from '@/components/ChatMessage';
+import { StreamingChatMessage } from '@/components/StreamingChatMessage';
+import {
+  getActiveStreamSnapshot,
+  setStreamState,
+  useActiveStream,
+  useIsStreamingActive,
+  type ActiveStreamState,
+} from '@/lib/streamStore';
 import { CommandPalette } from '@/components/CommandPalette';
 import { ModelSelectorDialog } from '@/components/ModelSelectorDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -86,17 +93,6 @@ import type {
 } from '@/types/chat';
 
 type WelcomeTab = 'All' | 'Coding' | 'UI/Design' | 'Agentic';
-
-interface ActiveStreamState {
-  convId: string;
-  msgId: string;
-  content: string;
-  thought: string;
-  statusText?: string;
-  tps: number;
-  thinkingDurationMs?: number;
-  usage?: TokenUsage;
-}
 
 const WELCOME_TABS: WelcomeTab[] = ['All', 'Coding', 'UI/Design', 'Agentic'];
 
@@ -143,6 +139,75 @@ const STARTER_CARDS: Array<{
 
 const SKIN_ORDER: ThemeSkin[] = ['obsidian', 'claude', 'aurora', 'paper'];
 
+function HeaderStreamBadge() {
+  const stream = useActiveStream();
+  if (!stream) return null;
+  return (
+    <Badge variant="outline" className="hidden font-mono text-[10px] sm:inline-flex">
+      {stream.statusText
+        ? 'Rotating Key...'
+        : stream.tps > 0
+          ? `${stream.tps} tok/s`
+          : 'Thinking...'}
+    </Badge>
+  );
+}
+
+function StreamAutoScroller({
+  viewport,
+  autoScrollRef,
+}: {
+  viewport: HTMLElement | null;
+  autoScrollRef: React.MutableRefObject<boolean>;
+}) {
+  const stream = useActiveStream();
+  useEffect(() => {
+    if (!stream || !autoScrollRef.current || !viewport) return;
+    const raf = requestAnimationFrame(() => {
+      viewport.scrollTop = viewport.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [stream?.content, stream?.thought, viewport, autoScrollRef, stream]);
+  return null;
+}
+
+function ScrollBottomPill({
+  onScrollBottom,
+}: {
+  onScrollBottom: () => void;
+}) {
+  const stream = useActiveStream();
+  return (
+    <button
+      type="button"
+      onClick={onScrollBottom}
+      className={cn(
+        'absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-medium shadow-xl backdrop-blur-md transition-all hover:scale-105',
+        stream
+          ? 'border-primary/40 bg-card/95 text-foreground'
+          : 'bg-secondary/95 text-secondary-foreground'
+      )}
+      aria-label="Scroll ke bawah"
+    >
+      {stream ? (
+        <>
+          <span className="h-2 w-2 animate-ping rounded-full bg-primary" />
+          <span>
+            {stream.statusText
+              ? 'Rotating Key...'
+              : stream.tps > 0
+                ? `Streaming ${stream.tps} tok/s`
+                : 'Sedang Thinking...'}
+          </span>
+          <ArrowDown className="h-3.5 w-3.5 text-primary" />
+        </>
+      ) : (
+        <ArrowDown className="h-4 w-4" />
+      )}
+    </button>
+  );
+}
+
 export default function App() {
   const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations());
   const [activeId, setActiveId] = useState<string | null>(() => {
@@ -176,7 +241,7 @@ export default function App() {
   const [welcomeTab, setWelcomeTab] = useState<WelcomeTab>('All');
   const [externalDraft, setExternalDraft] = useState<string | null>(null);
   const [visualTarget, setVisualTarget] = useState<VisualTarget | null>(null);
-  const [activeStream, setActiveStream] = useState<ActiveStreamState | null>(null);
+  const isStreamingActive = useIsStreamingActive();
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [scrollViewport, setScrollViewport] = useState<HTMLElement | null>(null);
 
@@ -215,14 +280,9 @@ export default function App() {
   }, [canNativeInstall, triggerNativeInstall]);
 
   const abortControllerRef = useRef<AbortController | null>(null);
-  const activeStreamRef = useRef<ActiveStreamState | null>(null);
   const chatScrollRef = useRef<StudioScrollHandle | null>(null);
   const autoScrollEnabledRef = useRef(true);
   const flushTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    activeStreamRef.current = activeStream;
-  }, [activeStream]);
 
   useEffect(() => {
     saveConversations(conversations);
@@ -255,7 +315,6 @@ export default function App() {
   const messageList = activeConversation?.messages ?? [];
   const currentModelId = activeConversation?.model ?? selectedModel;
   const currentModelInfo = getModelInfo(currentModelId);
-  const isStreamingActive = activeStream !== null;
   const thinkingEnabled = settings.includeThoughts && settings.thinkingBudget !== 0;
 
   const activeKeyPoolCount =
@@ -336,7 +395,7 @@ export default function App() {
     if (autoScrollEnabledRef.current && messageList.length > 0) {
       scrollToBottom(false);
     }
-  }, [messageList.length, activeStream?.content, activeStream?.thought, scrollToBottom]);
+  }, [messageList.length, scrollToBottom]);
 
   const handleViewportScroll = useCallback((el: HTMLElement) => {
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -353,9 +412,8 @@ export default function App() {
       flushTimerRef.current = null;
     }
 
-    const current = activeStreamRef.current;
-    activeStreamRef.current = null;
-    setActiveStream(null);
+    const current = getActiveStreamSnapshot();
+    setStreamState(null);
 
     if (current) {
       setConversations((prev) =>
@@ -487,12 +545,11 @@ export default function App() {
         thought: '',
         tps: 0,
       };
-      activeStreamRef.current = initialStream;
-      setActiveStream(initialStream);
+      setStreamState(initialStream);
 
       const commitStreamSnapshot = () => {
         flushTimerRef.current = null;
-        if (!activeStreamRef.current) return;
+        if (!getActiveStreamSnapshot()) return;
         const elapsed = Math.max(100, performance.now() - (firstAnswerAt ?? startedAt));
         const estTok = Math.max(chunkCount, Math.round(accContent.length / 4));
         const tps = firstAnswerAt ? Number(((estTok / elapsed) * 1000).toFixed(1)) : 0;
@@ -506,13 +563,12 @@ export default function App() {
           thinkingDurationMs,
           usage: accUsage,
         };
-        activeStreamRef.current = snapshot;
-        setActiveStream(snapshot);
+        setStreamState(snapshot);
       };
 
       const scheduleFlush = () => {
         if (flushTimerRef.current !== null) return;
-        const cadence = accContent.length > 3000 ? 55 : 24;
+        const cadence = accContent.length > 2500 ? 65 : 35;
         flushTimerRef.current = window.setTimeout(commitStreamSnapshot, cadence);
       };
 
@@ -570,8 +626,7 @@ export default function App() {
                 window.clearTimeout(flushTimerRef.current);
                 flushTimerRef.current = null;
               }
-              activeStreamRef.current = null;
-              setActiveStream(null);
+              setStreamState(null);
 
               const finishedAt = performance.now();
               const durationMs = Math.max(1, Math.round(finishedAt - startedAt));
@@ -637,8 +692,7 @@ export default function App() {
                 window.clearTimeout(flushTimerRef.current);
                 flushTimerRef.current = null;
               }
-              activeStreamRef.current = null;
-              setActiveStream(null);
+              setStreamState(null);
               toast.error(errorMessage);
               setConversations((prev) =>
                 prev.map((conv) =>
@@ -668,8 +722,7 @@ export default function App() {
         if (err instanceof Error && err.name === 'AbortError') return;
         const message = err instanceof Error ? err.message : 'Gagal terhubung ke server SSE.';
         toast.error(message);
-        activeStreamRef.current = null;
-        setActiveStream(null);
+        setStreamState(null);
         setConversations((prev) =>
           prev.map((conv) =>
             conv.id !== convId
@@ -693,9 +746,8 @@ export default function App() {
       } finally {
         if (abortControllerRef.current === controller) {
           abortControllerRef.current = null;
-          if (activeStreamRef.current?.msgId === assistantMessageId) {
-            activeStreamRef.current = null;
-            setActiveStream(null);
+          if (getActiveStreamSnapshot()?.msgId === assistantMessageId) {
+            setStreamState(null);
             setConversations((prev) =>
               prev.map((conv) =>
                 conv.id !== convId
@@ -1040,7 +1092,7 @@ export default function App() {
 
   const handleDeleteConversation = useCallback(
     (id: string) => {
-      if (activeStreamRef.current?.convId === id) handleStopStream();
+      if (getActiveStreamSnapshot()?.convId === id) handleStopStream();
       setConversations((prev) => {
         const next = prev.filter((c) => c.id !== id);
         if (activeId === id) setActiveId(next[0]?.id ?? null);
@@ -1060,6 +1112,53 @@ export default function App() {
       prev.map((c) => (c.id === id ? { ...c, pinned: !c.pinned } : c))
     );
   }, []);
+
+  const handleRegenerateLatest = useCallback(() => handleRegenerate(), [handleRegenerate]);
+  const handleRetryWithModel = useCallback((mId: string) => handleRegenerate(mId), [handleRegenerate]);
+  const handleToggleMessageStar = useCallback(
+    (msgId: string) => {
+      if (activeId) handleToggleStar(activeId, msgId);
+    },
+    [activeId, handleToggleStar]
+  );
+  const handleJumpBottom = useCallback(() => {
+    autoScrollEnabledRef.current = true;
+    scrollToBottom(true);
+  }, [scrollToBottom]);
+  const handleClearExternalDraft = useCallback(() => setExternalDraft(null), []);
+  const handleClearVisualTarget = useCallback(() => setVisualTarget(null), []);
+  const handleToggleArtifactFs = useCallback(() => setArtifactFullscreen((f) => !f), []);
+  const handleCloseArtifact = useCallback(() => {
+    setActiveArtifact(null);
+    setArtifactFullscreen(false);
+  }, []);
+  const handleSelectVisualTarget = useCallback((target: VisualTarget) => {
+    setVisualTarget(target);
+    if (window.innerWidth < 1024) {
+      setActiveArtifact(null);
+      setArtifactFullscreen(false);
+    }
+  }, []);
+  const handleInsertToChat = useCallback((snippet: string) => {
+    setExternalDraft(snippet);
+    if (window.innerWidth < 1024) {
+      setActiveArtifact(null);
+      setArtifactFullscreen(false);
+    }
+  }, []);
+  const handleFixErrorWithAi = useCallback(
+    (errMsg: string, art: ArtifactItem) => {
+      handleSend(
+        `Terjadi error runtime saat menjalankan Preview pada \`${art.title}\`:\n\`\`\`\n${errMsg}\n\`\`\`\nTolong perbaiki bug tersebut secara lengkap.`,
+        []
+      );
+      if (window.innerWidth < 1024) {
+        setActiveArtifact(null);
+        setArtifactFullscreen(false);
+      }
+    },
+    [handleSend]
+  );
 
   const lastAssistantId = useMemo(() => {
     for (let i = messageList.length - 1; i >= 0; i--) {
@@ -1152,15 +1251,7 @@ export default function App() {
                   <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 </Button>
 
-                {isStreamingActive && (
-                  <Badge variant="outline" className="hidden font-mono text-[10px] sm:inline-flex">
-                    {activeStream.statusText
-                      ? 'Rotating Key...'
-                      : activeStream.tps > 0
-                        ? `${activeStream.tps} tok/s`
-                        : 'Thinking...'}
-                  </Badge>
-                )}
+                <HeaderStreamBadge />
               </div>
 
               <div className="flex shrink-0 items-center gap-1">
@@ -1529,25 +1620,6 @@ export default function App() {
                         const msg = messageList[virtualItem.index];
                         if (!msg) return null;
 
-                        const effectiveMsg =
-                          activeStream &&
-                          activeStream.convId === activeConversation.id &&
-                          activeStream.msgId === msg.id
-                            ? {
-                                ...msg,
-                                content: activeStream.content,
-                                thought: activeStream.thought || msg.thought,
-                                statusText: activeStream.statusText,
-                                metrics: activeStream.thinkingDurationMs
-                                  ? {
-                                      ...msg.metrics,
-                                      thinkingDurationMs: activeStream.thinkingDurationMs,
-                                    }
-                                  : msg.metrics,
-                                isStreaming: true,
-                              }
-                            : msg;
-
                         return (
                           <div
                             key={virtualItem.key}
@@ -1562,32 +1634,18 @@ export default function App() {
                             }}
                             className={settings.density === 'compact' ? 'pb-4' : 'pb-6'}
                           >
-                            <ChatMessage
-                              message={effectiveMsg}
+                            <StreamingChatMessage
+                              convId={activeConversation.id}
+                              message={msg}
                               compact={settings.density === 'compact'}
                               thinkingEnabled={thinkingEnabled}
                               isLastAssistant={msg.id === lastAssistantId}
-                              onRegenerate={
-                                msg.id === lastAssistantId ? () => handleRegenerate() : undefined
-                              }
-                              onRetryWithModel={
-                                msg.id === lastAssistantId
-                                  ? (mId) => handleRegenerate(mId)
-                                  : undefined
-                              }
-                              onEditUserMessage={
-                                msg.role === 'user' && !isStreamingActive
-                                  ? handleEditUserMessage
-                                  : undefined
-                              }
-                              onForkFromMessage={
-                                msg.role === 'assistant' && !isStreamingActive
-                                  ? handleForkFromMessage
-                                  : undefined
-                              }
-                              onToggleStar={(msgId) =>
-                                handleToggleStar(activeConversation.id, msgId)
-                              }
+                              isStreamingGlobal={isStreamingActive}
+                              onRegenerate={handleRegenerateLatest}
+                              onRetryWithModel={handleRetryWithModel}
+                              onEditUserMessage={handleEditUserMessage}
+                              onForkFromMessage={handleForkFromMessage}
+                              onToggleStar={handleToggleMessageStar}
                               onOpenArtifact={setActiveArtifact}
                               onPreviewImage={setLightboxUrl}
                             />
@@ -1599,38 +1657,8 @@ export default function App() {
                 )}
               </StudioScroll>
 
-              {showScrollBottom && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    autoScrollEnabledRef.current = true;
-                    scrollToBottom(true);
-                  }}
-                  className={cn(
-                    'absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-medium shadow-xl backdrop-blur-md transition-all hover:scale-105',
-                    isStreamingActive
-                      ? 'border-primary/40 bg-card/95 text-foreground'
-                      : 'bg-secondary/95 text-secondary-foreground'
-                  )}
-                  aria-label="Scroll ke bawah"
-                >
-                  {isStreamingActive ? (
-                    <>
-                      <span className="h-2 w-2 animate-ping rounded-full bg-primary" />
-                      <span>
-                        {activeStream.statusText
-                          ? 'Rotating Key...'
-                          : activeStream.tps > 0
-                            ? `Streaming ${activeStream.tps} tok/s`
-                            : 'Sedang Thinking...'}
-                      </span>
-                      <ArrowDown className="h-3.5 w-3.5 text-primary" />
-                    </>
-                  ) : (
-                    <ArrowDown className="h-4 w-4" />
-                  )}
-                </button>
-              )}
+              <StreamAutoScroller viewport={scrollViewport} autoScrollRef={autoScrollEnabledRef} />
+              {showScrollBottom && <ScrollBottomPill onScrollBottom={handleJumpBottom} />}
             </div>
 
             <ChatComposer
@@ -1640,8 +1668,8 @@ export default function App() {
               hasApiKeyConfigured={activeKeyPoolCount > 0}
               externalDraft={externalDraft}
               visualTarget={visualTarget}
-              onClearVisualTarget={() => setVisualTarget(null)}
-              onClearExternalDraft={() => setExternalDraft(null)}
+              onClearVisualTarget={handleClearVisualTarget}
+              onClearExternalDraft={handleClearExternalDraft}
               onUpdateSettings={setSettings}
               onSend={handleSend}
               onStop={handleStopStream}
@@ -1686,40 +1714,12 @@ export default function App() {
                       allArtifacts={conversationArtifacts}
                       isResizing={isResizingPane}
                       isFullscreen={artifactFullscreen}
-                      onToggleFullscreen={() => setArtifactFullscreen((f) => !f)}
+                      onToggleFullscreen={handleToggleArtifactFs}
                       onSelectArtifact={setActiveArtifact}
-                      onInsertToChat={(snippet) => {
-                        setExternalDraft(snippet);
-                        if (window.innerWidth < 1024) {
-                          setActiveArtifact(null);
-                          setArtifactFullscreen(false);
-                        }
-                      }}
-                      onFixErrorWithAi={(errMsg, art) => {
-                        handleSend(
-                          `Terjadi error runtime saat menjalankan Preview pada \`${art.title}\`:
-\`\`\`
-${errMsg}
-\`\`\`
-Tolong perbaiki bug tersebut secara lengkap.`,
-                          []
-                        );
-                        if (window.innerWidth < 1024) {
-                          setActiveArtifact(null);
-                          setArtifactFullscreen(false);
-                        }
-                      }}
-                      onSelectVisualTarget={(target) => {
-                        setVisualTarget(target);
-                        if (window.innerWidth < 1024) {
-                          setActiveArtifact(null);
-                          setArtifactFullscreen(false);
-                        }
-                      }}
-                      onClose={() => {
-                        setActiveArtifact(null);
-                        setArtifactFullscreen(false);
-                      }}
+                      onInsertToChat={handleInsertToChat}
+                      onFixErrorWithAi={handleFixErrorWithAi}
+                      onSelectVisualTarget={handleSelectVisualTarget}
+                      onClose={handleCloseArtifact}
                     />
                   </div>
                 </motion.aside>

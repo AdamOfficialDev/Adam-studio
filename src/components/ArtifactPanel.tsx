@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeftRight,
@@ -76,7 +76,7 @@ interface ArtifactPanelProps {
   onClose: () => void;
 }
 
-export function ArtifactPanel({
+export const ArtifactPanel = memo(function ArtifactPanel({
   artifact,
   allArtifacts,
   isResizing,
@@ -241,10 +241,14 @@ export function ArtifactPanel({
     return { added, removed };
   }, [diffLines]);
 
-  const currentArtifact: ArtifactItem = {
-    ...artifact,
-    content: debouncedContent,
-  };
+  const currentArtifact: ArtifactItem = useMemo(
+    () => ({ ...artifact, content: debouncedContent }),
+    [artifact, debouncedContent]
+  );
+  const previewSrcDoc = useMemo(
+    () => (isHtmlOrSvg ? buildPreviewSrcDoc(currentArtifact, previewBg) : ''),
+    [currentArtifact, isHtmlOrSvg, previewBg]
+  );
 
   const handleCopy = async () => {
     try {
@@ -355,7 +359,7 @@ export function ArtifactPanel({
                 title={artifact.title}
                 sandbox="allow-scripts"
                 onLoad={() => sendInspectToggleToIframe(inspectMode)}
-                srcDoc={buildPreviewSrcDoc(currentArtifact, previewBg)}
+                srcDoc={previewSrcDoc}
                 className={cn('h-full w-full border-0', isResizing && 'pointer-events-none')}
               />
             </div>
@@ -975,4 +979,4 @@ export function ArtifactPanel({
       </div>
     </div>
   );
-}
+});

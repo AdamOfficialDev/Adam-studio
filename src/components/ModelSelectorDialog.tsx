@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Check, Copy, Cpu, DollarSign, Info, Rocket, Search, Sparkles, X } from 'lucide-react';
 import { toast } from 'sonner';
@@ -24,7 +24,7 @@ interface ModelSelectorDialogProps {
 
 const FILTER_TABS: Array<'All' | ModelCategory> = ['All', 'Featured', 'Gemini', 'Custom'];
 
-export function ModelSelectorDialog({
+export const ModelSelectorDialog = memo(function ModelSelectorDialog({
   open,
   onOpenChange,
   selectedModel,
@@ -282,4 +282,4 @@ export function ModelSelectorDialog({
       </DialogContent>
     </Dialog>
   );
-}
+});
