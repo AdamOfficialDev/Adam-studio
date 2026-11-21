@@ -6,6 +6,7 @@ const SETTINGS_KEY = 'hydrogen-chat-settings-v3';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   apiKey: '',
+  githubToken: '',
   systemInstruction: PERSONA_PRESETS[0].systemInstruction,
   temperature: PERSONA_PRESETS[0].temperature,
   maxOutputTokens: 8192,

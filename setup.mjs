@@ -24,5 +24,5 @@ while ((match = filePattern.exec(rawBundle)) !== null) {
   count += 1;
 }
 
-console.log(`\n✅ Patch v6.1 (${count} file) berhasil diterapkan!`);
-console.log('   Jalankan `pnpm build` untuk verifikasi, lalu `pnpm dev` (restart server) atau push ke Vercel.\n');
+console.log(`\n✅ Adam Studio v8.0 GitHub Project Connector (${count} file) siap!`);
+console.log('   Jalankan `pnpm build` lalu restart `pnpm dev` (atau `git push` ke Vercel).\n');

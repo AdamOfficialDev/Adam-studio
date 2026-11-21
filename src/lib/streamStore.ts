@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { TokenUsage } from '@/types/chat';
+import type { TokenUsage, ToolTraceItem } from '@/types/chat';
 
 export interface ActiveStreamState {
   convId: string;
@@ -7,6 +7,7 @@ export interface ActiveStreamState {
   content: string;
   thought: string;
   statusText?: string;
+  toolEvents?: ToolTraceItem[];
   tps: number;
   thinkingDurationMs?: number;
   usage?: TokenUsage;

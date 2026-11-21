@@ -23,6 +23,7 @@ import {
 import { toast } from 'sonner';
 import { BrandLogoMark } from '@/components/BrandLogo';
 import { ThinkingCard } from '@/components/ThinkingCard';
+import { ToolTraceCard } from '@/components/ToolTraceCard';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -334,6 +335,8 @@ export const ChatMessage = memo(function ChatMessage({
           thinkingDurationMs={message.metrics?.thinkingDurationMs}
           thinkingEnabled={thinkingEnabled}
         />
+
+        <ToolTraceCard events={message.toolEvents} isStreaming={message.isStreaming} />
 
         {message.content ? (
           <div className="relative w-full min-w-0">

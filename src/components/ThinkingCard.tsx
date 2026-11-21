@@ -11,6 +11,7 @@ interface ThinkingCardProps {
   hasAnswerStarted: boolean;
   thinkingDurationMs?: number;
   thinkingEnabled: boolean;
+  hasTools?: boolean;
 }
 
 export const ThinkingCard = memo(function ThinkingCard({
@@ -20,6 +21,7 @@ export const ThinkingCard = memo(function ThinkingCard({
   hasAnswerStarted,
   thinkingDurationMs,
   thinkingEnabled,
+  hasTools = false,
 }: ThinkingCardProps) {
   const isActivelyThinking = Boolean(isStreaming && !hasAnswerStarted);
   const autoOpen = isActivelyThinking;
@@ -58,7 +60,7 @@ export const ThinkingCard = memo(function ThinkingCard({
   }, [thought, isActivelyThinking]);
 
   const hasThoughtText = thought.trim().length > 0;
-  if (!hasThoughtText && !statusText && !(isActivelyThinking && thinkingEnabled)) {
+  if (!hasThoughtText && !statusText && (hasTools || !(isActivelyThinking && thinkingEnabled))) {
     return null;
   }
 

@@ -21,6 +21,8 @@ import {
   FileJson,
   FileText,
   FileUp,
+  FolderGit2,
+  GitBranch,
   Image as ImageIcon,
   Maximize2,
   Menu,
@@ -31,11 +33,13 @@ import {
   Radio,
   Settings,
   Sparkles,
+  Unlink,
   WifiOff,
   Workflow,
 } from 'lucide-react';
 import { BrandLogo } from '@/components/BrandLogo';
 import { ContextManagerDialog } from '@/components/ContextManagerDialog';
+import { GitHubConnectorDialog } from '@/components/GitHubConnectorDialog';
 import { ImportChatDialog } from '@/components/ImportChatDialog';
 import { InstallAppDialog } from '@/components/InstallAppDialog';
 import { Badge } from '@/components/ui/badge';
@@ -72,10 +76,12 @@ import { DEFAULT_MODEL_ID, getModelInfo } from '@/lib/models';
 import { playCompletionChime } from '@/lib/sound';
 import { streamChatCompletion } from '@/lib/sse';
 import {
+  hydrateConversationsWithMigration,
+  syncConversationsToIdb,
+} from '@/lib/db';
+import {
   countApiKeys,
-  loadConversations,
   loadSettings,
-  saveConversations,
   saveSettings,
 } from '@/lib/storage';
 import { cn, estimateTokens, generateId } from '@/lib/utils';
@@ -86,9 +92,11 @@ import type {
   ChatMessage as ChatMessageType,
   CompactedContextState,
   Conversation,
+  GitHubProjectContext,
   ServerHealth,
   ThemeSkin,
   TokenUsage,
+  ToolTraceItem,
   VisualTarget,
 } from '@/types/chat';
 
@@ -209,13 +217,17 @@ function ScrollBottomPill({
 }
 
 export default function App() {
-  const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations());
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('action') === 'new') return null;
-    const existing = loadConversations();
-    return existing[0]?.id ?? null;
+    try {
+      return localStorage.getItem('adam-studio-active-id');
+    } catch {
+      return null;
+    }
   });
+  const idbHydratedRef = useRef(false);
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_ID);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [serverHealth, setServerHealth] = useState<ServerHealth | null>(null);
@@ -230,6 +242,7 @@ export default function App() {
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [contextDialogOpen, setContextDialogOpen] = useState(false);
+  const [githubDialogOpen, setGithubDialogOpen] = useState(false);
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
@@ -284,8 +297,41 @@ export default function App() {
   const autoScrollEnabledRef = useRef(true);
   const flushTimerRef = useRef<number | null>(null);
 
+  // Muat & migrasi riwayat dari localStorage ke IndexedDB sekali saat startup
   useEffect(() => {
-    saveConversations(conversations);
+    let cancelled = false;
+    void hydrateConversationsWithMigration().then((loaded) => {
+      if (cancelled) return;
+      idbHydratedRef.current = true;
+      setConversations(loaded);
+
+      const isNewShortcut = new URLSearchParams(window.location.search).get('action') === 'new';
+      if (!isNewShortcut && loaded.length > 0) {
+        setActiveId((prev) => {
+          if (prev && loaded.some((c) => c.id === prev)) return prev;
+          return loaded[0].id;
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Simpan activeId ringan untuk restore tab terakhir saat reload
+  useEffect(() => {
+    try {
+      if (activeId) localStorage.setItem('adam-studio-active-id', activeId);
+      else localStorage.removeItem('adam-studio-active-id');
+    } catch {
+      // Abaikan
+    }
+  }, [activeId]);
+
+  // Sinkronisasi inkremental ke IndexedDB (hanya setelah hydration selesai)
+  useEffect(() => {
+    if (!idbHydratedRef.current) return;
+    void syncConversationsToIdb(conversations);
   }, [conversations]);
 
   useEffect(() => {
@@ -347,8 +393,10 @@ export default function App() {
       activeConversation.messages,
       activeConversation.compactedContext
     );
+    const ghTokens = (activeConversation.githubProject?.pinnedFiles || []).reduce((s, f) => s + f.tokens, 0);
     return (
       estimateMessagesTokenTotal(effective) +
+      ghTokens +
       estimateTokens(activeConversation.sessionSystemInstruction || settings.systemInstruction)
     );
   }, [activeConversation, settings.systemInstruction]);
@@ -429,6 +477,7 @@ export default function App() {
                         ...m,
                         content: current.content,
                         thought: current.thought || m.thought,
+                        toolEvents: current.toolEvents,
                         statusText: undefined,
                         usage: current.usage ?? m.usage,
                         metrics: current.thinkingDurationMs
@@ -508,7 +557,8 @@ export default function App() {
       historyMessages: ChatMessageType[],
       assistantMessageId: string,
       sessionSystemInstruction?: string,
-      compactedContext?: CompactedContextState
+      compactedContext?: CompactedContextState,
+      githubProject?: GitHubProjectContext
     ) => {
       abortControllerRef.current?.abort();
       const controller = new AbortController();
@@ -535,6 +585,7 @@ export default function App() {
       let accContent = '';
       let accThought = '';
       let currentStatus: string | undefined = undefined;
+      let accTools: ToolTraceItem[] = [];
       let accUsage: TokenUsage | undefined = undefined;
       let chunkCount = 0;
 
@@ -559,6 +610,7 @@ export default function App() {
           content: accContent,
           thought: accThought,
           statusText: currentStatus,
+          toolEvents: accTools.length > 0 ? [...accTools] : undefined,
           tps,
           thinkingDurationMs,
           usage: accUsage,
@@ -582,6 +634,8 @@ export default function App() {
               visualTarget: m.visualTarget,
               attachments: m.attachments,
             })),
+            githubProject,
+            githubToken: settings.githubToken,
             systemInstruction: effectiveSystemInstruction,
             temperature: settings.temperature,
             maxOutputTokens: settings.maxOutputTokens,
@@ -594,6 +648,15 @@ export default function App() {
           },
           {
             signal: controller.signal,
+            onToolCall: (item) => {
+              currentStatus = undefined;
+              accTools = [...accTools, item];
+              commitStreamSnapshot();
+            },
+            onToolResult: (item) => {
+              accTools = accTools.map((t) => (t.id === item.id ? item : t));
+              commitStreamSnapshot();
+            },
             onStatus: (statusMessage) => {
               currentStatus = statusMessage;
               commitStreamSnapshot();
@@ -662,6 +725,7 @@ export default function App() {
                                 model: resolvedModel || m.model,
                                 content: accContent,
                                 thought: accThought || undefined,
+                                toolEvents: accTools.length > 0 ? accTools : undefined,
                                 statusText: undefined,
                                 usage: accUsage,
                                 isStreaming: false,
@@ -845,7 +909,8 @@ export default function App() {
           historyForModel,
           assistantMessageId,
           activeConversation.sessionSystemInstruction,
-          nextCompacted
+          nextCompacted,
+          activeConversation.githubProject
         );
       }
     },
@@ -892,7 +957,8 @@ export default function App() {
         baseMessages,
         assistantMessageId,
         activeConversation.sessionSystemInstruction,
-        activeConversation.compactedContext
+        activeConversation.compactedContext,
+        activeConversation.githubProject
       );
     },
     [activeConversation, isStreamingActive, runStreamForConversation]
@@ -938,7 +1004,8 @@ export default function App() {
         baseHistory,
         assistantMessageId,
         activeConversation.sessionSystemInstruction,
-        activeConversation.compactedContext
+        activeConversation.compactedContext,
+        activeConversation.githubProject
       );
     },
     [activeConversation, isStreamingActive, runStreamForConversation]
@@ -956,6 +1023,7 @@ export default function App() {
         title: `Branch: ${activeConversation.title}`.slice(0, 52),
         model: activeConversation.model,
         sessionSystemInstruction: activeConversation.sessionSystemInstruction,
+        githubProject: activeConversation.githubProject,
         compactedContext: activeConversation.compactedContext,
         messages: activeConversation.messages.slice(0, idx + 1).map((m) => ({
           ...m,
@@ -1023,6 +1091,57 @@ export default function App() {
     },
     [activeConversation, handleStopStream, isStreamingActive, selectedModel]
   );
+
+  const handleAttachGitHubProject = useCallback(
+    (project: GitHubProjectContext) => {
+      if (activeConversation) {
+        setConversations((prev) =>
+          prev.map((conv) =>
+            conv.id !== activeConversation.id
+              ? conv
+              : { ...conv, githubProject: project, updatedAt: Date.now() }
+          )
+        );
+        toast.success(`Project ${project.owner}/${project.repo} terpasang di sesi ini!`);
+      } else {
+        const newId = generateId();
+        const welcomeAssistant: ChatMessageType = {
+          id: generateId(),
+          role: 'assistant',
+          model: selectedModel,
+          createdAt: Date.now(),
+          content: `Project GitHub **\`${project.owner}/${project.repo}\`** (branch \`${project.branch}\`, **${project.totalFiles} file**) sudah terhubung ke sesi ini!\n\nKamu bisa langsung bertanya, menambah fitur, memperbaiki error, atau meningkatkan UI/UX repo ini.`,
+        };
+        setConversations((prev) => [
+          {
+            id: newId,
+            title: `Repo: ${project.repo}`.slice(0, 48),
+            model: selectedModel,
+            githubProject: project,
+            messages: [welcomeAssistant],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+          ...prev,
+        ]);
+        setActiveId(newId);
+        toast.success(`Sesi Project ${project.owner}/${project.repo} siap!`);
+      }
+    },
+    [activeConversation, selectedModel]
+  );
+
+  const handleDetachGitHubProject = useCallback(() => {
+    if (!activeConversation) return;
+    setConversations((prev) =>
+      prev.map((c) => (c.id === activeConversation.id ? { ...c, githubProject: undefined } : c))
+    );
+    toast.success('Repository dilepas dari sesi ini');
+  }, [activeConversation]);
+
+  const handleUpdateGithubToken = useCallback((tk: string) => {
+    setSettings((prev) => ({ ...prev, githubToken: tk }));
+  }, []);
 
   const handleApplyCompaction = useCallback(
     (convId: string, compacted?: CompactedContextState) => {
@@ -1266,6 +1385,29 @@ export default function App() {
                   <TooltipTrigger asChild>
                     <Button
                       type="button"
+                      variant={activeConversation?.githubProject ? 'secondary' : 'ghost'}
+                      size="sm"
+                      onClick={() => setGithubDialogOpen(true)}
+                      className={cn(
+                        'h-8 gap-1.5 rounded-full border px-2.5 text-xs',
+                        activeConversation?.githubProject
+                          ? 'border-primary/40 bg-primary/10 text-primary'
+                          : 'border-border/60 bg-card/60 text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      <FolderGit2 className="h-3.5 w-3.5 text-primary" />
+                      <span className="hidden max-w-[100px] truncate sm:inline">
+                        {activeConversation?.githubProject ? activeConversation.githubProject.repo : 'GitHub'}
+                      </span>
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Hubungkan Repository GitHub ke Sesi Ini</TooltipContent>
+                </Tooltip>
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
                       variant="ghost"
                       size="sm"
                       onClick={() => setImportDialogOpen(true)}
@@ -1497,6 +1639,15 @@ export default function App() {
                     <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
                       <Button
                         type="button"
+                        size="sm"
+                        onClick={() => setGithubDialogOpen(true)}
+                        className="h-8 gap-1.5 rounded-full text-xs shadow-sm"
+                      >
+                        <FolderGit2 className="h-3.5 w-3.5" />
+                        Hubungkan Repo GitHub
+                      </Button>
+                      <Button
+                        type="button"
                         variant="outline"
                         size="sm"
                         onClick={() => setImportDialogOpen(true)}
@@ -1580,6 +1731,45 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="mx-auto w-full min-w-0 max-w-3xl px-3 pt-5 sm:px-5 sm:pt-6">
+                    {activeConversation.githubProject && (
+                      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-primary/30 bg-primary/[0.06] px-3.5 py-2.5 text-xs">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <FolderGit2 className="h-4 w-4 shrink-0 text-primary" />
+                          <span className="truncate font-semibold text-foreground">
+                            {activeConversation.githubProject.owner}/{activeConversation.githubProject.repo}
+                          </span>
+                          <Badge variant="outline" className="gap-1 font-mono text-[10px]">
+                            <GitBranch className="h-2.5 w-2.5" />
+                            {activeConversation.githubProject.branch}
+                          </Badge>
+                          <span className="text-[11px] text-muted-foreground">
+                            {activeConversation.githubProject.pinnedFiles.length} file tersemat •{' '}
+                            {activeConversation.githubProject.agenticToolsEnabled ? 'Agentic MCP ON' : 'Manual'}
+                          </span>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setGithubDialogOpen(true)}
+                            className="h-6 rounded-lg px-2 text-[11px]"
+                          >
+                            Kelola File
+                          </Button>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            onClick={handleDetachGitHubProject}
+                            className="h-6 w-6 rounded-lg text-muted-foreground hover:text-destructive"
+                            title="Putuskan repo dari sesi ini"
+                          >
+                            <Unlink className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                     {(activeConversation.importedSource || isContextOverFreeTier) && (
                       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/25 bg-primary/[0.06] px-3.5 py-2 text-xs text-muted-foreground">
                         <span className="flex items-center gap-2">
@@ -1740,6 +1930,10 @@ export default function App() {
             settings={settings}
             serverHealth={serverHealth}
             onSave={setSettings}
+            onConversationsRestored={(restored) => {
+              setConversations(restored);
+              if (restored.length > 0) setActiveId(restored[0].id);
+            }}
           />
 
           <ImportChatDialog
@@ -1749,6 +1943,16 @@ export default function App() {
             activeSessionTitle={activeConversation?.title}
             defaultModel={currentModelId}
             onConfirmImport={handleConfirmImport}
+          />
+
+          <GitHubConnectorDialog
+            open={githubDialogOpen}
+            onOpenChange={setGithubDialogOpen}
+            githubToken={settings.githubToken}
+            onUpdateGithubToken={handleUpdateGithubToken}
+            currentProject={activeConversation?.githubProject}
+            onAttachProject={handleAttachGitHubProject}
+            onDetachProject={handleDetachGitHubProject}
           />
 
           <ContextManagerDialog

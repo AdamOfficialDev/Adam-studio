@@ -4,6 +4,7 @@ import { BrandLogoMark } from '@/components/BrandLogo';
 import { ChatMessage } from '@/components/ChatMessage';
 import { MarkdownRenderer } from '@/components/MarkdownRenderer';
 import { ThinkingCard } from '@/components/ThinkingCard';
+import { ToolTraceCard } from '@/components/ToolTraceCard';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { useMessageStreamOverride } from '@/lib/streamStore';
@@ -158,7 +159,10 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
           hasAnswerStarted={hasAnswerStarted}
           thinkingDurationMs={override.thinkingDurationMs}
           thinkingEnabled={thinkingEnabled}
+          hasTools={Boolean(override.toolEvents?.length)}
         />
+
+        <ToolTraceCard events={override.toolEvents} isStreaming={true} />
 
         {hasAnswerStarted ? (
           <div className="w-full min-w-0 space-y-2">

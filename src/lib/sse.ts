@@ -1,4 +1,4 @@
-import type { Attachment, TokenUsage, VisualTarget } from '@/types/chat';
+import type { Attachment, GitHubProjectContext, TokenUsage, ToolTraceItem, VisualTarget } from '@/types/chat';
 
 export interface StreamChatPayload {
   model: string;
@@ -8,6 +8,8 @@ export interface StreamChatPayload {
     visualTarget?: VisualTarget;
     attachments?: Attachment[];
   }>;
+  githubProject?: GitHubProjectContext;
+  githubToken?: string;
   systemInstruction: string;
   temperature: number;
   maxOutputTokens: number;
@@ -24,6 +26,8 @@ export interface StreamHandlers {
   onThought: (text: string) => void;
   onDelta: (text: string) => void;
   onUsage: (usage: TokenUsage) => void;
+  onToolCall?: (item: ToolTraceItem) => void;
+  onToolResult?: (item: ToolTraceItem) => void;
   onStatus?: (message: string) => void;
   onInfo?: (message: string) => void;
   onDone: (meta: { model: string; finishReason?: string; isDemo?: boolean }) => void;
@@ -47,6 +51,10 @@ export async function streamChatCompletion(
     headers['x-gemini-api-key'] = normalizedKeys.join(',');
   }
 
+  if (payload.githubToken?.trim()) {
+    headers['x-github-token'] = payload.githubToken.trim();
+  }
+
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers,
@@ -68,6 +76,16 @@ export async function streamChatCompletion(
           })),
         };
       }),
+      githubProject: payload.githubProject
+        ? {
+            owner: payload.githubProject.owner,
+            repo: payload.githubProject.repo,
+            branch: payload.githubProject.branch,
+            treePaths: payload.githubProject.treePaths,
+            pinnedFiles: payload.githubProject.pinnedFiles,
+            agenticToolsEnabled: payload.githubProject.agenticToolsEnabled,
+          }
+        : undefined,
       systemInstruction: payload.systemInstruction,
       temperature: payload.temperature,
       maxOutputTokens: payload.maxOutputTokens,
@@ -132,6 +150,10 @@ export async function streamChatCompletion(
         handlers.onThought(parsed.text);
       } else if (eventName === 'delta' && typeof parsed.text === 'string') {
         handlers.onDelta(parsed.text);
+      } else if (eventName === 'tool_call') {
+        handlers.onToolCall?.(parsed as unknown as ToolTraceItem);
+      } else if (eventName === 'tool_result') {
+        handlers.onToolResult?.(parsed as unknown as ToolTraceItem);
       } else if (eventName === 'usage') {
         handlers.onUsage(parsed as TokenUsage);
       } else if (eventName === 'status' && typeof parsed.message === 'string') {

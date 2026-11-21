@@ -3,6 +3,12 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
+import {
+  GITHUB_TOOL_DECLARATIONS,
+  buildProjectSystemSection,
+  executeGitHubTool,
+  handleGitHubAction,
+} from '../api/_github.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -43,6 +49,19 @@ function maskKeyLabel(key, idx) {
 }
 
 app.use(express.json({ limit: '50mb' }));
+
+app.post('/api/github', async (req, res) => {
+  const token =
+    (typeof req.headers['x-github-token'] === 'string' ? req.headers['x-github-token'].trim() : '') ||
+    process.env.GITHUB_TOKEN?.trim() ||
+    '';
+  try {
+    const result = await handleGitHubAction({ action: req.body?.action, body: req.body, token });
+    res.status(result.status).json(result.payload);
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'GitHub error' });
+  }
+});
 
 app.get('/api/health', (_req, res) => {
   const envKeys = getServerEnvKeys();
@@ -543,13 +562,14 @@ function buildGeminiContents(messages) {
 }
 
 function buildGeminiPayload({
-  messages,
+  contents,
   systemInstruction,
   temperature,
   maxOutputTokens,
   includeThoughts,
   thinkingBudget,
   withThinkingConfig,
+  withTools,
 }) {
   const generationConfig = {
     temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.7,
@@ -567,7 +587,7 @@ function buildGeminiPayload({
   }
 
   const payload = {
-    contents: buildGeminiContents(messages),
+    contents,
     generationConfig,
   };
 
@@ -575,6 +595,10 @@ function buildGeminiPayload({
     payload.systemInstruction = {
       parts: [{ text: systemInstruction.trim() }],
     };
+  }
+
+  if (withTools) {
+    payload.tools = [{ functionDeclarations: GITHUB_TOOL_DECLARATIONS }];
   }
 
   return payload;
@@ -614,12 +638,13 @@ function buildOrderedCandidateKeys(keys) {
 async function fetchGeminiWithRotationAndRetry({
   targetModel,
   apiKeys,
-  messages,
+  contents,
   systemInstruction,
   temperature,
   maxOutputTokens,
   includeThoughts,
   thinkingBudget,
+  withTools,
   signal,
   onStatus,
   onInfo,
@@ -629,6 +654,7 @@ async function fetchGeminiWithRotationAndRetry({
   )}:streamGenerateContent?alt=sse`;
 
   let wantsThinking = Boolean(includeThoughts) && Number(thinkingBudget) !== 0;
+  let enableTools = Boolean(withTools);
   const orderedKeys = buildOrderedCandidateKeys(apiKeys);
   const maxAttempts = orderedKeys.length > 1 ? orderedKeys.length : 4;
 
@@ -648,13 +674,14 @@ async function fetchGeminiWithRotationAndRetry({
       },
       body: JSON.stringify(
         buildGeminiPayload({
-          messages,
+          contents,
           systemInstruction,
           temperature,
           maxOutputTokens,
           includeThoughts,
           thinkingBudget,
           withThinkingConfig: wantsThinking,
+          withTools: enableTools,
         })
       ),
       signal,
@@ -674,6 +701,13 @@ async function fetchGeminiWithRotationAndRetry({
     if (upstream.status === 400 && wantsThinking && /thinking/i.test(errBody)) {
       wantsThinking = false;
       onInfo(`Model ${targetModel} tidak mendukung thinkingConfig; melanjutkan tanpa thinking summaries.`);
+      attempt -= 1;
+      continue;
+    }
+
+    if (upstream.status === 400 && enableTools && /tool|function/i.test(errBody)) {
+      enableTools = false;
+      onInfo(`Model ${targetModel} tidak mendukung function calling; melanjutkan tanpa GitHub tools.`);
       attempt -= 1;
       continue;
     }
@@ -732,6 +766,7 @@ app.post('/api/chat', async (req, res) => {
   const {
     model = DEFAULT_MODEL,
     messages = [],
+    githubProject,
     systemInstruction = '',
     temperature = 0.7,
     maxOutputTokens = 8192,
@@ -748,6 +783,10 @@ app.post('/api/chat', async (req, res) => {
   );
   const serverKeys = getServerEnvKeys();
   const apiKeys = headerKeys.length > 0 ? headerKeys : serverKeys;
+  const githubToken =
+    (typeof req.headers['x-github-token'] === 'string' ? req.headers['x-github-token'].trim() : '') ||
+    process.env.GITHUB_TOKEN?.trim() ||
+    '';
 
   const useDemo = Boolean(demoMode) || (process.env.DEMO_MODE === 'true' && apiKeys.length === 0);
 
@@ -796,113 +835,172 @@ app.post('/api/chat', async (req, res) => {
       return;
     }
 
-    let result = await fetchGeminiWithRotationAndRetry({
-      targetModel: model,
-      apiKeys,
-      messages,
-      systemInstruction,
-      temperature,
-      maxOutputTokens,
-      includeThoughts,
-      thinkingBudget,
-      signal: abortController.signal,
-      onStatus: (message) => writeSseEvent(res, 'status', { message }),
-      onInfo: (message) => writeSseEvent(res, 'info', { message }),
-    });
+    const projectSection = buildProjectSystemSection(githubProject);
+    const mergedSystemInstruction = [systemInstruction, projectSection].filter(Boolean).join('\n\n');
+    const hasGitHubTools = Boolean(
+      githubProject?.owner && githubProject?.repo && githubProject?.agenticToolsEnabled
+    );
+    const workingContents = buildGeminiContents(messages);
+    let activeModel = model;
+    let lastFinishReason = undefined;
+    const MAX_TOOL_ROUNDS = hasGitHubTools ? 3 : 1;
 
-    if (
-      !result.ok &&
-      RETRYABLE_STATUSES.has(result.status) &&
-      autoFallbackOnOverload &&
-      fallbackModel &&
-      fallbackModel !== model
-    ) {
-      writeSseEvent(res, 'status', {
-        message: `${model} masih penuh (${result.status}). Beralih otomatis ke ${fallbackModel}...`,
-      });
-      writeSseEvent(res, 'info', {
-        message: `Fallback otomatis ke ${fallbackModel} karena ${model} mengalami high demand.`,
-      });
-      result = await fetchGeminiWithRotationAndRetry({
-        targetModel: fallbackModel,
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const allowToolsThisRound = hasGitHubTools && round < MAX_TOOL_ROUNDS - 1;
+      let result = await fetchGeminiWithRotationAndRetry({
+        targetModel: activeModel,
         apiKeys,
-        messages,
-        systemInstruction,
+        contents: workingContents,
+        systemInstruction: mergedSystemInstruction,
         temperature,
         maxOutputTokens,
         includeThoughts,
         thinkingBudget,
+        withTools: allowToolsThisRound,
         signal: abortController.signal,
         onStatus: (message) => writeSseEvent(res, 'status', { message }),
         onInfo: (message) => writeSseEvent(res, 'info', { message }),
       });
-    }
 
-    if (!result.ok) {
-      writeSseEvent(res, 'error', {
-        status: result.status,
-        message: result.message,
-      });
-      return;
-    }
+      if (
+        !result.ok &&
+        RETRYABLE_STATUSES.has(result.status) &&
+        autoFallbackOnOverload &&
+        fallbackModel &&
+        fallbackModel !== activeModel
+      ) {
+        writeSseEvent(res, 'status', {
+          message: `${activeModel} masih penuh (${result.status}). Beralih otomatis ke ${fallbackModel}...`,
+        });
+        writeSseEvent(res, 'info', {
+          message: `Fallback otomatis ke ${fallbackModel} karena ${activeModel} mengalami high demand.`,
+        });
+        result = await fetchGeminiWithRotationAndRetry({
+          targetModel: fallbackModel,
+          apiKeys,
+          contents: workingContents,
+          systemInstruction: mergedSystemInstruction,
+          temperature,
+          maxOutputTokens,
+          includeThoughts,
+          thinkingBudget,
+          withTools: allowToolsThisRound,
+          signal: abortController.signal,
+          onStatus: (message) => writeSseEvent(res, 'status', { message }),
+          onInfo: (message) => writeSseEvent(res, 'info', { message }),
+        });
+      }
 
-    const upstream = result.response;
-    const activeModel = result.usedModel;
+      if (!result.ok) {
+        writeSseEvent(res, 'error', { status: result.status, message: result.message });
+        return;
+      }
 
-    if (!upstream.body) {
-      writeSseEvent(res, 'error', {
-        status: 502,
-        message: 'Stream respons dari Gemini API kosong.',
-      });
-      return;
-    }
+      const upstream = result.response;
+      activeModel = result.usedModel;
 
-    const reader = upstream.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let lastFinishReason = undefined;
+      if (!upstream.body) {
+        writeSseEvent(res, 'error', { status: 502, message: 'Stream respons dari Gemini API kosong.' });
+        return;
+      }
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
+      const reader = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const modelTurnParts = [];
+      const functionCalls = [];
 
-      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
 
-      let boundaryIndex;
-      while ((boundaryIndex = buffer.indexOf('\n\n')) !== -1) {
-        const rawEvent = buffer.slice(0, boundaryIndex);
-        buffer = buffer.slice(boundaryIndex + 2);
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
 
-        const dataLines = rawEvent
-          .split('\n')
-          .filter((line) => line.startsWith('data:'))
-          .map((line) => line.slice(5).trimStart());
+        let boundaryIndex;
+        while ((boundaryIndex = buffer.indexOf('\n\n')) !== -1) {
+          const rawEvent = buffer.slice(0, boundaryIndex);
+          buffer = buffer.slice(boundaryIndex + 2);
 
-        if (dataLines.length === 0) continue;
-        const jsonString = dataLines.join('\n').trim();
-        if (!jsonString || jsonString === '[DONE]') continue;
+          const dataLines = rawEvent
+            .split('\n')
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trimStart());
 
-        try {
-          const chunk = JSON.parse(jsonString);
-          const candidate = chunk?.candidates?.[0];
-          const parts = candidate?.content?.parts;
+          if (dataLines.length === 0) continue;
+          const jsonString = dataLines.join('\n').trim();
+          if (!jsonString || jsonString === '[DONE]') continue;
 
-          if (Array.isArray(parts)) {
-            for (const part of parts) {
-              if (part?.thought && typeof part?.text === 'string' && part.text.length > 0) {
-                writeSseEvent(res, 'thought', { text: part.text });
-              } else if (typeof part?.text === 'string' && part.text.length > 0) {
-                writeSseEvent(res, 'delta', { text: part.text });
+          try {
+            const chunk = JSON.parse(jsonString);
+            const candidate = chunk?.candidates?.[0];
+            const parts = candidate?.content?.parts;
+
+            if (Array.isArray(parts)) {
+              for (const part of parts) {
+                if (part?.thought && typeof part?.text === 'string' && part.text.length > 0) {
+                  writeSseEvent(res, 'thought', { text: part.text });
+                } else if (part?.functionCall) {
+                  modelTurnParts.push(part);
+                  functionCalls.push(part.functionCall);
+                } else if (typeof part?.text === 'string' && part.text.length > 0) {
+                  modelTurnParts.push(part);
+                  writeSseEvent(res, 'delta', { text: part.text });
+                }
               }
             }
-          }
 
-          if (candidate?.finishReason) lastFinishReason = candidate.finishReason;
-          if (chunk?.usageMetadata) writeSseEvent(res, 'usage', chunk.usageMetadata);
-        } catch {
-          // Abaikan JSON parsial
+            if (candidate?.finishReason) lastFinishReason = candidate.finishReason;
+            if (chunk?.usageMetadata) writeSseEvent(res, 'usage', chunk.usageMetadata);
+          } catch {
+            // Abaikan JSON parsial
+          }
         }
       }
+
+      if (functionCalls.length === 0 || !allowToolsThisRound) {
+        break;
+      }
+
+      workingContents.push({ role: 'model', parts: modelTurnParts });
+
+      const functionResponseParts = await Promise.all(
+        functionCalls.map(async (fc, idx) => {
+          const callId = `tool-${round}-${idx}-${Date.now()}`;
+          const argsSummary =
+            fc.name === 'github_read_file'
+              ? String(fc.args?.path || '')
+              : fc.name === 'github_search_code'
+                ? String(fc.args?.query || '')
+                : String(fc.args?.prefix || 'root');
+
+          writeSseEvent(res, 'tool_call', { id: callId, name: fc.name, argsSummary, status: 'running' });
+
+          const toolOutcome = await executeGitHubTool({
+            name: fc.name,
+            args: fc.args,
+            githubProject,
+            githubToken,
+            signal: abortController.signal,
+          });
+
+          writeSseEvent(res, 'tool_result', {
+            id: callId,
+            name: fc.name,
+            argsSummary,
+            status: toolOutcome.ok ? 'done' : 'error',
+            resultSummary: toolOutcome.summary,
+          });
+
+          return {
+            functionResponse: {
+              name: fc.name,
+              response: toolOutcome.response,
+            },
+          };
+        })
+      );
+
+      workingContents.push({ role: 'user', parts: functionResponseParts });
     }
 
     writeSseEvent(res, 'done', {

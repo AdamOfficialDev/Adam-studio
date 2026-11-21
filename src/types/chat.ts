@@ -23,6 +23,32 @@ export interface VisualTarget {
   outerHtml: string;
 }
 
+export interface ToolTraceItem {
+  id: string;
+  name: string;
+  argsSummary: string;
+  status: 'running' | 'done' | 'error';
+  resultSummary?: string;
+}
+
+export interface GitHubProjectFile {
+  path: string;
+  content: string;
+  tokens: number;
+}
+
+export interface GitHubProjectContext {
+  owner: string;
+  repo: string;
+  branch: string;
+  isPrivate?: boolean;
+  totalFiles: number;
+  treePaths: string[];
+  pinnedFiles: GitHubProjectFile[];
+  agenticToolsEnabled: boolean;
+  attachedAt: number;
+}
+
 export interface TokenUsage {
   promptTokenCount?: number;
   candidatesTokenCount?: number;
@@ -51,6 +77,7 @@ export interface ChatMessage {
   content: string;
   thought?: string;
   statusText?: string;
+  toolEvents?: ToolTraceItem[];
   visualTarget?: VisualTarget;
   attachments?: Attachment[];
   createdAt: number;
@@ -79,6 +106,7 @@ export interface Conversation {
   personaId?: string;
   sessionSystemInstruction?: string;
   importedSource?: string;
+  githubProject?: GitHubProjectContext;
   compactedContext?: CompactedContextState;
   messages: ChatMessage[];
   createdAt: number;
@@ -87,6 +115,7 @@ export interface Conversation {
 
 export interface AppSettings {
   apiKey: string;
+  githubToken: string;
   systemInstruction: string;
   temperature: number;
   maxOutputTokens: number;
@@ -109,5 +138,6 @@ export interface ServerHealth {
   defaultModel: string;
   hasServerApiKey: boolean;
   serverKeyCount?: number;
+  hasServerGithubToken?: boolean;
   demoModeEnv: boolean;
 }

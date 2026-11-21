@@ -1,6 +1,8 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import {
   Brain,
+  Database,
+  Download,
   Check,
   Eye,
   EyeOff,
@@ -13,6 +15,7 @@ import {
   Shuffle,
   SlidersHorizontal,
   Sparkles,
+  Upload,
   Volume2,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -30,8 +33,13 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { PERSONA_PRESETS } from '@/lib/personas';
+import {
+  exportAllConversationsBackup,
+  getIndexedDbStats,
+  restoreConversationsBackup,
+} from '@/lib/db';
 import { countApiKeys, DEFAULT_SETTINGS } from '@/lib/storage';
-import type { AppSettings, ServerHealth, ThemeSkin } from '@/types/chat';
+import type { AppSettings, Conversation, ServerHealth, ThemeSkin } from '@/types/chat';
 import { cn } from '@/lib/utils';
 
 interface SettingsDialogProps {
@@ -40,6 +48,7 @@ interface SettingsDialogProps {
   settings: AppSettings;
   serverHealth: ServerHealth | null;
   onSave: (next: AppSettings) => void;
+  onConversationsRestored?: (convs: Conversation[]) => void;
 }
 
 const THEME_SKINS: Array<{
@@ -105,15 +114,50 @@ export const SettingsDialog = memo(function SettingsDialog({
   settings,
   serverHealth,
   onSave,
+  onConversationsRestored,
 }: SettingsDialogProps) {
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [showKey, setShowKey] = useState(false);
+  const [idbStats, setIdbStats] = useState<{ count: number; usedLabel: string } | null>(null);
+  const backupInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (open) {
       setDraft(settings);
+      void getIndexedDbStats().then(setIdbStats);
     }
   }, [open, settings]);
+
+  const handleExportBackup = async () => {
+    try {
+      const jsonStr = await exportAllConversationsBackup();
+      const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `adam-studio-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('Backup seluruh workspace berhasil diunduh!');
+    } catch {
+      toast.error('Gagal membuat backup');
+    }
+  };
+
+  const handleRestoreFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const merged = await restoreConversationsBackup(text);
+      onConversationsRestored?.(merged);
+      void getIndexedDbStats().then(setIdbStats);
+      toast.success(`Berhasil restore ${merged.length} sesi percakapan!`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Gagal restore backup');
+    }
+  };
 
   const handleSave = () => {
     onSave({
@@ -564,6 +608,53 @@ export const SettingsDialog = memo(function SettingsDialog({
                         }
                       />
                     </div>
+
+                  <div className="space-y-3 rounded-2xl border bg-card/60 p-3.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <Database className="h-4 w-4 text-primary" />
+                        <span>IndexedDB Storage & Backup</span>
+                      </div>
+                      {idbStats && (
+                        <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 font-mono text-[11px] text-emerald-400">
+                          {idbStats.count} Sesi • {idbStats.usedLabel}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Data tersimpan lokal di IndexedDB (kapasitas ratusan MB+). Export backup jika
+                      ingin memindahkan riwayat ke perangkat lain.
+                    </p>
+                    <input
+                      ref={backupInputRef}
+                      type="file"
+                      accept=".json,application/json"
+                      className="hidden"
+                      onChange={(e) => void handleRestoreFile(e)}
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void handleExportBackup()}
+                        className="h-8 gap-1.5 rounded-xl text-xs"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        Export Backup (.json)
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => backupInputRef.current?.click()}
+                        className="h-8 gap-1.5 rounded-xl text-xs"
+                      >
+                        <Upload className="h-3.5 w-3.5" />
+                        Restore Backup
+                      </Button>
+                    </div>
+                  </div>
 
                     <div className="flex items-center justify-between gap-4 rounded-2xl border bg-card/60 p-3.5">
                       <div className="space-y-0.5">
