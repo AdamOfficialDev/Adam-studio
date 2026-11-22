@@ -33,6 +33,12 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  DEFAULT_MODEL_ID,
+  THINKING_LEVEL_META,
+  getModelThinkingCapabilities,
+  resolveValidThinkingLevel,
+} from '@/lib/models';
 import { PERSONA_PRESETS } from '@/lib/personas';
 import {
   exportAllConversationsBackup,
@@ -47,6 +53,7 @@ interface SettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   settings: AppSettings;
+  activeModel?: string;
   serverHealth: ServerHealth | null;
   onSave: (next: AppSettings) => void;
   onConversationsRestored?: (convs: Conversation[]) => void;
@@ -94,14 +101,6 @@ const THEME_SKINS: Array<{
   },
 ];
 
-const THINKING_BUDGET_OPTIONS = [
-  { label: 'Auto', value: -1 },
-  { label: '1K', value: 1024 },
-  { label: '4K', value: 4096 },
-  { label: '8K', value: 8192 },
-  { label: '16K', value: 16384 },
-];
-
 const HISTORY_LIMIT_OPTIONS = [
   { label: 'Semua', value: 0 },
   { label: '20 Pesan', value: 20 },
@@ -113,10 +112,13 @@ export const SettingsDialog = memo(function SettingsDialog({
   open,
   onOpenChange,
   settings,
+  activeModel,
   serverHealth,
   onSave,
   onConversationsRestored,
 }: SettingsDialogProps) {
+  const effectiveModel = activeModel || DEFAULT_MODEL_ID;
+  const thinkingCaps = getModelThinkingCapabilities(effectiveModel);
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [showKey, setShowKey] = useState(false);
   const [idbStats, setIdbStats] = useState<{ count: number; usedLabel: string } | null>(null);
@@ -163,7 +165,7 @@ export const SettingsDialog = memo(function SettingsDialog({
   const handleSave = () => {
     onSave({
       ...draft,
-      temperature: Math.min(2, Math.max(0, Number(draft.temperature) || 0.7)),
+      thinkingLevel: resolveValidThinkingLevel(effectiveModel, draft.thinkingLevel),
       maxOutputTokens: Math.min(65536, Math.max(128, Number(draft.maxOutputTokens) || 8192)),
     });
     toast.success('Pengaturan Adam Studio disimpan');
@@ -199,7 +201,7 @@ export const SettingsDialog = memo(function SettingsDialog({
                     </span>
                   </div>
                   <DialogDescription className="mt-0.5 text-xs">
-                    API Key Rotation, Persona AI, Thinking Budget, & Theme Skin.
+                    API Key Rotation, Persona AI, Thinking Level, & Theme Skin.
                   </DialogDescription>
                 </div>
               </div>
@@ -387,56 +389,84 @@ export const SettingsDialog = memo(function SettingsDialog({
                   <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
                     <div className="flex items-center justify-between gap-4">
                       <div className="space-y-0.5">
-                        <div className="flex items-center gap-2 text-sm font-semibold">
+                        <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">
                           <Brain className="h-4 w-4 text-primary" />
-                          Tampilkan Thinking Process (AI Studio Style)
+                          <span>Thinking Level</span>
+                          <span className="rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-medium text-primary">
+                            {effectiveModel}
+                          </span>
                         </div>
                         <p className="text-xs text-muted-foreground">
-                          Kirim <code>includeThoughts: true</code> agar rencana pemikiran model
-                          tampil real-time saat streaming.
+                          {thinkingCaps.note}
                         </p>
                       </div>
                       <Switch
-                        checked={draft.includeThoughts && draft.thinkingBudget !== 0}
+                        checked={
+                          thinkingCaps.supported &&
+                          draft.includeThoughts &&
+                          resolveValidThinkingLevel(effectiveModel, draft.thinkingLevel) !== 'off'
+                        }
+                        disabled={!thinkingCaps.supported}
                         onCheckedChange={(checked) =>
                           setDraft({
                             ...draft,
                             includeThoughts: checked,
-                            thinkingBudget:
-                              checked && draft.thinkingBudget === 0 ? -1 : draft.thinkingBudget,
+                            thinkingLevel: checked
+                              ? resolveValidThinkingLevel(effectiveModel, draft.thinkingLevel) === 'off'
+                                ? thinkingCaps.defaultLevel
+                                : resolveValidThinkingLevel(effectiveModel, draft.thinkingLevel)
+                              : thinkingCaps.canDisable
+                                ? 'off'
+                                : thinkingCaps.defaultLevel,
                           })
                         }
                       />
                     </div>
 
-                    {draft.includeThoughts && draft.thinkingBudget !== 0 && (
-                      <div className="space-y-1.5 border-t border-border/60 pt-3">
-                        <div className="text-[11px] font-medium text-muted-foreground">
-                          Thinking Token Budget
+                    {thinkingCaps.supported && (
+                      <div className="space-y-2 border-t border-border/60 pt-3">
+                        <div className="flex items-center justify-between text-[11px] font-medium text-muted-foreground">
+                          <span>Level Reasoning Otomatis untuk Model Ini</span>
+                          <span className="font-mono text-primary">
+                            {THINKING_LEVEL_META[resolveValidThinkingLevel(effectiveModel, draft.thinkingLevel)].label}
+                          </span>
                         </div>
-                        <div className="grid grid-cols-5 gap-1.5">
-                          {THINKING_BUDGET_OPTIONS.map((opt) => (
-                            <button
-                              key={opt.value}
-                              type="button"
-                              onClick={() =>
-                                setDraft({
-                                  ...draft,
-                                  includeThoughts: true,
-                                  thinkingBudget: opt.value,
-                                })
-                              }
-                              className={cn(
-                                'rounded-lg border py-1.5 font-mono text-[11px] transition-colors',
-                                draft.thinkingBudget === opt.value
-                                  ? 'border-primary bg-primary/15 font-semibold text-primary'
-                                  : 'bg-background/50 hover:bg-accent'
-                              )}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
+                        <div
+                          className="grid gap-1.5"
+                          style={{
+                            gridTemplateColumns: `repeat(${thinkingCaps.supportedLevels.length}, minmax(0, 1fr))`,
+                          }}
+                        >
+                          {thinkingCaps.supportedLevels.map((lvl) => {
+                            const activeLvl =
+                              resolveValidThinkingLevel(effectiveModel, draft.thinkingLevel) === lvl;
+                            return (
+                              <button
+                                key={lvl}
+                                type="button"
+                                onClick={() =>
+                                  setDraft({
+                                    ...draft,
+                                    includeThoughts: lvl !== 'off',
+                                    thinkingLevel: lvl,
+                                  })
+                                }
+                                title={THINKING_LEVEL_META[lvl].shortDesc}
+                                className={cn(
+                                  'rounded-lg border py-1.5 text-[11px] font-medium transition-colors',
+                                  activeLvl
+                                    ? 'border-primary bg-primary/15 font-semibold text-primary'
+                                    : 'bg-background/50 hover:bg-accent'
+                                )}
+                              >
+                                {THINKING_LEVEL_META[lvl].label}
+                              </button>
+                            );
+                          })}
                         </div>
+                        <p className="text-[10px] text-muted-foreground">
+                          {THINKING_LEVEL_META[resolveValidThinkingLevel(effectiveModel, draft.thinkingLevel)].shortDesc}
+                        </p>
                       </div>
                     )}
                   </div>
@@ -448,6 +478,10 @@ export const SettingsDialog = memo(function SettingsDialog({
                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       {PERSONA_PRESETS.map((persona) => {
                         const active = draft.activePersonaId === persona.id;
+                        const recLevel = resolveValidThinkingLevel(
+                          effectiveModel,
+                          persona.recommendedThinkingLevel
+                        );
                         return (
                           <button
                             key={persona.id}
@@ -457,7 +491,8 @@ export const SettingsDialog = memo(function SettingsDialog({
                                 ...draft,
                                 activePersonaId: persona.id,
                                 systemInstruction: persona.systemInstruction,
-                                temperature: persona.temperature,
+                                thinkingLevel: recLevel,
+                                includeThoughts: recLevel !== 'off',
                               })
                             }
                             className={cn(
@@ -469,8 +504,8 @@ export const SettingsDialog = memo(function SettingsDialog({
                           >
                             <div className="flex items-center justify-between gap-2">
                               <span className="text-xs font-semibold">{persona.name}</span>
-                              <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                                T {persona.temperature.toFixed(1)}
+                              <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] uppercase text-muted-foreground">
+                                {THINKING_LEVEL_META[recLevel].label}
                               </span>
                             </div>
                             <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
@@ -494,27 +529,7 @@ export const SettingsDialog = memo(function SettingsDialog({
                     />
                   </div>
 
-                  <div className="grid grid-cols-1 gap-4 rounded-2xl border bg-card/50 p-4 sm:grid-cols-2">
-                    <div className="space-y-2.5">
-                      <div className="flex items-center justify-between text-xs font-medium">
-                        <span>Temperature</span>
-                        <span className="rounded bg-primary/15 px-1.5 py-0.5 font-mono text-primary">
-                          {draft.temperature.toFixed(1)}
-                        </span>
-                      </div>
-                      <Slider
-                        min={0}
-                        max={2}
-                        step={0.1}
-                        value={[draft.temperature]}
-                        onValueChange={([val]) => setDraft({ ...draft, temperature: val })}
-                      />
-                      <div className="flex justify-between text-[10px] text-muted-foreground">
-                        <span>Presisi (0.0)</span>
-                        <span>Kreatif (2.0)</span>
-                      </div>
-                    </div>
-
+                  <div className="rounded-2xl border bg-card/50 p-4">
                     <div className="space-y-2.5">
                       <div className="flex items-center justify-between text-xs font-medium">
                         <span>Max Output Tokens</span>

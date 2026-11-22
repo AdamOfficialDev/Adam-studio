@@ -1,4 +1,4 @@
-import type { Attachment, GitHubProjectContext, TokenUsage, ToolTraceItem, VisualTarget } from '@/types/chat';
+import type { Attachment, GitHubProjectContext, ThinkingLevel, TokenUsage, ToolTraceItem, VisualTarget } from '@/types/chat';
 
 export interface StreamChatPayload {
   model: string;
@@ -11,10 +11,9 @@ export interface StreamChatPayload {
   githubProject?: GitHubProjectContext;
   githubToken?: string;
   systemInstruction: string;
-  temperature: number;
   maxOutputTokens: number;
   includeThoughts: boolean;
-  thinkingBudget: number;
+  thinkingLevel: ThinkingLevel;
   autoFallbackOnOverload: boolean;
   fallbackModel: string;
   demoMode: boolean;
@@ -87,10 +86,9 @@ export async function streamChatCompletion(
           }
         : undefined,
       systemInstruction: payload.systemInstruction,
-      temperature: payload.temperature,
       maxOutputTokens: payload.maxOutputTokens,
       includeThoughts: payload.includeThoughts,
-      thinkingBudget: payload.thinkingBudget,
+      thinkingLevel: payload.thinkingLevel,
       autoFallbackOnOverload: payload.autoFallbackOnOverload,
       fallbackModel: payload.fallbackModel,
       demoMode: payload.demoMode,

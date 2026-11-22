@@ -1,8 +1,10 @@
+import type { ThinkingLevel } from '@/types/chat';
+
 export interface PersonaPreset {
   id: string;
   name: string;
   tagline: string;
-  temperature: number;
+  recommendedThinkingLevel: ThinkingLevel;
   systemInstruction: string;
 }
 
@@ -18,7 +20,7 @@ export const PERSONA_PRESETS: PersonaPreset[] = [
     id: 'balanced',
     name: 'Adam Studio',
     tagline: 'Seimbang untuk coding, arsitektur, & visual',
-    temperature: 0.7,
+    recommendedThinkingLevel: 'medium',
     systemInstruction:
       'Kamu adalah asisten AI Adam Studio yang akurat, terstruktur, dan kreatif. Gunakan Markdown rapi, diagram ```mermaid jika memvisualisasikan alur, LaTeX $$...$$ untuk formula matematika, dan blok ```html mandiri bila diminta membuat UI interaktif.',
   },
@@ -26,7 +28,7 @@ export const PERSONA_PRESETS: PersonaPreset[] = [
     id: 'engineer',
     name: 'Principal Engineer',
     tagline: 'Fokus edge-case, concurrency, & kode produksi',
-    temperature: 0.3,
+    recommendedThinkingLevel: 'high',
     systemInstruction:
       'Kamu adalah Principal Software Engineer. Berikan kode production-ready dengan TypeScript strict, analisis Big-O, keamanan, dan error handling lengkap. Langsung ke inti teknis.',
   },
@@ -34,7 +36,7 @@ export const PERSONA_PRESETS: PersonaPreset[] = [
     id: 'designer',
     name: 'UI/UX Craftsman',
     tagline: 'Fokus micro-interaction, layout, & prototype HTML',
-    temperature: 0.6,
+    recommendedThinkingLevel: 'medium',
     systemInstruction:
       'Kamu adalah Product Designer & Creative Technologist kelas dunia. Saat membuat UI, berikan prototype self-contained dalam satu blok ```html yang modern, responsif, dan memukau di Artifact Live Preview.',
   },
@@ -42,7 +44,7 @@ export const PERSONA_PRESETS: PersonaPreset[] = [
     id: 'concise',
     name: 'Executive Brief',
     tagline: 'Ringkas, padat, langsung poin aksi',
-    temperature: 0.4,
+    recommendedThinkingLevel: 'low',
     systemInstruction:
       'Jawab secara super padat dan terstruktur dengan bullet points singkat tanpa pengantar bertele-tele.',
   },

@@ -23,10 +23,9 @@ export default async function handler(request) {
     messages = [],
     githubProject,
     systemInstruction = '',
-    temperature = 0.7,
     maxOutputTokens = 8192,
     includeThoughts = true,
-    thinkingBudget = -1,
+    thinkingLevel = 'medium',
     autoFallbackOnOverload = false,
     fallbackModel = 'gemini-3.8-flash',
     demoMode = false,
@@ -65,7 +64,8 @@ export default async function handler(request) {
         if (useDemo) {
           const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
           const userText = lastUserMsg?.content?.trim() || 'Demo Vercel SSE';
-          const showThoughts = Boolean(includeThoughts) && Number(thinkingBudget) !== 0;
+          const showThoughts =
+            Boolean(includeThoughts) && String(thinkingLevel || '').toLowerCase() !== 'off';
 
           if (showThoughts) {
             const demoThought = [
@@ -125,10 +125,9 @@ export default async function handler(request) {
           githubProject,
           githubToken,
           systemInstruction,
-          temperature,
           maxOutputTokens,
           includeThoughts,
-          thinkingBudget,
+          thinkingLevel,
           autoFallbackOnOverload,
           fallbackModel,
           signal: request.signal,

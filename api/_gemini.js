@@ -165,31 +165,58 @@ export function extractGeminiError(rawText, status) {
   return msg;
 }
 
+const THINKING_LEVEL_TO_API = {
+  off: 'OFF',
+  minimal: 'MINIMAL',
+  low: 'LOW',
+  medium: 'MEDIUM',
+  high: 'HIGH',
+};
+
+function normalizeThinkingLevelForModel(modelId, rawLevel) {
+  const id = String(modelId || '').toLowerCase().trim();
+  if (/gemini-1\./.test(id) || (/gemini-2\.0/.test(id) && !/thinking/.test(id)) || /gemma|embedding|imagen|veo/.test(id)) {
+    return 'off';
+  }
+  let level = String(rawLevel || 'medium').toLowerCase().trim();
+  if (!THINKING_LEVEL_TO_API[level]) level = 'medium';
+  if (/pro|ultra|hydrogen|deep/.test(id) && !/flash/.test(id)) {
+    if (level === 'off' || level === 'minimal') level = 'low';
+  }
+  if (/gemini-2\.5/.test(id) && level === 'minimal') {
+    level = 'low';
+  }
+  return level;
+}
+
 function buildGeminiPayload({
   contents,
   systemInstruction,
-  temperature,
   maxOutputTokens,
   includeThoughts,
-  thinkingBudget,
+  thinkingLevel,
   withThinkingConfig,
   withTools,
   toolMode = 'AUTO',
   withToolConfig = true,
 }) {
   const generationConfig = {
-    temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.7,
     maxOutputTokens: Number.isFinite(Number(maxOutputTokens))
       ? Number(maxOutputTokens)
       : 8192,
   };
 
-  if (withThinkingConfig && includeThoughts && Number(thinkingBudget) !== 0) {
-    const thinkingConfig = { includeThoughts: true };
-    if (Number(thinkingBudget) > 0) {
-      thinkingConfig.thinkingBudget = Number(thinkingBudget);
-    }
-    generationConfig.thinkingConfig = thinkingConfig;
+  const apiLevel = THINKING_LEVEL_TO_API[thinkingLevel] || null;
+  if (withThinkingConfig && apiLevel && thinkingLevel !== 'off') {
+    generationConfig.thinkingConfig = {
+      includeThoughts: Boolean(includeThoughts),
+      thinkingLevel: apiLevel,
+    };
+  } else if (withThinkingConfig && thinkingLevel === 'off') {
+    generationConfig.thinkingConfig = {
+      includeThoughts: false,
+      thinkingLevel: 'OFF',
+    };
   }
 
   const payload = {
@@ -221,10 +248,9 @@ async function fetchGeminiWithRotationAndRetry({
   excludeKeys = new Set(),
   contents,
   systemInstruction,
-  temperature,
   maxOutputTokens,
   includeThoughts,
-  thinkingBudget,
+  thinkingLevel = 'medium',
   withTools,
   toolMode = 'AUTO',
   signal,
@@ -235,7 +261,8 @@ async function fetchGeminiWithRotationAndRetry({
     targetModel
   )}:streamGenerateContent?alt=sse`;
 
-  let wantsThinking = Boolean(includeThoughts) && Number(thinkingBudget) !== 0;
+  let currentLevel = normalizeThinkingLevelForModel(targetModel, thinkingLevel);
+  let wantsThinking = currentLevel !== 'off' || /gemini-2\.5|gemini-3|gemini-4/.test(String(targetModel).toLowerCase());
   let enableTools = Boolean(withTools);
   let enableToolConfig = true;
   const orderedKeys = buildOrderedCandidateKeys(apiKeys, excludeKeys);
@@ -266,10 +293,9 @@ async function fetchGeminiWithRotationAndRetry({
           buildGeminiPayload({
             contents,
             systemInstruction,
-            temperature,
             maxOutputTokens,
-            includeThoughts,
-            thinkingBudget,
+            includeThoughts: Boolean(includeThoughts) && currentLevel !== 'off',
+            thinkingLevel: currentLevel,
             withThinkingConfig: wantsThinking,
             withTools: enableTools,
             toolMode,
@@ -331,6 +357,17 @@ async function fetchGeminiWithRotationAndRetry({
     lastErrorMessage = extractGeminiError(errBody, upstream.status);
 
     if (upstream.status === 400 && wantsThinking && /thinking/i.test(errBody)) {
+      if (currentLevel === 'off') {
+        currentLevel = 'minimal';
+        attempt -= 1;
+        continue;
+      }
+      if (currentLevel === 'minimal') {
+        currentLevel = 'low';
+        onInfo(`Model ${targetModel} tidak mendukung Minimal/Off; menyesuaikan otomatis ke Low.`);
+        attempt -= 1;
+        continue;
+      }
       wantsThinking = false;
       onInfo(`Model ${targetModel} tidak mendukung thinkingConfig; melanjutkan tanpa thinking.`);
       attempt -= 1;
@@ -541,10 +578,9 @@ export async function runResilientGeminiChat({
   githubProject,
   githubToken,
   systemInstruction,
-  temperature,
   maxOutputTokens,
   includeThoughts,
-  thinkingBudget,
+  thinkingLevel = 'medium',
   autoFallbackOnOverload,
   fallbackModel,
   signal,
@@ -571,7 +607,8 @@ export async function runResilientGeminiChat({
     const failedKeysThisRound = new Set();
     let roundSuccess = false;
     let roundOutcome = null;
-    let currentIncludeThoughts = Boolean(includeThoughts) && Number(thinkingBudget) !== 0;
+    let currentThinkingLevel = normalizeThinkingLevelForModel(activeModel, thinkingLevel);
+    let currentIncludeThoughts = Boolean(includeThoughts) && currentThinkingLevel !== 'off';
     let currentMaxOutputTokens = Number(maxOutputTokens) || 8192;
     let currentToolMode = isFinalSynthesisRound ? 'NONE' : 'AUTO';
 
@@ -599,10 +636,9 @@ export async function runResilientGeminiChat({
         excludeKeys: failedKeysThisRound,
         contents: roundContents,
         systemInstruction: mergedSystemInstruction,
-        temperature,
         maxOutputTokens: currentMaxOutputTokens,
         includeThoughts: currentIncludeThoughts,
-        thinkingBudget,
+        thinkingLevel: currentThinkingLevel,
         withTools: sendWithTools,
         toolMode: currentToolMode,
         signal,
@@ -629,10 +665,9 @@ export async function runResilientGeminiChat({
           excludeKeys: failedKeysThisRound,
           contents: roundContents,
           systemInstruction: mergedSystemInstruction,
-          temperature,
           maxOutputTokens: currentMaxOutputTokens,
           includeThoughts: currentIncludeThoughts,
-          thinkingBudget,
+          thinkingLevel: normalizeThinkingLevelForModel(fallbackModel, currentThinkingLevel),
           withTools: sendWithTools,
           toolMode: currentToolMode,
           signal,
@@ -744,6 +779,7 @@ export async function runResilientGeminiChat({
 
           if (roundOutcome.finishReason === 'MAX_TOKENS') {
             currentIncludeThoughts = false;
+            currentThinkingLevel = normalizeThinkingLevelForModel(activeModel, 'minimal');
             currentMaxOutputTokens = Math.max(currentMaxOutputTokens, 8192);
             sendEvent('status', {
               message: 'Token habis saat fase thinking. Mencoba ulang langsung ke jawaban...',

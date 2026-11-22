@@ -30,10 +30,14 @@ import {
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Slider } from '@/components/ui/slider';
 import { StudioScroll, type StudioScrollHandle } from '@/components/ui/studio-scroll';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  THINKING_LEVEL_META,
+  getModelThinkingCapabilities,
+  resolveValidThinkingLevel,
+} from '@/lib/models';
 import { PERSONA_PRESETS, SLASH_PROMPTS } from '@/lib/personas';
 import {
   WavAudioRecorder,
@@ -109,14 +113,6 @@ const TEXT_EXTENSIONS = new Set([
   'csv',
   'xml',
 ]);
-
-const THINKING_BUDGET_OPTIONS = [
-  { label: 'Auto', value: -1 },
-  { label: '1K', value: 1024 },
-  { label: '4K', value: 4096 },
-  { label: '8K', value: 8192 },
-  { label: '16K', value: 16384 },
-];
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve) => {
@@ -621,7 +617,13 @@ export const ChatComposer = memo(function ChatComposer({
   const textDraftTokens = estimateTokens(input);
   const filesTotalTokens = attachments.reduce((acc, a) => acc + (a.tokenCount ?? 0), 0);
   const totalDraftTokens = textDraftTokens + filesTotalTokens;
-  const thinkingOn = settings.includeThoughts && settings.thinkingBudget !== 0;
+  const thinkingCaps = useMemo(() => getModelThinkingCapabilities(model), [model]);
+  const effectiveThinkingLevel = useMemo(
+    () => resolveValidThinkingLevel(model, settings.thinkingLevel),
+    [model, settings.thinkingLevel]
+  );
+  const thinkingOn =
+    thinkingCaps.supported && settings.includeThoughts && effectiveThinkingLevel !== 'off';
 
   return (
     <div
@@ -912,15 +914,26 @@ export const ChatComposer = memo(function ChatComposer({
               type="button"
               variant={thinkingOn ? 'secondary' : 'ghost'}
               size="sm"
-              disabled={isStreaming}
+              disabled={isStreaming || !thinkingCaps.supported}
               onClick={() => {
                 const next = !thinkingOn;
+                const nextLevel = next
+                  ? effectiveThinkingLevel === 'off'
+                    ? thinkingCaps.defaultLevel
+                    : effectiveThinkingLevel
+                  : thinkingCaps.canDisable
+                    ? 'off'
+                    : effectiveThinkingLevel;
                 onUpdateSettings({
                   ...settings,
                   includeThoughts: next,
-                  thinkingBudget: next && settings.thinkingBudget === 0 ? -1 : settings.thinkingBudget,
+                  thinkingLevel: nextLevel,
                 });
-                toast.success(next ? 'Thinking Process: Aktif' : 'Thinking Process: Nonaktif');
+                toast.success(
+                  next
+                    ? `Thinking: ${THINKING_LEVEL_META[nextLevel].label}`
+                    : 'Thinking Process: Nonaktif'
+                );
               }}
               className={cn(
                 'h-8 gap-1 rounded-xl px-2 text-xs',
@@ -928,10 +941,12 @@ export const ChatComposer = memo(function ChatComposer({
                   ? 'border border-primary/35 bg-primary/10 text-primary hover:bg-primary/20'
                   : 'text-muted-foreground hover:text-foreground'
               )}
-              title="Tampilkan proses thinking AI"
+              title={thinkingCaps.note}
             >
               <Brain className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Think</span>
+              <span className="hidden sm:inline">
+                {thinkingOn ? THINKING_LEVEL_META[effectiveThinkingLevel].label : 'Think'}
+              </span>
             </Button>
 
             <Button
@@ -1015,14 +1030,19 @@ export const ChatComposer = memo(function ChatComposer({
                       <button
                         key={p.id}
                         type="button"
-                        onClick={() =>
+                        onClick={() => {
+                          const recLevel = resolveValidThinkingLevel(
+                            model,
+                            p.recommendedThinkingLevel
+                          );
                           onUpdateSettings({
                             ...settings,
                             activePersonaId: p.id,
                             systemInstruction: p.systemInstruction,
-                            temperature: p.temperature,
-                          })
-                        }
+                            thinkingLevel: recLevel,
+                            includeThoughts: recLevel !== 'off',
+                          });
+                        }}
                         className={cn(
                           'rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors',
                           settings.activePersonaId === p.id
@@ -1075,58 +1095,63 @@ export const ChatComposer = memo(function ChatComposer({
                   <div className="flex items-center justify-between text-xs">
                     <span className="flex items-center gap-1.5 font-medium">
                       <Brain className="h-3.5 w-3.5 text-primary" />
-                      Thinking Budget
+                      Thinking Level
                     </span>
                     <Switch
                       checked={thinkingOn}
+                      disabled={!thinkingCaps.supported}
                       onCheckedChange={(checked) =>
                         onUpdateSettings({
                           ...settings,
                           includeThoughts: checked,
-                          thinkingBudget: checked && settings.thinkingBudget === 0 ? -1 : settings.thinkingBudget,
+                          thinkingLevel: checked
+                            ? effectiveThinkingLevel === 'off'
+                              ? thinkingCaps.defaultLevel
+                              : effectiveThinkingLevel
+                            : thinkingCaps.canDisable
+                              ? 'off'
+                              : effectiveThinkingLevel,
                         })
                       }
                     />
                   </div>
-                  {thinkingOn && (
-                    <div className="grid grid-cols-5 gap-1">
-                      {THINKING_BUDGET_OPTIONS.map((opt) => (
-                        <button
-                          key={opt.value}
-                          type="button"
-                          onClick={() =>
-                            onUpdateSettings({
-                              ...settings,
-                              includeThoughts: true,
-                              thinkingBudget: opt.value,
-                            })
-                          }
-                          className={cn(
-                            'rounded-md border py-1 font-mono text-[10px] transition-colors',
-                            settings.thinkingBudget === opt.value
-                              ? 'border-primary bg-primary/15 font-semibold text-primary'
-                              : 'hover:bg-accent'
-                          )}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
-                    </div>
+                  {thinkingCaps.supported ? (
+                    <>
+                      <div
+                        className="grid gap-1"
+                        style={{
+                          gridTemplateColumns: `repeat(${thinkingCaps.supportedLevels.length}, minmax(0, 1fr))`,
+                        }}
+                      >
+                        {thinkingCaps.supportedLevels.map((lvl) => (
+                          <button
+                            key={lvl}
+                            type="button"
+                            onClick={() =>
+                              onUpdateSettings({
+                                ...settings,
+                                includeThoughts: lvl !== 'off',
+                                thinkingLevel: lvl,
+                              })
+                            }
+                            className={cn(
+                              'rounded-md border py-1 font-mono text-[10px] transition-colors',
+                              effectiveThinkingLevel === lvl
+                                ? 'border-primary bg-primary/15 font-semibold text-primary'
+                                : 'hover:bg-accent'
+                            )}
+                          >
+                            {THINKING_LEVEL_META[lvl].label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[10px] leading-snug text-muted-foreground">
+                        {thinkingCaps.note}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-[10px] text-muted-foreground">{thinkingCaps.note}</p>
                   )}
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex justify-between text-xs">
-                    <span className="font-medium">Temperature</span>
-                    <span className="font-mono text-primary">{settings.temperature.toFixed(1)}</span>
-                  </div>
-                  <Slider
-                    min={0}
-                    max={2}
-                    step={0.1}
-                    value={[settings.temperature]}
-                    onValueChange={([val]) => onUpdateSettings({ ...settings, temperature: val })}
-                  />
                 </div>
 
                 <div className="flex items-center justify-between rounded-lg border bg-muted/40 px-3 py-2">

@@ -165,17 +165,19 @@ export default async function handler(request) {
             sttModel
           )}:generateContent`;
 
-          let useZeroThinking = sttModel.includes('2.5');
+          let useMinimalThinking = true;
           let triedWithoutThinking = false;
 
           while (true) {
             try {
               const generationConfig = {
-                temperature: 0.1,
                 maxOutputTokens: 1024,
               };
-              if (useZeroThinking) {
-                generationConfig.thinkingConfig = { thinkingBudget: 0 };
+              if (useMinimalThinking) {
+                generationConfig.thinkingConfig = {
+                  thinkingLevel: 'MINIMAL',
+                  includeThoughts: false,
+                };
               }
 
               const upstream = await fetchWithTimeout(
@@ -223,11 +225,11 @@ export default async function handler(request) {
 
               if (
                 upstream.status === 400 &&
-                useZeroThinking &&
+                useMinimalThinking &&
                 !triedWithoutThinking &&
                 /thinking/i.test(errRaw)
               ) {
-                useZeroThinking = false;
+                useMinimalThinking = false;
                 triedWithoutThinking = true;
                 continue;
               }

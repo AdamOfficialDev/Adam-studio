@@ -48,17 +48,19 @@ async function callGeminiSummary({ model, apiKeys, prompt, signal }) {
 
     for (let i = 0; i < apiKeys.length; i++) {
       const key = apiKeys[(startOffset + i) % apiKeys.length];
-      let useZeroThinking = targetModel.includes('2.5');
+      let useMinimalThinking = true;
       let triedNoThinking = false;
 
       while (true) {
         try {
           const generationConfig = {
-            temperature: 0.2,
             maxOutputTokens: 4096,
           };
-          if (useZeroThinking) {
-            generationConfig.thinkingConfig = { thinkingBudget: 0 };
+          if (useMinimalThinking) {
+            generationConfig.thinkingConfig = {
+              thinkingLevel: 'MINIMAL',
+              includeThoughts: false,
+            };
           }
 
           const res = await fetch(endpoint, {
@@ -85,8 +87,8 @@ async function callGeminiSummary({ model, apiKeys, prompt, signal }) {
           } else {
             const errRaw = await res.text();
             lastError = extractGeminiError(errRaw, res.status);
-            if (res.status === 400 && useZeroThinking && !triedNoThinking && /thinking/i.test(errRaw)) {
-              useZeroThinking = false;
+            if (res.status === 400 && useMinimalThinking && !triedNoThinking && /thinking/i.test(errRaw)) {
+              useMinimalThinking = false;
               triedNoThinking = true;
               continue;
             }

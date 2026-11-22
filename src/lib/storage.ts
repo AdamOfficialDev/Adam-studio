@@ -1,5 +1,5 @@
 import { PERSONA_PRESETS } from '@/lib/personas';
-import type { AppSettings, Conversation } from '@/types/chat';
+import type { AppSettings, Conversation, ThinkingLevel } from '@/types/chat';
 
 const CONVERSATIONS_KEY = 'hydrogen-chat-conversations-v3';
 const SETTINGS_KEY = 'hydrogen-chat-settings-v3';
@@ -8,10 +8,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   apiKey: '',
   githubToken: '',
   systemInstruction: PERSONA_PRESETS[0].systemInstruction,
-  temperature: PERSONA_PRESETS[0].temperature,
   maxOutputTokens: 8192,
   includeThoughts: true,
-  thinkingBudget: -1,
+  thinkingLevel: PERSONA_PRESETS[0].recommendedThinkingLevel,
   autoFallbackOnOverload: true,
   fallbackModel: 'gemini-3.8-flash',
   maxHistoryMessages: 0,
@@ -89,14 +88,30 @@ export function loadSettings(): AppSettings {
       localStorage.getItem('hydrogen-chat-settings-v2') ||
       localStorage.getItem('hydrogen-chat-settings-v1');
     if (!raw) return DEFAULT_SETTINGS;
-    const parsed = JSON.parse(raw) as Partial<AppSettings & { theme?: 'dark' | 'light' }>;
+    const parsed = JSON.parse(raw) as Partial<
+      AppSettings & { theme?: 'dark' | 'light'; thinkingBudget?: number; temperature?: number }
+    >;
     const skin =
       parsed.skin ?? (parsed.theme === 'light' ? 'paper' : DEFAULT_SETTINGS.skin);
-    return {
+
+    let thinkingLevel: ThinkingLevel =
+      parsed.thinkingLevel ?? DEFAULT_SETTINGS.thinkingLevel;
+    if (!parsed.thinkingLevel && typeof parsed.thinkingBudget === 'number') {
+      if (parsed.thinkingBudget === 0) thinkingLevel = 'off';
+      else if (parsed.thinkingBudget > 0 && parsed.thinkingBudget <= 2048) thinkingLevel = 'low';
+      else if (parsed.thinkingBudget >= 12000) thinkingLevel = 'high';
+      else thinkingLevel = 'medium';
+    }
+
+    const merged: AppSettings & { thinkingBudget?: number; temperature?: number } = {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      thinkingLevel,
       skin,
     };
+    delete merged.thinkingBudget;
+    delete merged.temperature;
+    return merged;
   } catch {
     return DEFAULT_SETTINGS;
   }

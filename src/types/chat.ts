@@ -1,4 +1,5 @@
 export type ThemeSkin = 'obsidian' | 'claude' | 'aurora' | 'paper';
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high';
 
 export interface Attachment {
   id: string;
@@ -117,10 +118,9 @@ export interface AppSettings {
   apiKey: string;
   githubToken: string;
   systemInstruction: string;
-  temperature: number;
   maxOutputTokens: number;
   includeThoughts: boolean;
-  thinkingBudget: number;
+  thinkingLevel: ThinkingLevel;
   autoFallbackOnOverload: boolean;
   fallbackModel: string;
   maxHistoryMessages: number;

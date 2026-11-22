@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Check, Copy, Cpu, DollarSign, Info, Rocket, Search, Sparkles, X } from 'lucide-react';
+import { Brain, Check, Copy, Cpu, DollarSign, Info, Rocket, Search, Sparkles, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -12,7 +12,12 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { PRESET_MODELS, type ModelCategory } from '@/lib/models';
+import {
+  PRESET_MODELS,
+  THINKING_LEVEL_META,
+  getModelThinkingCapabilities,
+  type ModelCategory,
+} from '@/lib/models';
 import { cn } from '@/lib/utils';
 
 interface ModelSelectorDialogProps {
@@ -149,6 +154,7 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                 <>
                   {filteredModels.map((model) => {
                     const isSelected = selectedModel === model.id;
+                    const thinkingCaps = getModelThinkingCapabilities(model.id);
                     return (
                       <div
                         key={model.id}
@@ -235,6 +241,14 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                           <span className="rounded-lg border bg-background/60 px-2 py-1 text-muted-foreground">
                             {model.contextLabel}
                           </span>
+                          <span className="inline-flex items-center gap-1 rounded-lg border border-primary/25 bg-primary/10 px-2 py-1 text-primary">
+                            <Brain className="h-3 w-3" />
+                            {thinkingCaps.supported
+                              ? thinkingCaps.supportedLevels
+                                  .map((l) => THINKING_LEVEL_META[l].label)
+                                  .join(' • ')
+                              : 'No Thinking'}
+                          </span>
                         </div>
                       </div>
                     );
@@ -258,9 +272,18 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
             </div>
 
             <div className="studio-modal-footer shrink-0 border-t border-border/70 px-4 py-3.5 sm:px-6">
-              <div className="mb-1.5 flex items-center justify-between text-[11px] font-medium text-muted-foreground">
+              <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
                 <span>Custom Model ID</span>
-                <span className="font-mono text-[10px] opacity-75">Enter untuk terapkan</span>
+                <span className="truncate font-mono text-[10px] text-primary/90">
+                  {customModelInput.trim()
+                    ? (() => {
+                        const c = getModelThinkingCapabilities(customModelInput.trim());
+                        return c.supported
+                          ? `Auto Thinking: ${c.supportedLevels.map((l) => THINKING_LEVEL_META[l].label).join(' / ')}`
+                          : 'Auto: Tanpa Thinking';
+                      })()
+                    : 'Enter untuk terapkan'}
+                </span>
               </div>
               <div className="flex gap-2">
                 <div className="relative flex-1">

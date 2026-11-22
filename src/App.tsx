@@ -72,7 +72,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { usePwaInstall } from '@/hooks/usePwaInstall';
 import { extractArtifactsFromMarkdown } from '@/lib/artifacts';
 import { buildEffectiveApiHistory, estimateMessagesTokenTotal } from '@/lib/importer';
-import { DEFAULT_MODEL_ID, getModelInfo } from '@/lib/models';
+import { DEFAULT_MODEL_ID, getModelInfo, getModelThinkingCapabilities, resolveValidThinkingLevel } from '@/lib/models';
 import { playCompletionChime } from '@/lib/sound';
 import { streamChatCompletion } from '@/lib/sse';
 import {
@@ -361,7 +361,13 @@ export default function App() {
   const messageList = activeConversation?.messages ?? [];
   const currentModelId = activeConversation?.model ?? selectedModel;
   const currentModelInfo = getModelInfo(currentModelId);
-  const thinkingEnabled = settings.includeThoughts && settings.thinkingBudget !== 0;
+  const thinkingCaps = getModelThinkingCapabilities(currentModelId);
+  const effectiveThinkingLevel = resolveValidThinkingLevel(
+    currentModelId,
+    settings.thinkingLevel
+  );
+  const thinkingEnabled =
+    thinkingCaps.supported && settings.includeThoughts && effectiveThinkingLevel !== 'off';
 
   const activeKeyPoolCount =
     countApiKeys(settings.apiKey) ||
@@ -637,10 +643,9 @@ export default function App() {
             githubProject,
             githubToken: settings.githubToken,
             systemInstruction: effectiveSystemInstruction,
-            temperature: settings.temperature,
             maxOutputTokens: settings.maxOutputTokens,
             includeThoughts: settings.includeThoughts,
-            thinkingBudget: settings.thinkingBudget,
+            thinkingLevel: resolveValidThinkingLevel(modelId, settings.thinkingLevel),
             autoFallbackOnOverload: settings.autoFallbackOnOverload,
             fallbackModel: settings.fallbackModel,
             demoMode: settings.demoMode,
@@ -1936,6 +1941,7 @@ export default function App() {
           />
 
           <SettingsDialog
+        activeModel={currentModelId}
             open={settingsDialogOpen}
             onOpenChange={setSettingsDialogOpen}
             settings={settings}

@@ -227,13 +227,18 @@ app.post('/api/compact', async (req, res) => {
         )}:generateContent`;
 
         for (const entry of ordered) {
-          let useZeroThinking = targetModel.includes('2.5');
+          let useMinimalThinking = true;
           let triedNoThinking = false;
 
           while (true) {
             try {
-              const generationConfig = { temperature: 0.2, maxOutputTokens: 4096 };
-              if (useZeroThinking) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+              const generationConfig = { maxOutputTokens: 4096 };
+              if (useMinimalThinking) {
+                generationConfig.thinkingConfig = {
+                  thinkingLevel: 'MINIMAL',
+                  includeThoughts: false,
+                };
+              }
 
               const upstream = await fetchWithTimeout(
                 endpoint,
@@ -269,11 +274,11 @@ app.post('/api/compact', async (req, res) => {
                 lastErr = extractGeminiError(errRaw, upstream.status);
                 if (
                   upstream.status === 400 &&
-                  useZeroThinking &&
+                  useMinimalThinking &&
                   !triedNoThinking &&
                   /thinking/i.test(errRaw)
                 ) {
-                  useZeroThinking = false;
+                  useMinimalThinking = false;
                   triedNoThinking = true;
                   continue;
                 }
@@ -373,17 +378,19 @@ app.post('/api/transcribe', async (req, res) => {
         sttModel
       )}:generateContent`;
 
-      let useZeroThinking = sttModel.includes('2.5');
+      let useMinimalThinking = true;
       let triedWithoutThinking = false;
 
       while (true) {
         try {
           const generationConfig = {
-            temperature: 0.1,
             maxOutputTokens: 1024,
           };
-          if (useZeroThinking) {
-            generationConfig.thinkingConfig = { thinkingBudget: 0 };
+          if (useMinimalThinking) {
+            generationConfig.thinkingConfig = {
+              thinkingLevel: 'MINIMAL',
+              includeThoughts: false,
+            };
           }
 
           const upstream = await fetchWithTimeout(
@@ -431,11 +438,11 @@ app.post('/api/transcribe', async (req, res) => {
 
           if (
             upstream.status === 400 &&
-            useZeroThinking &&
+            useMinimalThinking &&
             !triedWithoutThinking &&
             /thinking/i.test(errRaw)
           ) {
-            useZeroThinking = false;
+            useMinimalThinking = false;
             triedWithoutThinking = true;
             continue;
           }
@@ -560,43 +567,34 @@ function buildGeminiContents(messages) {
 function buildGeminiPayload({
   contents,
   systemInstruction,
-  temperature,
   maxOutputTokens,
   includeThoughts,
-  thinkingBudget,
+  thinkingLevel = 'medium',
   withThinkingConfig,
   withTools,
 }) {
   const generationConfig = {
-    temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.7,
     maxOutputTokens: Number.isFinite(Number(maxOutputTokens))
       ? Number(maxOutputTokens)
       : 8192,
   };
 
-  if (withThinkingConfig && includeThoughts && Number(thinkingBudget) !== 0) {
-    const thinkingConfig = { includeThoughts: true };
-    if (Number(thinkingBudget) > 0) {
-      thinkingConfig.thinkingBudget = Number(thinkingBudget);
-    }
-    generationConfig.thinkingConfig = thinkingConfig;
-  }
-
-  const payload = {
-    contents,
-    generationConfig,
-  };
-
-  if (typeof systemInstruction === 'string' && systemInstruction.trim().length > 0) {
-    payload.systemInstruction = {
-      parts: [{ text: systemInstruction.trim() }],
+  if (withThinkingConfig && thinkingLevel) {
+    const map = { off: 'OFF', minimal: 'MINIMAL', low: 'LOW', medium: 'MEDIUM', high: 'HIGH' };
+    const apiLevel = map[String(thinkingLevel).toLowerCase()] || 'MEDIUM';
+    generationConfig.thinkingConfig = {
+      includeThoughts: Boolean(includeThoughts) && thinkingLevel !== 'off',
+      thinkingLevel: apiLevel,
     };
   }
 
+  const payload = { contents, generationConfig };
+  if (typeof systemInstruction === 'string' && systemInstruction.trim().length > 0) {
+    payload.systemInstruction = { parts: [{ text: systemInstruction.trim() }] };
+  }
   if (withTools) {
     payload.tools = [{ functionDeclarations: GITHUB_TOOL_DECLARATIONS }];
   }
-
   return payload;
 }
 
@@ -764,10 +762,9 @@ app.post('/api/chat', async (req, res) => {
     messages = [],
     githubProject,
     systemInstruction = '',
-    temperature = 0.7,
     maxOutputTokens = 8192,
     includeThoughts = true,
-    thinkingBudget = -1,
+    thinkingLevel = 'medium',
     autoFallbackOnOverload = false,
     fallbackModel = 'gemini-3.8-flash',
     demoMode = false,
@@ -816,7 +813,7 @@ app.post('/api/chat', async (req, res) => {
         res,
         model,
         messages,
-        includeThoughts: Boolean(includeThoughts) && Number(thinkingBudget) !== 0,
+        includeThoughts: Boolean(includeThoughts) && String(thinkingLevel || '').toLowerCase() !== 'off',
         signal: abortController.signal,
       });
       return;
@@ -838,10 +835,9 @@ app.post('/api/chat', async (req, res) => {
       githubProject,
       githubToken,
       systemInstruction,
-      temperature,
       maxOutputTokens,
       includeThoughts,
-      thinkingBudget,
+      thinkingLevel,
       autoFallbackOnOverload,
       fallbackModel,
       signal: abortController.signal,
