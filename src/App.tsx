@@ -490,6 +490,7 @@ export default function App() {
                           ? { ...m.metrics, thinkingDurationMs: current.thinkingDurationMs }
                           : m.metrics,
                         isStreaming: false,
+                        stopped: true,
                       }
                     : m
                 ),
@@ -564,7 +565,8 @@ export default function App() {
       assistantMessageId: string,
       sessionSystemInstruction?: string,
       compactedContext?: CompactedContextState,
-      githubProject?: GitHubProjectContext
+      githubProject?: GitHubProjectContext,
+      continueMessage?: ChatMessageType
     ) => {
       abortControllerRef.current?.abort();
       const controller = new AbortController();
@@ -588,19 +590,39 @@ export default function App() {
       let firstThoughtAt: number | null = null;
       let firstAnswerAt: number | null = null;
       let thinkingDurationMs: number | undefined = undefined;
-      let accContent = '';
-      let accThought = '';
-      let currentStatus: string | undefined = undefined;
-      let accTools: ToolTraceItem[] = [];
-      let accUsage: TokenUsage | undefined = undefined;
+      let accContent = continueMessage?.content ?? '';
+      let accThought = continueMessage?.thought ?? '';
+      let currentStatus: string | undefined = continueMessage
+        ? 'Melanjutkan dari state terakhir...'
+        : undefined;
+      let accTools: ToolTraceItem[] = continueMessage?.toolEvents
+        ? [...continueMessage.toolEvents]
+        : [];
+      let accUsage: TokenUsage | undefined = continueMessage?.usage;
       let chunkCount = 0;
+
+      const continueFrom = continueMessage
+        ? {
+            partialContent: continueMessage.content || undefined,
+            partialThought: continueMessage.thought || undefined,
+            completedTools: continueMessage.toolEvents?.map((ev) => ({
+              name: ev.name,
+              argsSummary: ev.argsSummary,
+              status: ev.status,
+              resultSummary: ev.resultSummary,
+            })),
+          }
+        : undefined;
 
       const initialStream: ActiveStreamState = {
         convId,
         msgId: assistantMessageId,
-        content: '',
-        thought: '',
+        content: accContent,
+        thought: accThought,
+        statusText: currentStatus,
+        toolEvents: accTools.length > 0 ? [...accTools] : undefined,
         tps: 0,
+        usage: accUsage,
       };
       setStreamState(initialStream);
 
@@ -650,6 +672,7 @@ export default function App() {
             fallbackModel: settings.fallbackModel,
             demoMode: settings.demoMode,
             apiKey: settings.apiKey,
+            continueFrom,
           },
           {
             signal: controller.signal,
@@ -669,6 +692,9 @@ export default function App() {
             onThought: (thoughtChunk) => {
               currentStatus = undefined;
               if (firstThoughtAt === null) firstThoughtAt = performance.now();
+              if (continueMessage?.thought && accThought === continueMessage.thought) {
+                accThought += '\n\n';
+              }
               accThought += thoughtChunk;
               scheduleFlush();
             },
@@ -739,6 +765,7 @@ export default function App() {
                                 statusText: undefined,
                                 usage: accUsage,
                                 isStreaming: false,
+                                stopped: undefined,
                                 isDemo,
                                 error: emptyReplyError,
                                 metrics: {
@@ -932,6 +959,54 @@ export default function App() {
     },
     [activeConversation, currentModelId, isStreamingActive, runStreamForConversation, visualTarget]
   );
+
+  const handleContinue = useCallback(() => {
+    if (!activeConversation || isStreamingActive) return;
+    const msgs = activeConversation.messages;
+    if (msgs.length === 0) return;
+
+    const lastMsg = msgs[msgs.length - 1];
+    if (lastMsg.role !== 'assistant') return;
+
+    const baseMessages = msgs.slice(0, -1);
+    if (baseMessages.length === 0) return;
+
+    const targetModel = lastMsg.model || activeConversation.model;
+    const resumableSnapshot: ChatMessageType = { ...lastMsg };
+
+    setConversations((prev) =>
+      prev.map((conv) =>
+        conv.id !== activeConversation.id
+          ? conv
+          : {
+              ...conv,
+              updatedAt: Date.now(),
+              messages: conv.messages.map((m) =>
+                m.id === lastMsg.id
+                  ? {
+                      ...m,
+                      error: undefined,
+                      stopped: undefined,
+                      isStreaming: true,
+                      statusText: 'Melanjutkan dari state terakhir...',
+                    }
+                  : m
+              ),
+            }
+      )
+    );
+
+    void runStreamForConversation(
+      activeConversation.id,
+      targetModel,
+      baseMessages,
+      lastMsg.id,
+      activeConversation.sessionSystemInstruction,
+      activeConversation.compactedContext,
+      activeConversation.githubProject,
+      resumableSnapshot
+    );
+  }, [activeConversation, isStreamingActive, runStreamForConversation]);
 
   const handleRegenerate = useCallback(
     (overrideModel?: string) => {
@@ -1248,6 +1323,7 @@ export default function App() {
     );
   }, []);
 
+  const handleContinueLatest = useCallback(() => handleContinue(), [handleContinue]);
   const handleRegenerateLatest = useCallback(() => handleRegenerate(), [handleRegenerate]);
   const handleRetryWithModel = useCallback((mId: string) => handleRegenerate(mId), [handleRegenerate]);
   const handleToggleMessageStar = useCallback(
@@ -1847,7 +1923,8 @@ export default function App() {
                               thinkingEnabled={thinkingEnabled}
                               isLastAssistant={msg.id === lastAssistantId}
                               isStreamingGlobal={isStreamingActive}
-                              onRegenerate={handleRegenerateLatest}
+                              onContinue={handleContinueLatest}
+                          onRegenerate={handleRegenerateLatest}
                               onRetryWithModel={handleRetryWithModel}
                               onEditUserMessage={handleEditUserMessage}
                               onForkFromMessage={handleForkFromMessage}

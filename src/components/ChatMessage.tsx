@@ -13,6 +13,7 @@ import {
   GitBranch,
   Layers,
   Pencil,
+  Play,
   RefreshCw,
   Square,
   Star,
@@ -39,6 +40,7 @@ interface ChatMessageProps {
   isLastAssistant: boolean;
   compact: boolean;
   thinkingEnabled?: boolean;
+  onContinue?: () => void;
   onRegenerate?: () => void;
   onRetryWithModel?: (modelId: string) => void;
   onEditUserMessage?: (messageId: string, newContent: string) => void;
@@ -53,6 +55,7 @@ export const ChatMessage = memo(function ChatMessage({
   isLastAssistant,
   compact,
   thinkingEnabled = true,
+  onContinue,
   onRegenerate,
   onRetryWithModel,
   onEditUserMessage,
@@ -295,6 +298,13 @@ export const ChatMessage = memo(function ChatMessage({
   }
 
   const hasAnswerStarted = Boolean(message.content && message.content.length > 0);
+  const hasResumableState = Boolean(
+    message.content?.trim() ||
+      message.thought?.trim() ||
+      (message.toolEvents && message.toolEvents.length > 0)
+  );
+  const isIncomplete = Boolean(message.error || message.stopped);
+  const canContinue = isIncomplete && hasResumableState;
   const isCapacityError = Boolean(
     message.error && /high demand|503|429|quota|rate limit|overloaded/i.test(message.error)
   );
@@ -397,6 +407,19 @@ export const ChatMessage = memo(function ChatMessage({
 
             {isLastAssistant && (
               <div className="flex flex-wrap gap-2 pt-1">
+                {onContinue && canContinue && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="default"
+                    onClick={onContinue}
+                    className="h-7 gap-1.5 rounded-lg px-2.5 text-[11px]"
+                    title="Lanjutkan dari state terakhir tanpa mengulang tool/teks yang sudah berjalan"
+                  >
+                    <Play className="h-3 w-3 fill-current" />
+                    Continue
+                  </Button>
+                )}
                 {onRegenerate && (
                   <Button
                     type="button"
@@ -404,9 +427,10 @@ export const ChatMessage = memo(function ChatMessage({
                     variant="outline"
                     onClick={onRegenerate}
                     className="h-7 gap-1.5 rounded-lg border-destructive/30 bg-background/60 px-2.5 text-[11px] text-foreground hover:bg-background"
+                    title="Hapus percobaan ini dan ulangi dari awal"
                   >
                     <RefreshCw className="h-3 w-3" />
-                    Coba Lagi
+                    {canContinue ? 'Regenerate' : 'Coba Lagi'}
                   </Button>
                 )}
                 {isCapacityError && onRetryWithModel && message.model !== 'gemini-3.8-flash' && (
@@ -497,6 +521,20 @@ export const ChatMessage = memo(function ChatMessage({
               >
                 <GitBranch className="h-3.5 w-3.5" />
                 <span>Fork</span>
+              </Button>
+            )}
+
+            {isLastAssistant && onContinue && canContinue && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onContinue}
+                className="h-7 gap-1 px-2 text-xs font-medium text-primary hover:bg-primary/10 hover:text-primary"
+                title="Lanjutkan dari state terakhir tanpa mengulang dari awal"
+              >
+                <Play className="h-3 w-3 fill-current" />
+                <span>Continue</span>
               </Button>
             )}
 

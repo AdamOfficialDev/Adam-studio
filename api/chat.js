@@ -29,6 +29,7 @@ export default async function handler(request) {
     autoFallbackOnOverload = false,
     fallbackModel = 'gemini-3.8-flash',
     demoMode = false,
+    continueFrom,
   } = body || {};
 
   const headerKeys = parseKeyPool(
@@ -130,6 +131,7 @@ export default async function handler(request) {
           thinkingLevel,
           autoFallbackOnOverload,
           fallbackModel,
+          continueFrom,
           signal: request.signal,
           sendEvent,
         });

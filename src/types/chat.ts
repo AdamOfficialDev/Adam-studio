@@ -86,6 +86,7 @@ export interface ChatMessage {
   usage?: TokenUsage;
   metrics?: StreamMetrics;
   isStreaming?: boolean;
+  stopped?: boolean;
   error?: string;
   isDemo?: boolean;
   starred?: boolean;

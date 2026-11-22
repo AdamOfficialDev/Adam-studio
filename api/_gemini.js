@@ -583,6 +583,7 @@ export async function runResilientGeminiChat({
   thinkingLevel = 'medium',
   autoFallbackOnOverload,
   fallbackModel,
+  continueFrom,
   signal,
   sendEvent,
 }) {
@@ -593,6 +594,64 @@ export async function runResilientGeminiChat({
   );
 
   const workingContents = buildGeminiContents(messages);
+  const completedToolSignatureSet = new Set();
+
+  if (continueFrom && typeof continueFrom === 'object') {
+    const prevTools = Array.isArray(continueFrom.completedTools)
+      ? continueFrom.completedTools
+      : [];
+    const partialContent =
+      typeof continueFrom.partialContent === 'string' ? continueFrom.partialContent : '';
+    const partialThought =
+      typeof continueFrom.partialThought === 'string' ? continueFrom.partialThought : '';
+
+    if (prevTools.length > 0) {
+      const doneTools = prevTools.filter((item) => item && item.status === 'done');
+      for (const item of doneTools) {
+        completedToolSignatureSet.add(`${item.name}::${item.argsSummary || ''}`);
+      }
+      const toolSummaryLines = prevTools
+        .map(
+          (item, i) =>
+            `${i + 1}. [${item.status || 'done'}] ${item.name}(${item.argsSummary || ''})${item.resultSummary ? ` -> ${item.resultSummary}` : ''}`
+        )
+        .join('\n');
+
+      workingContents.push({
+        role: 'model',
+        parts: [
+          {
+            text: `[Checkpoint State Sebelumnya — JANGAN DIULANG]\nTool yang sudah dieksekusi:\n${toolSummaryLines}${partialThought ? `\n\nRingkasan analisis sebelumnya:\n${partialThought.slice(-1800)}` : ''}`,
+          },
+        ],
+      });
+      workingContents.push({
+        role: 'user',
+        parts: [
+          {
+            text: partialContent
+              ? 'Langkah tool di atas SUDAH selesai pada sesi sebelumnya. JANGAN mengulangi pemanggilan tool yang sudah sukses di atas. Lanjutkan dari state terakhir.'
+              : 'Langkah tool di atas SUDAH dijalankan sebelumnya sebelum koneksi terputus. JANGAN mengulangi pembacaan file/tool yang sama kecuali ada file baru yang belum dibaca; segera lanjutkan ke langkah berikutnya atau langsung tulis jawaban lengkap.',
+          },
+        ],
+      });
+    }
+
+    if (partialContent.trim().length > 0) {
+      workingContents.push({
+        role: 'model',
+        parts: [{ text: partialContent }],
+      });
+      workingContents.push({
+        role: 'user',
+        parts: [
+          {
+            text: 'Stream sebelumnya terputus di tengah jalan. Lanjutkan jawabanmu PERSIS dari karakter/kalimat terakhir di atas tanpa mengulang penjelasan atau kode yang sudah tertulis.',
+          },
+        ],
+      });
+    }
+  }
   let activeModel = model;
   let lastFinishReason;
   let totalAnswerText = '';
@@ -840,13 +899,24 @@ export async function runResilientGeminiChat({
 
         sendEvent('tool_call', { id: callId, name: fc.name, argsSummary, status: 'running' });
 
-        const toolOutcome = await executeGitHubTool({
-          name: fc.name,
-          args: fc.args,
-          githubProject,
-          githubToken,
-          signal,
-        });
+        const sig = `${fc.name}::${argsSummary}`;
+        const toolOutcome = completedToolSignatureSet.has(sig)
+          ? {
+              ok: true,
+              summary: 'Skipped (sudah dijalankan pada state sebelumnya)',
+              response: {
+                alreadyExecuted: true,
+                note: `Tool ${fc.name}(${argsSummary}) sudah dijalankan pada state sebelum Continue. Jangan panggil ulang; gunakan konteks yang sudah ada atau langsung tulis jawaban akhir.`,
+              },
+            }
+          : await executeGitHubTool({
+              name: fc.name,
+              args: fc.args,
+              githubProject,
+              githubToken,
+              signal,
+            });
+        if (toolOutcome.ok) completedToolSignatureSet.add(sig);
 
         sendEvent('tool_result', {
           id: callId,

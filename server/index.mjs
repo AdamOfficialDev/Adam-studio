@@ -768,6 +768,7 @@ app.post('/api/chat', async (req, res) => {
     autoFallbackOnOverload = false,
     fallbackModel = 'gemini-3.8-flash',
     demoMode = false,
+    continueFrom,
   } = req.body || {};
 
   const headerKeys = parseKeyPool(
@@ -840,6 +841,7 @@ app.post('/api/chat', async (req, res) => {
       thinkingLevel,
       autoFallbackOnOverload,
       fallbackModel,
+      continueFrom,
       signal: abortController.signal,
       sendEvent: (event, data) => writeSseEvent(res, event, data),
     });

@@ -17,6 +17,7 @@ interface StreamingChatMessageProps {
   thinkingEnabled: boolean;
   isLastAssistant: boolean;
   isStreamingGlobal: boolean;
+  onContinue?: () => void;
   onRegenerate?: () => void;
   onRetryWithModel?: (modelId: string) => void;
   onEditUserMessage?: (messageId: string, newContent: string) => void;
@@ -88,6 +89,7 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
   thinkingEnabled,
   isLastAssistant,
   isStreamingGlobal,
+  onContinue,
   onRegenerate,
   onRetryWithModel,
   onEditUserMessage,
@@ -110,6 +112,7 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
         compact={compact}
         thinkingEnabled={thinkingEnabled}
         isLastAssistant={isLastAssistant}
+        onContinue={isLastAssistant && !isStreamingGlobal ? onContinue : undefined}
         onRegenerate={isLastAssistant && !isStreamingGlobal ? onRegenerate : undefined}
         onRetryWithModel={isLastAssistant && !isStreamingGlobal ? onRetryWithModel : undefined}
         onEditUserMessage={

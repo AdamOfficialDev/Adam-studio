@@ -18,6 +18,16 @@ export interface StreamChatPayload {
   fallbackModel: string;
   demoMode: boolean;
   apiKey?: string;
+  continueFrom?: {
+    partialContent?: string;
+    partialThought?: string;
+    completedTools?: Array<{
+      name: string;
+      argsSummary: string;
+      status: string;
+      resultSummary?: string;
+    }>;
+  };
 }
 
 export interface StreamHandlers {
@@ -92,6 +102,7 @@ export async function streamChatCompletion(
       autoFallbackOnOverload: payload.autoFallbackOnOverload,
       fallbackModel: payload.fallbackModel,
       demoMode: payload.demoMode,
+      continueFrom: payload.continueFrom,
     }),
     signal: handlers.signal,
   });
