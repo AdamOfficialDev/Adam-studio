@@ -75,15 +75,20 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
       <DialogContent className="flex max-h-[90dvh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
         {open && (
           <>
-            <DialogHeader className="shrink-0 border-b bg-card/60 px-5 py-4 sm:px-6">
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/15 text-primary">
-                  <Cpu className="h-4 w-4" />
+            <DialogHeader className="studio-modal-header shrink-0 border-b border-border/70 px-5 py-4 sm:px-6">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary ring-1 ring-primary/30 shadow-sm">
+                  <Cpu className="h-[18px] w-[18px]" />
                 </div>
-                <div>
-                  <DialogTitle>Model Selection</DialogTitle>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <DialogTitle>Model Selection</DialogTitle>
+                    <span className="rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-medium text-primary">
+                      {selectedModel}
+                    </span>
+                  </div>
                   <DialogDescription className="mt-0.5 text-xs">
-                    Aktif saat ini: <span className="font-mono text-foreground">{selectedModel}</span>
+                    Pilih engine AI terbaik untuk coding, reasoning, atau custom endpoint.
                   </DialogDescription>
                 </div>
               </div>
@@ -154,10 +159,10 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                           if (e.key === 'Enter' || e.key === ' ') handleChoose(model.id);
                         }}
                         className={cn(
-                          'group cursor-pointer rounded-2xl border p-3.5 text-left transition-colors sm:p-4',
+                          'group relative cursor-pointer overflow-hidden rounded-2xl border p-3.5 text-left transition-all duration-150 sm:p-4',
                           isSelected
-                            ? 'border-primary/80 bg-primary/[0.08] ring-1 ring-primary/35 shadow-sm'
-                            : 'border-border/80 bg-card/70 hover:border-primary/40 hover:bg-accent/40'
+                            ? 'border-primary/80 bg-primary/[0.08] ring-1 ring-primary/35 shadow-[0_10px_30px_-12px_hsl(var(--primary)/0.38)]'
+                            : 'border-border/75 bg-card/70 hover:-translate-y-[1px] hover:border-primary/45 hover:bg-accent/45 hover:shadow-md'
                         )}
                       >
                         <div className="flex items-start justify-between gap-2.5">
@@ -252,26 +257,32 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
               )}
             </div>
 
-            <div className="shrink-0 border-t bg-card/80 px-4 py-3.5 sm:px-6">
-              <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">
-                Custom Model ID
+            <div className="studio-modal-footer shrink-0 border-t border-border/70 px-4 py-3.5 sm:px-6">
+              <div className="mb-1.5 flex items-center justify-between text-[11px] font-medium text-muted-foreground">
+                <span>Custom Model ID</span>
+                <span className="font-mono text-[10px] opacity-75">Enter untuk terapkan</span>
               </div>
               <div className="flex gap-2">
-                <Input
-                  value={customModelInput}
-                  onChange={(e) => setCustomModelInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleApplyCustom();
-                  }}
-                  placeholder="Contoh: gemini-4-hydrogen"
-                  className="h-9 rounded-xl font-mono text-xs"
-                />
+                <div className="relative flex-1">
+                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 font-mono text-xs font-bold text-primary">
+                    &gt;_
+                  </span>
+                  <Input
+                    value={customModelInput}
+                    onChange={(e) => setCustomModelInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleApplyCustom();
+                    }}
+                    placeholder="gemini-4-hydrogen"
+                    className="h-9 rounded-xl bg-background/80 pl-9 font-mono text-xs"
+                  />
+                </div>
                 <Button
                   type="button"
                   size="sm"
                   onClick={handleApplyCustom}
                   disabled={!customModelInput.trim()}
-                  className="h-9 shrink-0 rounded-xl px-4"
+                  className="h-9 shrink-0 rounded-xl px-4 shadow-sm shadow-primary/20"
                 >
                   Pakai
                 </Button>

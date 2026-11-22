@@ -15,6 +15,7 @@ import {
   Search,
   Sparkles,
   Wrench,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -258,13 +259,23 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
       <DialogContent className="flex max-h-[90dvh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
         {open && (
           <>
-            <DialogHeader className="shrink-0 border-b bg-card/60 px-5 py-4 sm:px-6">
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/15 text-primary">
-                  <FolderGit2 className="h-4 w-4" />
+            <DialogHeader className="studio-modal-header shrink-0 border-b border-border/70 px-5 py-4 sm:px-6">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary ring-1 ring-primary/30 shadow-sm">
+                  <FolderGit2 className="h-[18px] w-[18px]" />
                 </div>
-                <div>
-                  <DialogTitle>GitHub Project Connector (MCP)</DialogTitle>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <DialogTitle>GitHub Project Connector (MCP)</DialogTitle>
+                    {loadedProject && (
+                      <Badge
+                        variant="secondary"
+                        className="bg-emerald-500/15 font-mono text-[10px] text-emerald-400"
+                      >
+                        {loadedProject.owner}/{loadedProject.repo}
+                      </Badge>
+                    )}
+                  </div>
                   <DialogDescription className="mt-0.5 text-xs">
                     Pilih repository GitHub untuk dipelajari & diedit AI khusus di sesi chat ini.
                   </DialogDescription>
@@ -438,9 +449,28 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
                   </div>
 
                   <div className="space-y-2">
-                    <div className="text-[11px] font-medium text-muted-foreground">
-                      Sematkan File Tambahan ke Konteks Awal (maks 15 file, terpilih: {selectedPaths.length})
+                    <div className="flex items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
+                      <span>Sematkan File ke Konteks Awal</span>
+                      <span className="rounded-full border border-border/70 bg-background/70 px-2 py-0.5 font-mono text-[10px] text-foreground">
+                        {selectedPaths.length} / 15 file
+                      </span>
                     </div>
+                    {selectedPaths.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedPaths.map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            onClick={() => toggleFile(p)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-medium text-primary transition-colors hover:bg-destructive/15 hover:border-destructive/40 hover:text-destructive"
+                            title="Klik untuk lepas file ini"
+                          >
+                            <span className="max-w-[160px] truncate">{p}</span>
+                            <X className="h-2.5 w-2.5 shrink-0" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <div className="relative">
                       <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                       <Input
@@ -479,7 +509,7 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
               )}
             </div>
 
-            <DialogFooter className="shrink-0 justify-between border-t bg-card/80 px-4 py-3 sm:px-6">
+            <DialogFooter className="studio-modal-footer shrink-0 justify-between border-t border-border/70 px-4 py-3.5 sm:px-6">
               {currentProject && onDetachProject ? (
                 <Button
                   type="button"

@@ -149,10 +149,10 @@ export function ImportChatDialog({
       <DialogContent className="flex max-h-[90dvh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
         {open && (
           <>
-            <DialogHeader className="shrink-0 border-b bg-card/60 px-5 py-4 sm:px-6">
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/15 text-primary">
-                  <FileUp className="h-4 w-4" />
+            <DialogHeader className="studio-modal-header shrink-0 border-b border-border/70 px-5 py-4 sm:px-6">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary ring-1 ring-primary/30 shadow-sm">
+                  <FileUp className="h-[18px] w-[18px]" />
                 </div>
                 <div>
                   <DialogTitle>Import Konteks Chat (.json / .md)</DialogTitle>
@@ -173,10 +173,10 @@ export function ImportChatDialog({
                 onDragLeave={() => setIsDragging(false)}
                 onDrop={handleDrop}
                 className={cn(
-                  'flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed p-5 text-center transition-colors',
+                  'flex flex-col items-center justify-center gap-2.5 rounded-2xl border-2 border-dashed p-6 text-center transition-all duration-150',
                   isDragging
-                    ? 'border-primary bg-primary/10'
-                    : 'border-border/80 bg-muted/20 hover:bg-muted/35'
+                    ? 'scale-[1.01] border-primary bg-primary/10 shadow-sm'
+                    : 'border-border/75 bg-muted/20 hover:border-primary/45 hover:bg-muted/35'
                 )}
               >
                 <input
@@ -186,14 +186,25 @@ export function ImportChatDialog({
                   className="hidden"
                   onChange={handleFileChange}
                 />
-                <div className="flex items-center gap-2 text-primary">
-                  <FileJson className="h-5 w-5" />
-                  <FileText className="h-5 w-5" />
+                <div className="flex h-12 w-12 items-center justify-center gap-1 rounded-2xl bg-primary/[0.12] text-primary ring-1 ring-primary/25 shadow-sm">
+                  <FileJson className="h-4 w-4" />
+                  <FileText className="h-4 w-4" />
                 </div>
-                <div className="text-xs font-medium text-foreground">
+                <div className="text-xs font-semibold text-foreground">
                   {fileName
                     ? `File dimuat: ${fileName}`
                     : 'Tarik file .json / .md dari Google Drive atau komputer ke sini'}
+                </div>
+                <div className="flex flex-wrap justify-center gap-1.5">
+                  <span className="rounded-md border border-border/60 bg-background/70 px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    AI Studio JSON
+                  </span>
+                  <span className="rounded-md border border-border/60 bg-background/70 px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    Adam Backup
+                  </span>
+                  <span className="rounded-md border border-border/60 bg-background/70 px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    Markdown .md
+                  </span>
                 </div>
                 <Button
                   type="button"
@@ -348,7 +359,7 @@ export function ImportChatDialog({
               )}
             </div>
 
-            <DialogFooter className="shrink-0 border-t bg-card/80 px-4 py-3 sm:px-6">
+            <DialogFooter className="studio-modal-footer shrink-0 border-t border-border/70 px-4 py-3.5 sm:px-6">
               <Button
                 type="button"
                 variant="outline"

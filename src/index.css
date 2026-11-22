@@ -195,3 +195,33 @@
 .katex-display {
   @apply my-3 max-w-full overflow-x-auto rounded-xl border bg-muted/30 px-4 py-3;
 }
+
+.studio-modal-shell {
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  background-image: radial-gradient(
+    ellipse 85% 42% at 50% -8%,
+    hsl(var(--primary) / 0.13),
+    transparent 72%
+  );
+  box-shadow:
+    0 32px 80px -16px rgba(0, 0, 0, 0.72),
+    0 0 0 1px hsl(var(--foreground) / 0.06),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+}
+
+.studio-modal-header {
+  background: linear-gradient(
+    180deg,
+    hsl(var(--card) / 0.96) 0%,
+    hsl(var(--card) / 0.65) 100%
+  );
+}
+
+.studio-modal-footer {
+  background: linear-gradient(
+    180deg,
+    hsl(var(--card) / 0.72) 0%,
+    hsl(var(--card) / 0.96) 100%
+  );
+}

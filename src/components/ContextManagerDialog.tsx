@@ -142,10 +142,10 @@ export function ContextManagerDialog({
       <DialogContent className="flex max-h-[90dvh] max-w-xl flex-col gap-0 overflow-hidden p-0">
         {open && (
           <>
-            <DialogHeader className="shrink-0 border-b bg-card/60 px-5 py-4 sm:px-6">
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/15 text-primary">
-                  <Cpu className="h-4 w-4" />
+            <DialogHeader className="studio-modal-header shrink-0 border-b border-border/70 px-5 py-4 sm:px-6">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary ring-1 ring-primary/30 shadow-sm">
+                  <Cpu className="h-[18px] w-[18px]" />
                 </div>
                 <div>
                   <DialogTitle>Context Window Manager (Sesi Ini)</DialogTitle>
@@ -183,12 +183,43 @@ export function ContextManagerDialog({
                     {stats.effectiveTokens.toLocaleString()} API tok
                   </Badge>
                 </div>
-                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-                  <span>Asli mentah: {stats.rawTokens.toLocaleString()} tok</span>
-                  <span>•</span>
-                  <span>
-                    Tanpa kode duplikat lama: {stats.dedupedTokens.toLocaleString()} tok
-                  </span>
+                <div className="mt-3 flex flex-wrap items-end justify-between gap-2">
+                  <div>
+                    <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Konteks Aktif Terkirim
+                    </div>
+                    <div className="font-mono text-xl font-bold tabular-nums tracking-tight text-foreground">
+                      {stats.effectiveTokens.toLocaleString()}{' '}
+                      <span className="text-xs font-normal text-muted-foreground">tokens</span>
+                    </div>
+                  </div>
+                  {stats.rawTokens > stats.effectiveTokens && (
+                    <span className="rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-emerald-400">
+                      -{Math.round(((stats.rawTokens - stats.effectiveTokens) / stats.rawTokens) * 100)}% lebih hemat
+                    </span>
+                  )}
+                </div>
+                <div className="mt-2.5 space-y-1.5">
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-background/80 ring-1 ring-border/60">
+                    <div
+                      className={cn(
+                        'h-full rounded-full transition-all duration-300',
+                        isOverFreeLimit ? 'bg-amber-400' : 'bg-emerald-400'
+                      )}
+                      style={{
+                        width: `${Math.min(100, Math.max(2, Math.round((stats.effectiveTokens / 250_000) * 100)))}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                    <span>
+                      Mentah: <strong className="text-foreground/90">{stats.rawTokens.toLocaleString()}</strong> • Dedup:{' '}
+                      <strong className="text-foreground/90">{stats.dedupedTokens.toLocaleString()}</strong>
+                    </span>
+                    <span className="font-mono text-[10px]">
+                      {Math.min(100, Math.round((stats.effectiveTokens / 250_000) * 100))}% / 250k TPM
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -290,7 +321,7 @@ export function ContextManagerDialog({
               </div>
             </div>
 
-            <DialogFooter className="shrink-0 justify-between border-t bg-card/80 px-4 py-3 sm:px-6">
+            <DialogFooter className="studio-modal-footer shrink-0 justify-between border-t border-border/70 px-4 py-3.5 sm:px-6">
               {conversation.compactedContext ? (
                 <Button
                   type="button"

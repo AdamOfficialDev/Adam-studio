@@ -11,6 +11,7 @@ import {
   Palette,
   Radio,
   RotateCcw,
+  Settings,
   ShieldAlert,
   Shuffle,
   SlidersHorizontal,
@@ -185,16 +186,28 @@ export const SettingsDialog = memo(function SettingsDialog({
       <DialogContent className="flex max-h-[90dvh] max-w-xl flex-col gap-0 overflow-hidden p-0">
         {open && (
           <>
-            <DialogHeader className="shrink-0 border-b bg-card/60 px-5 py-4 sm:px-6">
-              <DialogTitle>Adam Studio — Settings & Appearance</DialogTitle>
-              <DialogDescription>
-                Auto-Rotate API Key Pool, Retry 503, Thinking Summaries, & tema visual.
-              </DialogDescription>
+            <DialogHeader className="studio-modal-header shrink-0 border-b border-border/70 px-5 py-4 sm:px-6">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary ring-1 ring-primary/30 shadow-sm">
+                  <Settings className="h-[18px] w-[18px]" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <DialogTitle>Settings & Appearance</DialogTitle>
+                    <span className="rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-medium capitalize text-primary">
+                      {draft.skin}
+                    </span>
+                  </div>
+                  <DialogDescription className="mt-0.5 text-xs">
+                    API Key Rotation, Persona AI, Thinking Budget, & Theme Skin.
+                  </DialogDescription>
+                </div>
+              </div>
             </DialogHeader>
 
             <Tabs defaultValue="connection" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="shrink-0 border-b bg-muted/25 px-4 py-2.5 sm:px-6">
-                <TabsList className="grid h-9 w-full grid-cols-3 rounded-xl">
+              <div className="shrink-0 border-b border-border/60 bg-muted/20 px-4 py-2.5 sm:px-6">
+                <TabsList className="grid h-10 w-full grid-cols-3 rounded-xl border border-border/60 bg-muted/50 p-1">
                   <TabsTrigger
                     value="connection"
                     className="gap-1.5 rounded-lg text-[11px] sm:text-xs"
@@ -538,36 +551,57 @@ export const SettingsDialog = memo(function SettingsDialog({
                             type="button"
                             onClick={() => setDraft({ ...draft, skin: s.id })}
                             className={cn(
-                              'flex items-center justify-between gap-3 rounded-2xl border p-3 text-left transition-colors',
+                              'group relative flex flex-col gap-2.5 rounded-2xl border p-3 text-left transition-all duration-150',
                               active
-                                ? 'border-primary bg-primary/10 ring-1 ring-primary/30'
-                                : 'bg-card/60 hover:bg-accent/40'
+                                ? 'border-primary bg-primary/[0.09] ring-1 ring-primary/35 shadow-[0_8px_24px_-10px_hsl(var(--primary)/0.35)]'
+                                : 'border-border/75 bg-card/60 hover:-translate-y-[1px] hover:border-primary/40 hover:bg-accent/40'
                             )}
                           >
-                            <div className="flex min-w-0 items-center gap-3">
-                              <div
-                                className={cn(
-                                  'flex h-10 w-12 shrink-0 flex-col justify-between rounded-lg border p-1.5',
-                                  s.bgClass,
-                                  s.cardClass
-                                )}
-                              >
-                                <div className={cn('h-1.5 w-6 rounded-full', s.accentClass)} />
+                            {/* Mini App Preview Mockup */}
+                            <div
+                              className={cn(
+                                'relative flex h-16 w-full overflow-hidden rounded-xl border p-1.5',
+                                s.bgClass,
+                                s.cardClass
+                              )}
+                            >
+                              <div className="flex w-7 shrink-0 flex-col gap-1 border-r border-current/10 pr-1.5">
+                                <div className="flex gap-0.5">
+                                  <span className="h-1 w-1 rounded-full bg-current opacity-30" />
+                                  <span className="h-1 w-1 rounded-full bg-current opacity-20" />
+                                </div>
+                                <div className={cn('h-1.5 w-full rounded-sm', s.accentClass)} />
+                                <div className="h-1 w-4/5 rounded-sm bg-current opacity-15" />
+                                <div className="h-1 w-3/5 rounded-sm bg-current opacity-10" />
+                              </div>
+                              <div className="flex flex-1 flex-col justify-between pl-2">
+                                <div className="ml-auto h-2 w-10 rounded-full bg-current opacity-15" />
                                 <div className="space-y-1">
-                                  <div className="h-1 w-full rounded bg-current opacity-20" />
-                                  <div className="h-1 w-2/3 rounded bg-current opacity-15" />
+                                  <div className={cn('h-1.5 w-8 rounded-full opacity-90', s.accentClass)} />
+                                  <div className="h-1 w-full rounded-full bg-current opacity-15" />
+                                  <div className="h-1 w-3/4 rounded-full bg-current opacity-10" />
                                 </div>
                               </div>
-
-                              <div className="min-w-0">
-                                <div className="text-xs font-semibold">{s.label}</div>
-                                <div className="truncate text-[11px] text-muted-foreground">
-                                  {s.desc}
-                                </div>
-                              </div>
+                              {active && (
+                                <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow">
+                                  <Check className="h-3 w-3" />
+                                </span>
+                              )}
                             </div>
 
-                            {active && <Check className="h-4 w-4 shrink-0 text-primary" />}
+                            <div className="min-w-0 px-0.5">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-xs font-semibold">{s.label}</span>
+                                {active && (
+                                  <span className="font-mono text-[10px] font-semibold text-primary">
+                                    Aktif
+                                  </span>
+                                )}
+                              </div>
+                              <div className="truncate text-[11px] text-muted-foreground">
+                                {s.desc}
+                              </div>
+                            </div>
                           </button>
                         );
                       })}
@@ -675,13 +709,13 @@ export const SettingsDialog = memo(function SettingsDialog({
               </div>
             </Tabs>
 
-            <DialogFooter className="shrink-0 justify-between border-t bg-card/80 px-4 py-3 sm:px-6">
+            <DialogFooter className="studio-modal-footer shrink-0 justify-between border-t border-border/70 px-4 py-3.5 sm:px-6">
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
                 onClick={handleReset}
-                className="gap-1.5 text-xs text-muted-foreground"
+                className="gap-1.5 rounded-xl text-xs text-muted-foreground hover:text-foreground"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">Reset Default</span>
@@ -696,8 +730,13 @@ export const SettingsDialog = memo(function SettingsDialog({
                 >
                   Batal
                 </Button>
-                <Button type="button" size="sm" onClick={handleSave} className="rounded-xl px-4">
-                  Simpan
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleSave}
+                  className="rounded-xl px-5 shadow-sm shadow-primary/25"
+                >
+                  Simpan Perubahan
                 </Button>
               </div>
             </DialogFooter>
