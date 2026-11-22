@@ -68,13 +68,26 @@ export async function fetchGitHubRawFile(owner, repo, branch, filePath, token, s
     repo
   )}/contents/${encodedPath}?ref=${encodeURIComponent(branch)}`;
 
-  const res = await fetch(url, {
-    headers: { ...buildGitHubHeaders(token), Accept: 'application/vnd.github.raw+json' },
-    signal,
-  });
-  if (!res.ok) return null;
-  const text = await res.text();
-  return text.slice(0, 45000);
+  const timeoutController = new AbortController();
+  const onParentAbort = () => timeoutController.abort();
+  if (signal?.aborted) timeoutController.abort();
+  else signal?.addEventListener('abort', onParentAbort, { once: true });
+  const timer = setTimeout(() => timeoutController.abort(), 12_000);
+
+  try {
+    const res = await fetch(url, {
+      headers: { ...buildGitHubHeaders(token), Accept: 'application/vnd.github.raw+json' },
+      signal: timeoutController.signal,
+    });
+    if (!res.ok) return null;
+    const text = await res.text();
+    return text.slice(0, 45000);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onParentAbort);
+  }
 }
 
 export async function handleGitHubAction({ action, body, token }) {
@@ -276,10 +289,17 @@ export async function executeGitHubTool({ name, args, githubProject, githubToken
     }
     const rawText = await fetchGitHubRawFile(owner, repo, branch, filePath, githubToken, signal);
     if (rawText === null) {
+      const fileName = filePath.split('/').pop()?.toLowerCase() || '';
+      const suggestedPaths = treePaths
+        .filter((p) => p.toLowerCase().includes(fileName))
+        .slice(0, 5);
       return {
         ok: false,
         summary: 'Gagal baca file',
-        response: { error: `Gagal membaca ${filePath} dari repo` },
+        response: {
+          error: `Gagal membaca ${filePath} dari repo`,
+          suggestedPaths,
+        },
       };
     }
     const allLines = rawText.split('\n');

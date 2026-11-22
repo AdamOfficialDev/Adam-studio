@@ -112,6 +112,61 @@ export async function streamChatCompletion(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let receivedTerminalEvent = false;
+
+  const processBlock = (rawBlock: string) => {
+    if (!rawBlock.trim() || rawBlock.startsWith(':')) return;
+
+    let eventName = 'message';
+    const dataLines: string[] = [];
+
+    for (const line of rawBlock.split('\n')) {
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+
+    if (dataLines.length === 0) return;
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(dataLines.join('\n'));
+    } catch {
+      return;
+    }
+
+    if (eventName === 'thought' && typeof parsed.text === 'string') {
+      handlers.onThought(parsed.text);
+    } else if (eventName === 'delta' && typeof parsed.text === 'string') {
+      handlers.onDelta(parsed.text);
+    } else if (eventName === 'tool_call') {
+      handlers.onToolCall?.(parsed as unknown as ToolTraceItem);
+    } else if (eventName === 'tool_result') {
+      handlers.onToolResult?.(parsed as unknown as ToolTraceItem);
+    } else if (eventName === 'usage') {
+      handlers.onUsage(parsed as TokenUsage);
+    } else if (eventName === 'status' && typeof parsed.message === 'string') {
+      handlers.onStatus?.(parsed.message);
+    } else if (eventName === 'info' && typeof parsed.message === 'string') {
+      handlers.onInfo?.(parsed.message);
+    } else if (eventName === 'done') {
+      receivedTerminalEvent = true;
+      handlers.onDone({
+        model: String(parsed.model ?? payload.model),
+        finishReason: typeof parsed.finishReason === 'string' ? parsed.finishReason : undefined,
+        isDemo: Boolean(parsed.isDemo),
+      });
+    } else if (eventName === 'error') {
+      receivedTerminalEvent = true;
+      handlers.onError(
+        typeof parsed.message === 'string'
+          ? parsed.message
+          : 'Terjadi kesalahan pada stream SSE.'
+      );
+    }
+  };
 
   while (true) {
     const { value, done } = await reader.read();
@@ -123,56 +178,17 @@ export async function streamChatCompletion(
     while ((boundaryIndex = buffer.indexOf('\n\n')) !== -1) {
       const rawBlock = buffer.slice(0, boundaryIndex);
       buffer = buffer.slice(boundaryIndex + 2);
-
-      if (!rawBlock.trim() || rawBlock.startsWith(':')) continue;
-
-      let eventName = 'message';
-      const dataLines: string[] = [];
-
-      for (const line of rawBlock.split('\n')) {
-        if (line.startsWith('event:')) {
-          eventName = line.slice(6).trim();
-        } else if (line.startsWith('data:')) {
-          dataLines.push(line.slice(5).trimStart());
-        }
-      }
-
-      if (dataLines.length === 0) continue;
-
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(dataLines.join('\n'));
-      } catch {
-        continue;
-      }
-
-      if (eventName === 'thought' && typeof parsed.text === 'string') {
-        handlers.onThought(parsed.text);
-      } else if (eventName === 'delta' && typeof parsed.text === 'string') {
-        handlers.onDelta(parsed.text);
-      } else if (eventName === 'tool_call') {
-        handlers.onToolCall?.(parsed as unknown as ToolTraceItem);
-      } else if (eventName === 'tool_result') {
-        handlers.onToolResult?.(parsed as unknown as ToolTraceItem);
-      } else if (eventName === 'usage') {
-        handlers.onUsage(parsed as TokenUsage);
-      } else if (eventName === 'status' && typeof parsed.message === 'string') {
-        handlers.onStatus?.(parsed.message);
-      } else if (eventName === 'info' && typeof parsed.message === 'string') {
-        handlers.onInfo?.(parsed.message);
-      } else if (eventName === 'done') {
-        handlers.onDone({
-          model: String(parsed.model ?? payload.model),
-          finishReason: typeof parsed.finishReason === 'string' ? parsed.finishReason : undefined,
-          isDemo: Boolean(parsed.isDemo),
-        });
-      } else if (eventName === 'error') {
-        handlers.onError(
-          typeof parsed.message === 'string'
-            ? parsed.message
-            : 'Terjadi kesalahan pada stream SSE.'
-        );
-      }
+      processBlock(rawBlock);
     }
+  }
+
+  if (buffer.trim()) {
+    processBlock(buffer);
+  }
+
+  if (!receivedTerminalEvent && !handlers.signal.aborted) {
+    handlers.onError(
+      'Koneksi stream SSE terputus mendadak sebelum server selesai mengirim respons (timeout / jaringan terputus).'
+    );
   }
 }

@@ -711,6 +711,11 @@ export default function App() {
                 playCompletionChime();
               }
 
+              const emptyReplyError =
+                accContent.trim().length === 0
+                  ? 'Model selesai tanpa teks jawaban. Silakan klik Regenerate atau aktifkan Auto-Fallback di Settings.'
+                  : undefined;
+
               setConversations((prev) =>
                 prev.map((conv) =>
                   conv.id !== convId
@@ -730,6 +735,7 @@ export default function App() {
                                 usage: accUsage,
                                 isStreaming: false,
                                 isDemo,
+                                error: emptyReplyError,
                                 metrics: {
                                   ttftMs,
                                   thinkingDurationMs,
@@ -770,7 +776,9 @@ export default function App() {
                                 ...m,
                                 content: accContent,
                                 thought: accThought || undefined,
+                                toolEvents: accTools.length > 0 ? accTools : undefined,
                                 statusText: undefined,
+                                usage: accUsage,
                                 isStreaming: false,
                                 error: errorMessage,
                               }
@@ -798,7 +806,10 @@ export default function App() {
                       ? {
                           ...m,
                           content: accContent,
+                          thought: accThought || undefined,
+                          toolEvents: accTools.length > 0 ? accTools : undefined,
                           statusText: undefined,
+                          usage: accUsage,
                           isStreaming: false,
                           error: message,
                         }

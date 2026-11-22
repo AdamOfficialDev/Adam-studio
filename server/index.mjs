@@ -3,12 +3,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
-import {
-  GITHUB_TOOL_DECLARATIONS,
-  buildProjectSystemSection,
-  executeGitHubTool,
-  handleGitHubAction,
-} from '../api/_github.js';
+import { handleGitHubAction } from '../api/_github.js';
+import { runResilientGeminiChat } from '../api/_gemini.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -835,178 +831,21 @@ app.post('/api/chat', async (req, res) => {
       return;
     }
 
-    const projectSection = buildProjectSystemSection(githubProject);
-    const mergedSystemInstruction = [systemInstruction, projectSection].filter(Boolean).join('\n\n');
-    const hasGitHubTools = Boolean(
-      githubProject?.owner && githubProject?.repo && githubProject?.agenticToolsEnabled
-    );
-    const workingContents = buildGeminiContents(messages);
-    let activeModel = model;
-    let lastFinishReason = undefined;
-    const MAX_TOOL_ROUNDS = hasGitHubTools ? 3 : 1;
-
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const allowToolsThisRound = hasGitHubTools && round < MAX_TOOL_ROUNDS - 1;
-      let result = await fetchGeminiWithRotationAndRetry({
-        targetModel: activeModel,
-        apiKeys,
-        contents: workingContents,
-        systemInstruction: mergedSystemInstruction,
-        temperature,
-        maxOutputTokens,
-        includeThoughts,
-        thinkingBudget,
-        withTools: allowToolsThisRound,
-        signal: abortController.signal,
-        onStatus: (message) => writeSseEvent(res, 'status', { message }),
-        onInfo: (message) => writeSseEvent(res, 'info', { message }),
-      });
-
-      if (
-        !result.ok &&
-        RETRYABLE_STATUSES.has(result.status) &&
-        autoFallbackOnOverload &&
-        fallbackModel &&
-        fallbackModel !== activeModel
-      ) {
-        writeSseEvent(res, 'status', {
-          message: `${activeModel} masih penuh (${result.status}). Beralih otomatis ke ${fallbackModel}...`,
-        });
-        writeSseEvent(res, 'info', {
-          message: `Fallback otomatis ke ${fallbackModel} karena ${activeModel} mengalami high demand.`,
-        });
-        result = await fetchGeminiWithRotationAndRetry({
-          targetModel: fallbackModel,
-          apiKeys,
-          contents: workingContents,
-          systemInstruction: mergedSystemInstruction,
-          temperature,
-          maxOutputTokens,
-          includeThoughts,
-          thinkingBudget,
-          withTools: allowToolsThisRound,
-          signal: abortController.signal,
-          onStatus: (message) => writeSseEvent(res, 'status', { message }),
-          onInfo: (message) => writeSseEvent(res, 'info', { message }),
-        });
-      }
-
-      if (!result.ok) {
-        writeSseEvent(res, 'error', { status: result.status, message: result.message });
-        return;
-      }
-
-      const upstream = result.response;
-      activeModel = result.usedModel;
-
-      if (!upstream.body) {
-        writeSseEvent(res, 'error', { status: 502, message: 'Stream respons dari Gemini API kosong.' });
-        return;
-      }
-
-      const reader = upstream.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      const modelTurnParts = [];
-      const functionCalls = [];
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-
-        let boundaryIndex;
-        while ((boundaryIndex = buffer.indexOf('\n\n')) !== -1) {
-          const rawEvent = buffer.slice(0, boundaryIndex);
-          buffer = buffer.slice(boundaryIndex + 2);
-
-          const dataLines = rawEvent
-            .split('\n')
-            .filter((line) => line.startsWith('data:'))
-            .map((line) => line.slice(5).trimStart());
-
-          if (dataLines.length === 0) continue;
-          const jsonString = dataLines.join('\n').trim();
-          if (!jsonString || jsonString === '[DONE]') continue;
-
-          try {
-            const chunk = JSON.parse(jsonString);
-            const candidate = chunk?.candidates?.[0];
-            const parts = candidate?.content?.parts;
-
-            if (Array.isArray(parts)) {
-              for (const part of parts) {
-                if (part?.thought && typeof part?.text === 'string' && part.text.length > 0) {
-                  writeSseEvent(res, 'thought', { text: part.text });
-                } else if (part?.functionCall) {
-                  modelTurnParts.push(part);
-                  functionCalls.push(part.functionCall);
-                } else if (typeof part?.text === 'string' && part.text.length > 0) {
-                  modelTurnParts.push(part);
-                  writeSseEvent(res, 'delta', { text: part.text });
-                }
-              }
-            }
-
-            if (candidate?.finishReason) lastFinishReason = candidate.finishReason;
-            if (chunk?.usageMetadata) writeSseEvent(res, 'usage', chunk.usageMetadata);
-          } catch {
-            // Abaikan JSON parsial
-          }
-        }
-      }
-
-      if (functionCalls.length === 0 || !allowToolsThisRound) {
-        break;
-      }
-
-      workingContents.push({ role: 'model', parts: modelTurnParts });
-
-      const functionResponseParts = await Promise.all(
-        functionCalls.map(async (fc, idx) => {
-          const callId = `tool-${round}-${idx}-${Date.now()}`;
-          const argsSummary =
-            fc.name === 'github_read_file'
-              ? String(fc.args?.path || '')
-              : fc.name === 'github_search_code'
-                ? String(fc.args?.query || '')
-                : String(fc.args?.prefix || 'root');
-
-          writeSseEvent(res, 'tool_call', { id: callId, name: fc.name, argsSummary, status: 'running' });
-
-          const toolOutcome = await executeGitHubTool({
-            name: fc.name,
-            args: fc.args,
-            githubProject,
-            githubToken,
-            signal: abortController.signal,
-          });
-
-          writeSseEvent(res, 'tool_result', {
-            id: callId,
-            name: fc.name,
-            argsSummary,
-            status: toolOutcome.ok ? 'done' : 'error',
-            resultSummary: toolOutcome.summary,
-          });
-
-          return {
-            functionResponse: {
-              name: fc.name,
-              response: toolOutcome.response,
-            },
-          };
-        })
-      );
-
-      workingContents.push({ role: 'user', parts: functionResponseParts });
-    }
-
-    writeSseEvent(res, 'done', {
-      model: activeModel,
-      finishReason: lastFinishReason || 'STOP',
-      isDemo: false,
+    await runResilientGeminiChat({
+      model,
+      apiKeys,
+      messages,
+      githubProject,
+      githubToken,
+      systemInstruction,
+      temperature,
+      maxOutputTokens,
+      includeThoughts,
+      thinkingBudget,
+      autoFallbackOnOverload,
+      fallbackModel,
+      signal: abortController.signal,
+      sendEvent: (event, data) => writeSseEvent(res, event, data),
     });
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') return;

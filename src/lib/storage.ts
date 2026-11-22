@@ -12,7 +12,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxOutputTokens: 8192,
   includeThoughts: true,
   thinkingBudget: -1,
-  autoFallbackOnOverload: false,
+  autoFallbackOnOverload: true,
   fallbackModel: 'gemini-3.8-flash',
   maxHistoryMessages: 0,
   sttMode: 'ai',
