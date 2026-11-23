@@ -129,9 +129,11 @@ export const SettingsDialog = memo(function SettingsDialog({
   const [keyPoolStore, setKeyPoolStore] = useState<'upstash-redis' | 'memory'>('memory');
   const [checkingKeyPool, setCheckingKeyPool] = useState(false);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
+  const latestApiKeyRef = useRef(draft.apiKey);
+  latestApiKeyRef.current = draft.apiKey;
 
-  const fetchKeyPoolStatus = async (rawKeys: string) => {
-    setCheckingKeyPool(true);
+  const fetchKeyPoolStatus = async (rawKeys: string, silent = false) => {
+    if (!silent) setCheckingKeyPool(true);
     try {
       const normalized = rawKeys
         .split(/[\r\n,;]+/)
@@ -155,19 +157,45 @@ export const SettingsDialog = memo(function SettingsDialog({
         }
       }
     } catch {
-      toast.error('Gagal memeriksa status cooldown key');
+      if (!silent) toast.error('Gagal memeriksa status cooldown key');
     } finally {
-      setCheckingKeyPool(false);
+      if (!silent) setCheckingKeyPool(false);
     }
   };
 
   useEffect(() => {
-    if (open) {
-      setDraft(settings);
-      void getIndexedDbStats().then(setIdbStats);
-      void fetchKeyPoolStatus(settings.apiKey);
-    }
+    if (!open) return;
+    setDraft(settings);
+    void getIndexedDbStats().then(setIdbStats);
+    void fetchKeyPoolStatus(settings.apiKey);
   }, [open, settings]);
+
+  useEffect(() => {
+    if (!open) return;
+    const tickId = window.setInterval(() => {
+      setKeyPoolStatus((prev) => {
+        let changed = false;
+        const next = prev.map((item) => {
+          if (item.status !== 'cooldown' || item.cooldownRemainingSec <= 0) return item;
+          changed = true;
+          const remaining = item.cooldownRemainingSec - 1;
+          return remaining > 0
+            ? { ...item, cooldownRemainingSec: remaining }
+            : { ...item, status: 'ready' as const, cooldownRemainingSec: 0 };
+        });
+        return changed ? next : prev;
+      });
+    }, 1000);
+
+    const pollId = window.setInterval(() => {
+      void fetchKeyPoolStatus(latestApiKeyRef.current, true);
+    }, 10_000);
+
+    return () => {
+      window.clearInterval(tickId);
+      window.clearInterval(pollId);
+    };
+  }, [open]);
 
   const handleExportBackup = async () => {
     try {
@@ -368,29 +396,46 @@ export const SettingsDialog = memo(function SettingsDialog({
                           Belum ada API Key aktif terdeteksi di Browser maupun Server Env.
                         </p>
                       ) : (
-                        <div className="flex flex-wrap gap-1.5">
-                          {keyPoolStatus.map((item) => (
-                            <span
-                              key={item.label}
-                              className={cn(
-                                'inline-flex items-center gap-1.5 rounded-lg border px-2 py-0.5 font-mono text-[10px]',
-                                item.status === 'cooldown'
-                                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
-                                  : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-400'
-                              )}
-                            >
-                              <span
-                                className={cn(
-                                  'h-1.5 w-1.5 rounded-full',
-                                  item.status === 'cooldown' ? 'bg-amber-400' : 'bg-emerald-400'
-                                )}
-                              />
-                              {item.label}
-                              {item.status === 'cooldown'
-                                ? ` (${item.cooldownRemainingSec}s)`
-                                : ' Ready'}
+                        <div className="space-y-2">
+                          <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+                            <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-emerald-400">
+                              {keyPoolStatus.filter((k) => k.status === 'ready').length} Ready
                             </span>
-                          ))}
+                            {keyPoolStatus.some((k) => k.status === 'cooldown') && (
+                              <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-amber-400">
+                                {keyPoolStatus.filter((k) => k.status === 'cooldown').length}{' '}
+                                Cooldown
+                              </span>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5 sm:flex sm:flex-wrap">
+                            {keyPoolStatus.map((item) => (
+                              <span
+                                key={item.label}
+                                className={cn(
+                                  'inline-flex items-center gap-1.5 truncate rounded-lg border px-2 py-1 font-mono text-[10px]',
+                                  item.status === 'cooldown'
+                                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
+                                    : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-400'
+                                )}
+                              >
+                                <span
+                                  className={cn(
+                                    'h-1.5 w-1.5 shrink-0 rounded-full',
+                                    item.status === 'cooldown'
+                                      ? 'animate-pulse bg-amber-400'
+                                      : 'bg-emerald-400'
+                                  )}
+                                />
+                                <span className="truncate">
+                                  {item.label}
+                                  {item.status === 'cooldown'
+                                    ? ` (${item.cooldownRemainingSec}s)`
+                                    : ' Ready'}
+                                </span>
+                              </span>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>
