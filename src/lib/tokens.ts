@@ -53,19 +53,25 @@ export async function fetchExactAttachmentTokens(params: {
       headers['x-gemini-api-key'] = normalizedKeys.join(',');
     }
 
+    const requestBody = JSON.stringify({
+      model: params.model,
+      attachment: {
+        kind: params.attachment.kind,
+        name: params.attachment.name,
+        mimeType: params.attachment.mimeType,
+        data: params.attachment.data,
+        textContent: params.attachment.textContent,
+      },
+    });
+
+    if (new TextEncoder().encode(requestBody).length > 3_800_000) {
+      return null;
+    }
+
     const res = await fetch('/api/count-tokens', {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        model: params.model,
-        attachment: {
-          kind: params.attachment.kind,
-          name: params.attachment.name,
-          mimeType: params.attachment.mimeType,
-          data: params.attachment.data,
-          textContent: params.attachment.textContent,
-        },
-      }),
+      body: requestBody,
     });
 
     if (!res.ok) return null;

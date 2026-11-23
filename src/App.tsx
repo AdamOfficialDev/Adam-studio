@@ -71,7 +71,11 @@ import { SettingsDialog } from '@/components/SettingsDialog';
 import { Sidebar } from '@/components/Sidebar';
 import { usePwaInstall } from '@/hooks/usePwaInstall';
 import { extractArtifactsFromMarkdown } from '@/lib/artifacts';
-import { buildEffectiveApiHistory, estimateMessagesTokenTotal } from '@/lib/importer';
+import {
+  buildEffectiveApiHistory,
+  estimateMessagesTokenTotal,
+  runLosslessContextCompaction,
+} from '@/lib/importer';
 import { DEFAULT_MODEL_ID, getModelInfo, getModelThinkingCapabilities, resolveValidThinkingLevel } from '@/lib/models';
 import { playCompletionChime } from '@/lib/sound';
 import { streamChatCompletion } from '@/lib/sse';
@@ -656,10 +660,91 @@ export default function App() {
       };
 
       try {
+        let finalHistoryForApi = trimmedHistory;
+        const estimatedTextBytes = finalHistoryForApi.reduce(
+          (sum, m) =>
+            sum +
+            (m.content?.length || 0) +
+            (m.visualTarget?.outerHtml?.length || 0) +
+            (m.attachments || []).reduce((aSum, a) => aSum + (a.textContent?.length || 0), 0),
+          0
+        );
+
+        if (
+          !settings.demoMode &&
+          !continueMessage &&
+          historyMessages.length > 6 &&
+          estimatedTextBytes > 2_600_000
+        ) {
+          const keepRecent = 6;
+          const prevKept =
+            compactedContext?.mode === 'ai-summary'
+              ? Math.max(keepRecent, compactedContext.keepRecentCount)
+              : historyMessages.length;
+          const messagesToDistill =
+            compactedContext?.mode === 'ai-summary' && historyMessages.length > prevKept
+              ? historyMessages.slice(-prevKept)
+              : historyMessages;
+
+          if (messagesToDistill.length > keepRecent) {
+            currentStatus =
+              'Menjaga 100% konteks dari awal sesi (Auto-Compacting riwayat lama)...';
+            commitStreamSnapshot();
+
+            const compactRes = await runLosslessContextCompaction({
+              messages: messagesToDistill,
+              keepRecentCount: keepRecent,
+              model: modelId,
+              apiKey: settings.apiKey,
+              existingSummary:
+                compactedContext?.mode === 'ai-summary'
+                  ? compactedContext.summaryPrefix
+                  : undefined,
+              signal: controller.signal,
+              onStatus: (msg) => {
+                currentStatus = msg;
+                commitStreamSnapshot();
+              },
+            });
+
+            if (compactRes.ok && compactRes.summary) {
+              const nextCompactedState: CompactedContextState = {
+                mode: 'ai-summary',
+                summaryPrefix: compactRes.summary,
+                keepRecentCount: keepRecent,
+                estimatedTokens: estimateMessagesTokenTotal(
+                  buildEffectiveApiHistory(historyMessages, {
+                    mode: 'ai-summary',
+                    summaryPrefix: compactRes.summary,
+                    keepRecentCount: keepRecent,
+                    estimatedTokens: 0,
+                    updatedAt: Date.now(),
+                  })
+                ),
+                updatedAt: Date.now(),
+              };
+
+              setConversations((prev) =>
+                prev.map((conv) =>
+                  conv.id !== convId
+                    ? conv
+                    : { ...conv, compactedContext: nextCompactedState }
+                )
+              );
+
+              finalHistoryForApi = buildEffectiveApiHistory(
+                historyMessages,
+                nextCompactedState
+              );
+              toast.success('Konteks awal sesi diringkas lossless agar muat batas server.');
+            }
+          }
+        }
+
         await streamChatCompletion(
           {
             model: modelId,
-            messages: trimmedHistory.map((m) => ({
+            messages: finalHistoryForApi.map((m) => ({
               role: m.role,
               content: m.content,
               visualTarget: m.visualTarget,

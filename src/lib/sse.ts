@@ -46,6 +46,146 @@ export interface StreamHandlers {
   onError: (message: string) => void;
 }
 
+const MAX_VERCEL_SAFE_BYTES = 4_000_000;
+const utf8Encoder = new TextEncoder();
+
+function buildSafeChatPayloadJson(payload: StreamChatPayload): { json: string; bytes: number } {
+  const serialize = (
+    msgs: StreamChatPayload['messages'],
+    opts: {
+      stripOlderAttachments?: boolean;
+      maxTreePaths?: number;
+      maxPinnedChars?: number;
+      maxMsgChars?: number;
+    } = {}
+  ) => {
+    const lastIdx = msgs.length - 1;
+    const mappedMessages = msgs.map((m, idx) => {
+      const baseText = m.visualTarget
+        ? `[Visual Target Element: \`${m.visualTarget.selector}\`]\n\`\`\`html\n${m.visualTarget.outerHtml}\n\`\`\`\n\n${m.content}`
+        : m.content;
+      const content =
+        opts.maxMsgChars && idx < lastIdx && baseText.length > opts.maxMsgChars
+          ? `${baseText.slice(0, opts.maxMsgChars)}\n\n...[isi pesan lama dipotong agar muat batas payload server]`
+          : baseText;
+
+      const stripOlder = Boolean(opts.stripOlderAttachments) && idx < lastIdx;
+      const strippedNotes: string[] = [];
+
+      const attachments = stripOlder
+        ? m.attachments
+            ?.map((a) => {
+              if (a.data) {
+                strippedNotes.push(`[Lampiran terdahulu: ${a.name} (${a.mimeType})]`);
+                return null;
+              }
+              if (a.textContent && a.textContent.length > 12_000) {
+                return {
+                  kind: a.kind,
+                  name: a.name,
+                  mimeType: a.mimeType,
+                  textContent: `${a.textContent.slice(0, 12_000)}\n...[dipotong]`,
+                };
+              }
+              return {
+                kind: a.kind,
+                name: a.name,
+                mimeType: a.mimeType,
+                textContent: a.textContent,
+              };
+            })
+            .filter((x): x is NonNullable<typeof x> => x !== null)
+        : m.attachments?.map((a) => ({
+            kind: a.kind,
+            name: a.name,
+            mimeType: a.mimeType,
+            data: a.data,
+            textContent: a.textContent,
+          }));
+
+      const finalContent =
+        strippedNotes.length > 0
+          ? `${content}${content ? '\n\n' : ''}${strippedNotes.join('\n')}`
+          : content;
+
+      return {
+        role: m.role,
+        content: finalContent,
+        attachments: attachments && attachments.length > 0 ? attachments : undefined,
+      };
+    });
+
+    const gh = payload.githubProject
+      ? {
+          owner: payload.githubProject.owner,
+          repo: payload.githubProject.repo,
+          branch: payload.githubProject.branch,
+          treePaths: opts.maxTreePaths
+            ? payload.githubProject.treePaths.slice(0, opts.maxTreePaths)
+            : payload.githubProject.treePaths,
+          pinnedFiles: opts.maxPinnedChars
+            ? payload.githubProject.pinnedFiles.map((f) =>
+                f.content.length > opts.maxPinnedChars!
+                  ? { ...f, content: `${f.content.slice(0, opts.maxPinnedChars!)}\n// ...[dipotong]` }
+                  : f
+              )
+            : payload.githubProject.pinnedFiles,
+          agenticToolsEnabled: payload.githubProject.agenticToolsEnabled,
+        }
+      : undefined;
+
+    return JSON.stringify({
+      model: payload.model,
+      messages: mappedMessages,
+      githubProject: gh,
+      systemInstruction: payload.systemInstruction,
+      maxOutputTokens: payload.maxOutputTokens,
+      includeThoughts: payload.includeThoughts,
+      thinkingLevel: payload.thinkingLevel,
+      enableGoogleSearch: Boolean(payload.enableGoogleSearch),
+      enableUrlContext: Boolean(payload.enableUrlContext),
+      autoFallbackOnOverload: payload.autoFallbackOnOverload,
+      fallbackModel: payload.fallbackModel,
+      demoMode: payload.demoMode,
+      continueFrom: payload.continueFrom,
+    });
+  };
+
+  const measure = (json: string) => ({ json, bytes: utf8Encoder.encode(json).length });
+
+  let candidate = measure(serialize(payload.messages));
+  if (candidate.bytes <= MAX_VERCEL_SAFE_BYTES) return candidate;
+
+  candidate = measure(serialize(payload.messages, { stripOlderAttachments: true }));
+  if (candidate.bytes <= MAX_VERCEL_SAFE_BYTES) return candidate;
+
+  candidate = measure(
+    serialize(payload.messages, {
+      stripOlderAttachments: true,
+      maxTreePaths: 200,
+      maxPinnedChars: 24_000,
+      maxMsgChars: 24_000,
+    })
+  );
+  if (candidate.bytes <= MAX_VERCEL_SAFE_BYTES) return candidate;
+
+  let trimmed = [...payload.messages];
+  while (trimmed.length > 1) {
+    trimmed = trimmed.slice(1);
+    candidate = measure(
+      serialize(trimmed, {
+        stripOlderAttachments: true,
+        maxTreePaths: 150,
+        maxPinnedChars: 12_000,
+        maxMsgChars: 12_000,
+      })
+    );
+    if (candidate.bytes <= MAX_VERCEL_SAFE_BYTES) return candidate;
+  }
+
+  return candidate;
+}
+
 export async function streamChatCompletion(
   payload: StreamChatPayload,
   handlers: StreamHandlers
@@ -67,53 +207,33 @@ export async function streamChatCompletion(
     headers['x-github-token'] = payload.githubToken.trim();
   }
 
+  const { json: safeBody, bytes: payloadBytes } = buildSafeChatPayloadJson(payload);
+  if (payloadBytes > 4_350_000) {
+    const sizeMb = (payloadBytes / (1024 * 1024)).toFixed(2);
+    handlers.onError(
+      `Ukuran payload (${sizeMb} MB) melebihi batas maksimal server Vercel (4.5 MB). Kecilkan atau kurangi jumlah lampiran pada pesan ini.`
+    );
+    return;
+  }
+
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      model: payload.model,
-      messages: payload.messages.map((m) => {
-        const textContent = m.visualTarget
-          ? `[Visual Target Element: \`${m.visualTarget.selector}\`]\n\`\`\`html\n${m.visualTarget.outerHtml}\n\`\`\`\n\n${m.content}`
-          : m.content;
-        return {
-          role: m.role,
-          content: textContent,
-          attachments: m.attachments?.map((a) => ({
-            kind: a.kind,
-            name: a.name,
-            mimeType: a.mimeType,
-            data: a.data,
-            textContent: a.textContent,
-          })),
-        };
-      }),
-      githubProject: payload.githubProject
-        ? {
-            owner: payload.githubProject.owner,
-            repo: payload.githubProject.repo,
-            branch: payload.githubProject.branch,
-            treePaths: payload.githubProject.treePaths,
-            pinnedFiles: payload.githubProject.pinnedFiles,
-            agenticToolsEnabled: payload.githubProject.agenticToolsEnabled,
-          }
-        : undefined,
-      systemInstruction: payload.systemInstruction,
-      maxOutputTokens: payload.maxOutputTokens,
-      includeThoughts: payload.includeThoughts,
-      thinkingLevel: payload.thinkingLevel,
-      enableGoogleSearch: Boolean(payload.enableGoogleSearch),
-      enableUrlContext: Boolean(payload.enableUrlContext),
-      autoFallbackOnOverload: payload.autoFallbackOnOverload,
-      fallbackModel: payload.fallbackModel,
-      demoMode: payload.demoMode,
-      continueFrom: payload.continueFrom,
-    }),
+    body: safeBody,
     signal: handlers.signal,
   });
 
   if (!response.ok) {
     const errText = await response.text();
+    if (
+      response.status === 413 ||
+      /FUNCTION_PAYLOAD_TOO_LARGE|Request Entity Too Large/i.test(errText)
+    ) {
+      handlers.onError(
+        'Ukuran payload melebihi batas 4.5 MB Vercel (HTTP 413). Kurangi ukuran atau jumlah lampiran lalu coba lagi.'
+      );
+      return;
+    }
     handlers.onError(errText || `HTTP Error ${response.status}`);
     return;
   }

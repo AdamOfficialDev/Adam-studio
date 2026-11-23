@@ -135,17 +135,28 @@ export function buildEffectiveApiHistory(
   return [...prefixMessages, ...recentClean];
 }
 
+const MAX_COMPACT_BATCH_BYTES = 2_400_000;
+
 export function buildCompactionChunks(messages: ChatMessage[], maxChunkTokens = 105_000): string[] {
   const deduped = applyKeepLatestCodeToMessages(messages, 1);
   const chunks: string[] = [];
   let currentText = '';
   let currentTokens = 0;
 
-  for (let i = 0; i < deduped.length; i++) {
-    const m = deduped[i];
-    const speaker = m.role === 'user' ? 'USER' : 'ASSISTANT';
-    const entry = `[Turn #${i + 1} - ${speaker}]\n${m.content}\n\n`;
+  const pushEntry = (entry: string) => {
     const entryTokens = estimateTokens(entry);
+    if (entryTokens > maxChunkTokens) {
+      if (currentText.trim()) {
+        chunks.push(currentText.trim());
+        currentText = '';
+        currentTokens = 0;
+      }
+      const stepChars = Math.max(12_000, maxChunkTokens * 3);
+      for (let pos = 0; pos < entry.length; pos += stepChars) {
+        chunks.push(entry.slice(pos, pos + stepChars).trim());
+      }
+      return;
+    }
 
     if (currentTokens + entryTokens > maxChunkTokens && currentText) {
       chunks.push(currentText.trim());
@@ -155,6 +166,17 @@ export function buildCompactionChunks(messages: ChatMessage[], maxChunkTokens = 
       currentText += entry;
       currentTokens += entryTokens;
     }
+  };
+
+  for (let i = 0; i < deduped.length; i++) {
+    const m = deduped[i];
+    const speaker = m.role === 'user' ? 'USER' : 'ASSISTANT';
+    const attNotes =
+      m.attachments && m.attachments.length > 0
+        ? `\n[Lampiran: ${m.attachments.map((a) => `${a.name} (${a.mimeType})`).join(', ')}]`
+        : '';
+    const entry = `[Turn #${i + 1} - ${speaker}]\n${m.content}${attNotes}\n\n`;
+    pushEntry(entry);
   }
 
   if (currentText.trim()) {
@@ -163,41 +185,22 @@ export function buildCompactionChunks(messages: ChatMessage[], maxChunkTokens = 
   return chunks;
 }
 
-export async function runLosslessContextCompaction(params: {
-  messages: ChatMessage[];
-  keepRecentCount: number;
+async function runCompactBatchRequest(params: {
   model: string;
-  apiKey?: string;
+  chunks: string[];
+  headers: Record<string, string>;
+  signal?: AbortSignal;
+  batchLabel?: string;
   onStatus?: (msg: string) => void;
 }): Promise<{ ok: boolean; summary?: string; error?: string }> {
-  const olderMessages =
-    params.messages.length > params.keepRecentCount
-      ? params.messages.slice(0, -params.keepRecentCount)
-      : params.messages;
-
-  const chunks = buildCompactionChunks(olderMessages, 105_000);
-  if (chunks.length === 0) {
-    return { ok: false, error: 'Tidak ada pesan lama untuk dirangkum.' };
-  }
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  const normalizedKeys = (params.apiKey || '')
-    .split(/[\r\n,;]+/)
-    .map((k) => k.trim())
-    .filter(Boolean);
-  if (normalizedKeys.length > 0) {
-    headers['x-gemini-api-key'] = normalizedKeys.join(',');
-  }
-
   const res = await fetch('/api/compact', {
     method: 'POST',
-    headers,
+    headers: params.headers,
     body: JSON.stringify({
       model: params.model,
-      chunks,
+      chunks: params.chunks,
     }),
+    signal: params.signal,
   });
 
   if (!res.ok || !res.body) {
@@ -238,7 +241,9 @@ export async function runLosslessContextCompaction(params: {
       }
 
       if (eventName === 'status' && typeof parsed.message === 'string') {
-        params.onStatus?.(parsed.message);
+        params.onStatus?.(
+          params.batchLabel ? `${params.batchLabel} ${parsed.message}` : parsed.message
+        );
       } else if (eventName === 'result' && typeof parsed.summary === 'string') {
         finalSummary = parsed.summary;
       } else if (eventName === 'error' && typeof parsed.message === 'string') {
@@ -249,6 +254,82 @@ export async function runLosslessContextCompaction(params: {
 
   if (finalSummary) return { ok: true, summary: finalSummary };
   return { ok: false, error: errorMsg || 'Ringkasan gagal dihasilkan.' };
+}
+
+export async function runLosslessContextCompaction(params: {
+  messages: ChatMessage[];
+  keepRecentCount: number;
+  model: string;
+  apiKey?: string;
+  existingSummary?: string;
+  signal?: AbortSignal;
+  onStatus?: (msg: string) => void;
+}): Promise<{ ok: boolean; summary?: string; error?: string }> {
+  const olderMessages =
+    params.messages.length > params.keepRecentCount
+      ? params.messages.slice(0, -params.keepRecentCount)
+      : params.messages;
+
+  const chunks = buildCompactionChunks(olderMessages, 95_000);
+  if (params.existingSummary?.trim()) {
+    chunks.unshift(
+      `[RINGKASAN KONTEKS HISTORIS SEBELUMNYA DARI AWAL SESI — WAJIB DIPERTAHANKAN UTUH]\n\n${params.existingSummary.trim()}`
+    );
+  }
+
+  if (chunks.length === 0) {
+    return { ok: false, error: 'Tidak ada pesan lama untuk dirangkum.' };
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  const normalizedKeys = (params.apiKey || '')
+    .split(/[\r\n,;]+/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+  if (normalizedKeys.length > 0) {
+    headers['x-gemini-api-key'] = normalizedKeys.join(',');
+  }
+
+  const encoder = new TextEncoder();
+  const batches: string[][] = [];
+  let currentBatch: string[] = [];
+  let currentBytes = 0;
+
+  for (const chunk of chunks) {
+    const chunkBytes = encoder.encode(chunk).length + 64;
+    if (currentBatch.length > 0 && currentBytes + chunkBytes > MAX_COMPACT_BATCH_BYTES) {
+      batches.push(currentBatch);
+      currentBatch = [chunk];
+      currentBytes = chunkBytes;
+    } else {
+      currentBatch.push(chunk);
+      currentBytes += chunkBytes;
+    }
+  }
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+
+  const summaries: string[] = [];
+  for (let b = 0; b < batches.length; b++) {
+    const label = batches.length > 1 ? `[Batch ${b + 1}/${batches.length}]` : undefined;
+    const result = await runCompactBatchRequest({
+      model: params.model,
+      chunks: batches[b],
+      headers,
+      signal: params.signal,
+      batchLabel: label,
+      onStatus: params.onStatus,
+    });
+    if (!result.ok || !result.summary) {
+      return result;
+    }
+    summaries.push(result.summary);
+  }
+
+  return { ok: true, summary: summaries.join('\n\n') };
 }
 
 function parseGoogleAiStudioJson(

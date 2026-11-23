@@ -124,6 +124,9 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+const MAX_SAFE_ATTACHMENTS_CHARS = 3_600_000;
+const MAX_SINGLE_BINARY_BYTES = 2_800_000;
+
 function readImageDimensions(dataUrl: string): Promise<{ width: number; height: number }> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -131,6 +134,104 @@ function readImageDimensions(dataUrl: string): Promise<{ width: number; height: 
     img.onerror = () => resolve({ width: 0, height: 0 });
     img.src = dataUrl;
   });
+}
+
+async function compressImageForPayload(
+  dataUrl: string,
+  mimeType: string,
+  originalSize: number
+): Promise<{
+  dataUrl: string;
+  base64: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  size: number;
+}> {
+  const dims = await readImageDimensions(dataUrl);
+  const rawBase64 = dataUrl.split(',')[1] || '';
+
+  if (
+    !dims.width ||
+    !dims.height ||
+    mimeType === 'image/svg+xml' ||
+    (mimeType === 'image/gif' && originalSize <= 1_500_000)
+  ) {
+    return {
+      dataUrl,
+      base64: rawBase64,
+      mimeType,
+      width: dims.width,
+      height: dims.height,
+      size: originalSize,
+    };
+  }
+
+  const maxSide = Math.max(dims.width, dims.height);
+  if (maxSide <= 1600 && rawBase64.length <= 750_000) {
+    return {
+      dataUrl,
+      base64: rawBase64,
+      mimeType,
+      width: dims.width,
+      height: dims.height,
+      size: originalSize,
+    };
+  }
+
+  const encode = (limitPx: number, quality: number) =>
+    new Promise<{ outUrl: string; w: number; h: number }>((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, limitPx / Math.max(img.naturalWidth, img.naturalHeight));
+        const w = Math.max(1, Math.round(img.naturalWidth * scale));
+        const h = Math.max(1, Math.round(img.naturalHeight * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve({ outUrl: dataUrl, w: dims.width, h: dims.height });
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        let outUrl = canvas.toDataURL('image/webp', quality);
+        if (!outUrl.startsWith('data:image/webp')) {
+          outUrl = canvas.toDataURL('image/jpeg', quality);
+        }
+        resolve({ outUrl, w, h });
+      };
+      img.onerror = () => resolve({ outUrl: dataUrl, w: dims.width, h: dims.height });
+      img.src = dataUrl;
+    });
+
+  let pass = await encode(1600, 0.84);
+  let outBase64 = pass.outUrl.split(',')[1] || '';
+  if (outBase64.length > 1_100_000) {
+    pass = await encode(1280, 0.74);
+    outBase64 = pass.outUrl.split(',')[1] || '';
+  }
+
+  if (outBase64 && outBase64.length < rawBase64.length) {
+    const outMime = pass.outUrl.match(/^data:([^;]+);/)?.[1] || 'image/jpeg';
+    return {
+      dataUrl: pass.outUrl,
+      base64: outBase64,
+      mimeType: outMime,
+      width: pass.w,
+      height: pass.h,
+      size: Math.round((outBase64.length * 3) / 4),
+    };
+  }
+
+  return {
+    dataUrl,
+    base64: rawBase64,
+    mimeType,
+    width: dims.width,
+    height: dims.height,
+    size: originalSize,
+  };
 }
 
 function readMediaDuration(file: File, kind: 'video' | 'audio'): Promise<number | undefined> {
@@ -289,36 +390,56 @@ export const ChatComposer = memo(function ChatComposer({
 
   const ingestFiles = async (files: File[]) => {
     const loaded: Attachment[] = [];
+    let usedPayloadChars = attachments.reduce(
+      (sum, a) => sum + (a.data?.length || a.textContent?.length || 0),
+      0
+    );
+
+    const canFitPayload = (addedChars: number, fileName: string) => {
+      if (usedPayloadChars + addedChars > MAX_SAFE_ATTACHMENTS_CHARS) {
+        toast.error(
+          `${fileName} melebihi batas total lampiran aman Vercel (~4.5 MB request limit).`
+        );
+        return false;
+      }
+      usedPayloadChars += addedChars;
+      return true;
+    };
 
     for (const file of files.slice(0, 6)) {
       const ext = file.name.split('.').pop()?.toLowerCase() || '';
 
       if (file.type.startsWith('image/')) {
-        const dataUrl = await readFileAsDataUrl(file);
-        const base64 = dataUrl.split(',')[1] || '';
-        if (!base64) continue;
-        const dims = await readImageDimensions(dataUrl);
+        const rawUrl = await readFileAsDataUrl(file);
+        if (!rawUrl.split(',')[1]) continue;
+        const img = await compressImageForPayload(rawUrl, file.type, file.size);
+        if (!img.base64 || !canFitPayload(img.base64.length, file.name)) continue;
         const est = estimateAttachmentTokensLocal({
           kind: 'image',
-          size: file.size,
-          width: dims.width,
-          height: dims.height,
+          size: img.size,
+          width: img.width,
+          height: img.height,
         });
         loaded.push({
           id: generateId(),
           kind: 'image',
           name: file.name,
-          mimeType: file.type,
-          size: file.size,
-          data: base64,
-          previewUrl: dataUrl,
+          mimeType: img.mimeType,
+          size: img.size,
+          data: img.base64,
+          previewUrl: img.dataUrl,
           tokenCount: est,
           tokenExact: false,
         });
       } else if (file.type.startsWith('video/') || ['mp4', 'webm', 'mov', 'm4v'].includes(ext)) {
+        if (file.size > MAX_SINGLE_BINARY_BYTES) {
+          toast.error(`${file.name} (${formatBytes(file.size)}) terlalu besar untuk limit 4.5 MB Vercel (maks ~2.8 MB).`);
+          continue;
+        }
         const durationSec = await readMediaDuration(file, 'video');
         const dataUrl = await readFileAsDataUrl(file);
         const base64 = dataUrl.split(',')[1] || '';
+        if (!base64 || !canFitPayload(base64.length, file.name)) continue;
         const est = estimateAttachmentTokensLocal({
           kind: 'video',
           size: file.size,
@@ -336,9 +457,14 @@ export const ChatComposer = memo(function ChatComposer({
           tokenExact: false,
         });
       } else if (file.type.startsWith('audio/') || ['mp3', 'wav', 'ogg', 'm4a'].includes(ext)) {
+        if (file.size > MAX_SINGLE_BINARY_BYTES) {
+          toast.error(`${file.name} (${formatBytes(file.size)}) terlalu besar untuk limit 4.5 MB Vercel (maks ~2.8 MB).`);
+          continue;
+        }
         const durationSec = await readMediaDuration(file, 'audio');
         const dataUrl = await readFileAsDataUrl(file);
         const base64 = dataUrl.split(',')[1] || '';
+        if (!base64 || !canFitPayload(base64.length, file.name)) continue;
         const est = estimateAttachmentTokensLocal({
           kind: 'audio',
           size: file.size,
@@ -356,8 +482,13 @@ export const ChatComposer = memo(function ChatComposer({
           tokenExact: false,
         });
       } else if (file.type === 'application/pdf' || ext === 'pdf') {
+        if (file.size > MAX_SINGLE_BINARY_BYTES) {
+          toast.error(`${file.name} (${formatBytes(file.size)}) terlalu besar untuk limit 4.5 MB Vercel (maks ~2.8 MB).`);
+          continue;
+        }
         const dataUrl = await readFileAsDataUrl(file);
         const base64 = dataUrl.split(',')[1] || '';
+        if (!base64 || !canFitPayload(base64.length, file.name)) continue;
         const est = estimateAttachmentTokensLocal({
           kind: 'pdf',
           size: file.size,
@@ -374,6 +505,7 @@ export const ChatComposer = memo(function ChatComposer({
         });
       } else if (file.type.startsWith('text/') || TEXT_EXTENSIONS.has(ext)) {
         const textContent = (await file.text()).slice(0, 120000);
+        if (!canFitPayload(textContent.length, file.name)) continue;
         const est = estimateAttachmentTokensLocal({
           kind: 'text',
           size: file.size,
