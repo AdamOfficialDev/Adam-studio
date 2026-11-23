@@ -18,6 +18,54 @@ export function isArtifactCandidate(language: string, code: string): boolean {
   return code.split('\n').length >= 8;
 }
 
+const NODE_BACKEND_JS_PATTERN =
+  /\b(?:require\s*\(|module\.exports|process\.env|import\s+.+\s+from\s+['"]node:|express\s*\()/;
+
+function buildBundledHtmlArtifact(
+  messageId: string,
+  htmlBlocks: string[],
+  cssBlocks: string[],
+  jsBlocks: string[]
+): ArtifactItem | null {
+  const browserJsBlocks = jsBlocks.filter((js) => !NODE_BACKEND_JS_PATTERN.test(js));
+  const combinedHtml = htmlBlocks.join('\n').trim();
+  const hasMeaningfulHtml = combinedHtml.length >= 20;
+  const hasCss = cssBlocks.length > 0;
+  const hasJs = browserJsBlocks.length > 0;
+
+  if (!hasMeaningfulHtml || (!hasCss && !hasJs)) return null;
+
+  const combinedCss = cssBlocks.join('\n\n');
+  const combinedJs = browserJsBlocks.join('\n\n');
+  const baseHtml = combinedHtml;
+
+  let output = baseHtml;
+  if (combinedCss) {
+    const styleTag = `<style>\n${combinedCss}\n</style>`;
+    if (/<\/head>/i.test(output)) {
+      output = output.replace(/<\/head>/i, `${styleTag}\n</head>`);
+    } else {
+      output = `${styleTag}\n${output}`;
+    }
+  }
+  if (combinedJs) {
+    const scriptTag = `<script>\n${combinedJs}\n</script>`;
+    if (/<\/body>/i.test(output)) {
+      output = output.replace(/<\/body>/i, `${scriptTag}\n</body>`);
+    } else {
+      output = `${output}\n${scriptTag}`;
+    }
+  }
+
+  return {
+    id: `${messageId}-artifact-bundle`,
+    title: 'Bundled Web App (HTML+CSS+JS)',
+    language: 'html',
+    content: output,
+    kind: 'html',
+  };
+}
+
 export function extractArtifactsFromMarkdown(messageId: string, markdown: string): ArtifactItem[] {
   const cacheKey = `${messageId}:${markdown.length}`;
   const cached = artifactCache.get(cacheKey);
@@ -25,12 +73,24 @@ export function extractArtifactsFromMarkdown(messageId: string, markdown: string
 
   const regex = /```([\w-]*)\n([\s\S]*?)```/g;
   const items: ArtifactItem[] = [];
+  const htmlBlocks: string[] = [];
+  const cssBlocks: string[] = [];
+  const jsBlocks: string[] = [];
   let match: RegExpExecArray | null;
   let index = 0;
 
   while ((match = regex.exec(markdown)) !== null) {
     const language = (match[1] || 'text').toLowerCase();
     const content = match[2].replace(/\n$/, '');
+
+    if ((language === 'html' || language === 'htm') && content.trim()) {
+      htmlBlocks.push(content);
+    } else if (language === 'css' && content.trim()) {
+      cssBlocks.push(content);
+    } else if ((language === 'js' || language === 'javascript') && content.trim()) {
+      jsBlocks.push(content);
+    }
+
     if (!isArtifactCandidate(language, content)) continue;
 
     index += 1;
@@ -50,6 +110,11 @@ export function extractArtifactsFromMarkdown(messageId: string, markdown: string
       content,
       kind,
     });
+  }
+
+  const bundled = buildBundledHtmlArtifact(messageId, htmlBlocks, cssBlocks, jsBlocks);
+  if (bundled) {
+    items.unshift(bundled);
   }
 
   if (artifactCache.size > 120) {

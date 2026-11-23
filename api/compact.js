@@ -3,6 +3,7 @@ export const config = {
 };
 
 let roundRobinCursor = Math.floor(Math.random() * 1000);
+const compactCooldownMap = new Map();
 
 function parseKeyPool(...sources) {
   const pool = [];
@@ -31,23 +32,36 @@ function extractGeminiError(rawText, status) {
   return msg;
 }
 
+function buildOrderedCompactKeys(apiKeys) {
+  const now = Date.now();
+  const startOffset = roundRobinCursor % apiKeys.length;
+  roundRobinCursor = (roundRobinCursor + 1) % apiKeys.length;
+  const rotated = [...apiKeys.slice(startOffset), ...apiKeys.slice(0, startOffset)];
+  const ready = [];
+  const cooling = [];
+  for (const key of rotated) {
+    if ((compactCooldownMap.get(key) || 0) > now) cooling.push(key);
+    else ready.push(key);
+  }
+  return [...ready, ...cooling];
+}
+
 async function callGeminiSummary({ model, apiKeys, prompt, signal }) {
   const candidates = Array.from(
     new Set(['gemini-3.8-flash', model || 'gemini-4-hydrogen'].filter(Boolean))
   );
-
-  const startOffset = roundRobinCursor % apiKeys.length;
-  roundRobinCursor = (roundRobinCursor + 1) % apiKeys.length;
+  const orderedKeys = buildOrderedCompactKeys(apiKeys);
+  const disabledModels = new Set();
 
   let lastError = 'Gagal meringkas konteks.';
 
   for (const targetModel of candidates) {
+    if (disabledModels.has(targetModel)) continue;
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
       targetModel
     )}:generateContent`;
 
-    for (let i = 0; i < apiKeys.length; i++) {
-      const key = apiKeys[(startOffset + i) % apiKeys.length];
+    for (const key of orderedKeys) {
       let useMinimalThinking = true;
       let triedNoThinking = false;
 
@@ -84,6 +98,7 @@ async function callGeminiSummary({ model, apiKeys, prompt, signal }) {
               .join('')
               .trim();
             if (text) return { ok: true, text };
+            lastError = 'Ringkasan kosong dari model.';
           } else {
             const errRaw = await res.text();
             lastError = extractGeminiError(errRaw, res.status);
@@ -92,7 +107,13 @@ async function callGeminiSummary({ model, apiKeys, prompt, signal }) {
               triedNoThinking = true;
               continue;
             }
-            if (res.status === 404) break;
+            if (res.status === 404) {
+              disabledModels.add(targetModel);
+              break;
+            }
+            if (res.status === 429 || res.status === 401 || res.status === 403) {
+              compactCooldownMap.set(key, Date.now() + (res.status === 429 ? 60_000 : 120_000));
+            }
           }
         } catch (err) {
           if (signal?.aborted) throw err;
@@ -100,6 +121,8 @@ async function callGeminiSummary({ model, apiKeys, prompt, signal }) {
         }
         break;
       }
+
+      if (disabledModels.has(targetModel)) break;
     }
   }
 

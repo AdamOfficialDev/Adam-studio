@@ -18,6 +18,19 @@ const HARD_STOP_FINISH_REASONS = new Set([
 let roundRobinCursor = Math.floor(Math.random() * 1000);
 const keyCooldownMap = new Map();
 
+export function getKeyPoolStatus(keys = []) {
+  const now = Date.now();
+  return keys.map((key, idx) => {
+    const coolUntil = keyCooldownMap.get(key) || 0;
+    const cooldownRemainingSec = coolUntil > now ? Math.ceil((coolUntil - now) / 1000) : 0;
+    return {
+      label: maskKeyLabel(key, idx),
+      status: cooldownRemainingSec > 0 ? 'cooldown' : 'ready',
+      cooldownRemainingSec,
+    };
+  });
+}
+
 export function parseKeyPool(...sources) {
   const pool = [];
   const seen = new Set();

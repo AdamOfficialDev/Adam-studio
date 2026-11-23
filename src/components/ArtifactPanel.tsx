@@ -106,32 +106,73 @@ export const ArtifactPanel = memo(function ArtifactPanel({
   const [inspectMode, setInspectMode] = useState(false);
   const [compareBaselineId, setCompareBaselineId] = useState<string>('original');
   const [changesOnlyDiff, setChangesOnlyDiff] = useState(false);
+  const [localSnapshots, setLocalSnapshots] = useState<ArtifactItem[]>([]);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-
-  const currentVersionIdx = useMemo(() => {
-    const idx = allArtifacts.findIndex((a) => a.id === artifact.id);
-    return idx >= 0 ? idx : allArtifacts.length - 1;
-  }, [allArtifacts, artifact.id]);
+  const draftsRef = useRef<Map<string, string>>(new Map());
+  const prevArtifactIdRef = useRef<string>(artifact.id);
+  const prevBaseContentRef = useRef<string>(artifact.content);
+  const artifactsRootKey = allArtifacts[0]?.id || artifact.id;
+  const prevRootKeyRef = useRef<string>(artifactsRootKey);
 
   useEffect(() => {
-    setEditableContent(artifact.content);
-    setDebouncedContent(artifact.content);
+    if (prevRootKeyRef.current !== artifactsRootKey) {
+      const stillInSnapshots = localSnapshots.some((s) => s.id === artifact.id);
+      if (!stillInSnapshots) {
+        setLocalSnapshots([]);
+        prevRootKeyRef.current = artifactsRootKey;
+      }
+    }
+  }, [artifactsRootKey, artifact.id, localSnapshots]);
+
+  const mergedArtifacts = useMemo(
+    () => [...allArtifacts, ...localSnapshots],
+    [allArtifacts, localSnapshots]
+  );
+
+  const currentVersionIdx = useMemo(() => {
+    const idx = mergedArtifacts.findIndex((a) => a.id === artifact.id);
+    return idx >= 0 ? idx : mergedArtifacts.length - 1;
+  }, [mergedArtifacts, artifact.id]);
+
+  useEffect(() => {
+    if (prevArtifactIdRef.current !== artifact.id) {
+      if (editableContent !== prevBaseContentRef.current) {
+        draftsRef.current.set(prevArtifactIdRef.current, editableContent);
+      } else {
+        draftsRef.current.delete(prevArtifactIdRef.current);
+      }
+      prevArtifactIdRef.current = artifact.id;
+      prevBaseContentRef.current = artifact.content;
+    }
+
+    const restoredDraft = draftsRef.current.get(artifact.id) ?? artifact.content;
+    setEditableContent(restoredDraft);
+    setDebouncedContent(restoredDraft);
     setRuntimeError(null);
     setConsoleLogs([]);
-    setInspectMode(false);
-    setZoomPct(100);
-    if (currentVersionIdx > 0 && allArtifacts[currentVersionIdx - 1]) {
-      setCompareBaselineId(allArtifacts[currentVersionIdx - 1].id);
+
+    if (!isHtmlOrSvg) {
+      setInspectMode(false);
+    }
+
+    if (currentVersionIdx > 0 && mergedArtifacts[currentVersionIdx - 1]) {
+      setCompareBaselineId(mergedArtifacts[currentVersionIdx - 1].id);
     } else {
       setCompareBaselineId('original');
     }
-    setTab(
-      artifact.kind === 'html' || artifact.kind === 'svg' || artifact.kind === 'markdown'
-        ? 'preview'
-        : 'code'
-    );
+
+    setTab((prevTab) => {
+      if (prevTab === 'code' || prevTab === 'diff') return prevTab;
+      if (prevTab === 'split' && canPreview) return 'split';
+      if (prevTab === 'console' && isHtmlOrSvg) return 'console';
+      return canPreview ? 'preview' : 'code';
+    });
   }, [artifact.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    sendInspectToggleToIframe(inspectMode);
+  }, [inspectMode]);
 
   // Debounce 250ms saat mengedit di IDE/Split agar iframe preview tidak kedip per ketukan
   useEffect(() => {
@@ -161,6 +202,8 @@ export const ArtifactPanel = memo(function ArtifactPanel({
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
+      const frameWin = iframeRef.current?.contentWindow;
+      if (!frameWin || event.source !== frameWin) return;
       if (event.data?.type === 'hydrogen-artifact-error') {
         const msg = String(event.data.message || 'Runtime Error');
         setRuntimeError(msg);
@@ -202,16 +245,30 @@ export const ArtifactPanel = memo(function ArtifactPanel({
 
   const baselineLabel = useMemo(() => {
     if (compareBaselineId === 'original') return 'Asli Artifact Ini';
-    const idx = allArtifacts.findIndex((a) => a.id === compareBaselineId);
+    const idx = mergedArtifacts.findIndex((a) => a.id === compareBaselineId);
     if (idx === -1) return 'Asli Artifact Ini';
-    return `v${idx + 1}: ${allArtifacts[idx].title}`;
-  }, [allArtifacts, compareBaselineId]);
+    return `v${idx + 1}: ${mergedArtifacts[idx].title}`;
+  }, [mergedArtifacts, compareBaselineId]);
 
   const baselineContent = useMemo(() => {
     if (compareBaselineId === 'original') return artifact.content;
-    const found = allArtifacts.find((a) => a.id === compareBaselineId);
+    const found = mergedArtifacts.find((a) => a.id === compareBaselineId);
     return found ? found.content : artifact.content;
-  }, [allArtifacts, artifact.content, compareBaselineId]);
+  }, [mergedArtifacts, artifact.content, compareBaselineId]);
+
+  const handleSaveLocalSnapshot = () => {
+    const nextIdx = mergedArtifacts.length + 1;
+    const snapshot: ArtifactItem = {
+      ...artifact,
+      id: `${artifact.id}-edit-${Date.now()}`,
+      title: `${artifact.title} (Edit v${nextIdx})`,
+      content: editableContent,
+    };
+    draftsRef.current.delete(artifact.id);
+    setLocalSnapshots((prev) => [...prev, snapshot]);
+    onSelectArtifact(snapshot);
+    toast.success(`Versi lokal "${snapshot.title}" disimpan`);
+  };
 
   const diffLines = useMemo(() => {
     if (tab !== 'diff') return [];
@@ -358,7 +415,9 @@ export const ArtifactPanel = memo(function ArtifactPanel({
                 key={`${artifact.id}-${refreshSeed}`}
                 title={artifact.title}
                 sandbox="allow-scripts"
-                onLoad={() => sendInspectToggleToIframe(inspectMode)}
+                onLoad={() => {
+                  if (inspectMode) sendInspectToggleToIframe(true);
+                }}
                 srcDoc={previewSrcDoc}
                 className={cn('h-full w-full border-0', isResizing && 'pointer-events-none')}
               />
@@ -414,12 +473,12 @@ export const ArtifactPanel = memo(function ArtifactPanel({
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
-          {allArtifacts.length > 1 && (
+          {mergedArtifacts.length > 1 && (
             <div className="flex items-center rounded-lg border bg-background/70 p-0.5">
               <button
                 type="button"
                 disabled={currentVersionIdx <= 0}
-                onClick={() => onSelectArtifact(allArtifacts[currentVersionIdx - 1])}
+                onClick={() => onSelectArtifact(mergedArtifacts[currentVersionIdx - 1])}
                 className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
                 title="Versi Sebelumnya"
               >
@@ -434,13 +493,13 @@ export const ArtifactPanel = memo(function ArtifactPanel({
                   >
                     <Layers className="hidden h-3 w-3 text-primary sm:inline" />
                     <span>
-                      v{currentVersionIdx + 1}/{allArtifacts.length}
+                      v{currentVersionIdx + 1}/{mergedArtifacts.length}
                     </span>
                     <ChevronDown className="h-3 w-3 opacity-60" />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="max-h-72 w-56 overflow-y-auto">
-                  {allArtifacts.map((item, idx) => (
+                  {mergedArtifacts.map((item, idx) => (
                     <DropdownMenuItem
                       key={item.id}
                       onClick={() => onSelectArtifact(item)}
@@ -457,8 +516,8 @@ export const ArtifactPanel = memo(function ArtifactPanel({
 
               <button
                 type="button"
-                disabled={currentVersionIdx >= allArtifacts.length - 1}
-                onClick={() => onSelectArtifact(allArtifacts[currentVersionIdx + 1])}
+                disabled={currentVersionIdx >= mergedArtifacts.length - 1}
+                onClick={() => onSelectArtifact(mergedArtifacts[currentVersionIdx + 1])}
                 className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
                 title="Versi Berikutnya"
               >
@@ -568,7 +627,7 @@ export const ArtifactPanel = memo(function ArtifactPanel({
                 }}
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
-                  item.desktopOnly && 'hidden lg:inline-flex',
+                  item.desktopOnly && 'hidden md:inline-flex',
                   active
                     ? 'bg-primary text-primary-foreground shadow-sm'
                     : 'text-muted-foreground hover:text-foreground'
@@ -745,9 +804,9 @@ export const ArtifactPanel = memo(function ArtifactPanel({
         {tab === 'preview' && canPreview ? (
           renderPreviewFrame()
         ) : tab === 'split' && canPreview ? (
-          <div className="grid h-full w-full grid-cols-2 divide-x overflow-hidden">
-            <div className="h-full min-w-0 overflow-hidden">{renderEditor()}</div>
-            <div className="h-full min-w-0 overflow-hidden">{renderPreviewFrame()}</div>
+          <div className="grid h-full w-full grid-cols-1 grid-rows-2 divide-y overflow-hidden lg:grid-cols-2 lg:grid-rows-1 lg:divide-x lg:divide-y-0">
+            <div className="h-full min-h-0 min-w-0 overflow-hidden">{renderEditor()}</div>
+            <div className="h-full min-h-0 min-w-0 overflow-hidden">{renderPreviewFrame()}</div>
           </div>
         ) : tab === 'diff' ? (
           <div className="flex h-full flex-col overflow-hidden">
@@ -780,7 +839,7 @@ export const ArtifactPanel = memo(function ArtifactPanel({
                         <Check className="h-3.5 w-3.5 text-primary" />
                       )}
                     </DropdownMenuItem>
-                    {allArtifacts.map((item, idx) =>
+                    {mergedArtifacts.map((item, idx) =>
                       item.id === artifact.id ? null : (
                         <DropdownMenuItem
                           key={item.id}
@@ -959,7 +1018,16 @@ export const ArtifactPanel = memo(function ArtifactPanel({
               <span>•</span>
               <button
                 type="button"
+                onClick={handleSaveLocalSnapshot}
+                className="font-semibold text-primary hover:underline"
+              >
+                Simpan Versi
+              </button>
+              <span>•</span>
+              <button
+                type="button"
                 onClick={() => {
+                  draftsRef.current.delete(artifact.id);
                   setEditableContent(artifact.content);
                   setRuntimeError(null);
                 }}

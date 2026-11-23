@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { handleGitHubAction } from '../api/_github.js';
-import { runResilientGeminiChat } from '../api/_gemini.js';
+import { getKeyPoolStatus, runResilientGeminiChat } from '../api/_gemini.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,8 +13,6 @@ const rootDir = path.resolve(__dirname, '..');
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
 const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gemini-4-hydrogen';
-const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
-const ROTATE_IMMEDIATELY_STATUSES = new Set([401, 403, 429]);
 
 let roundRobinCursor = 0;
 const keyCooldownMap = new Map();
@@ -67,6 +65,37 @@ app.get('/api/health', (_req, res) => {
     hasServerApiKey: envKeys.length > 0,
     serverKeyCount: envKeys.length,
     demoModeEnv: process.env.DEMO_MODE === 'true',
+  });
+});
+
+app.post('/api/key-status', (req, res) => {
+  const headerKeys = parseKeyPool(
+    typeof req.headers['x-gemini-api-keys'] === 'string' ? req.headers['x-gemini-api-keys'] : '',
+    typeof req.headers['x-gemini-api-key'] === 'string' ? req.headers['x-gemini-api-key'] : ''
+  );
+  const envKeys = getServerEnvKeys();
+  const usingBrowserKeys = headerKeys.length > 0;
+  const activeKeys = usingBrowserKeys ? headerKeys : envKeys;
+  const now = Date.now();
+
+  const geminiStatuses = getKeyPoolStatus(activeKeys);
+  const merged = geminiStatuses.map((item, idx) => {
+    const rawKey = activeKeys[idx];
+    const localCool = keyCooldownMap.get(rawKey) || 0;
+    const localRemaining = localCool > now ? Math.ceil((localCool - now) / 1000) : 0;
+    const remaining = Math.max(item.cooldownRemainingSec || 0, localRemaining);
+    return {
+      label: item.label,
+      status: remaining > 0 ? 'cooldown' : 'ready',
+      cooldownRemainingSec: remaining,
+    };
+  });
+
+  res.json({
+    ok: true,
+    source: usingBrowserKeys ? 'browser' : envKeys.length > 0 ? 'server' : 'none',
+    totalKeys: activeKeys.length,
+    keys: merged,
   });
 });
 
@@ -193,12 +222,13 @@ app.post('/api/compact', async (req, res) => {
   const candidates = Array.from(
     new Set(['gemini-3.8-flash', model || DEFAULT_MODEL].filter(Boolean))
   );
-  const ordered = buildOrderedCandidateKeys(apiKeys);
+  const disabledModels = new Set();
 
   try {
     const partSummaries = [];
 
     for (let i = 0; i < chunks.length; i++) {
+      const ordered = buildOrderedCandidateKeys(apiKeys);
       writeSseEvent(res, 'status', {
         message: `Meringkas riwayat bagian ${i + 1}/${chunks.length} tanpa menghilangkan detail teknis...`,
       });
@@ -221,7 +251,7 @@ app.post('/api/compact', async (req, res) => {
       let lastErr = 'Gagal meringkas bagian chat.';
 
       for (const targetModel of candidates) {
-        if (chunkDone) break;
+        if (chunkDone || disabledModels.has(targetModel)) continue;
         const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
           targetModel
         )}:generateContent`;
@@ -282,7 +312,16 @@ app.post('/api/compact', async (req, res) => {
                   triedNoThinking = true;
                   continue;
                 }
-                if (upstream.status === 404) break;
+                if (upstream.status === 404) {
+                  disabledModels.add(targetModel);
+                  break;
+                }
+                if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
+                  keyCooldownMap.set(
+                    entry.key,
+                    Date.now() + (upstream.status === 429 ? 60_000 : 120_000)
+                  );
+                }
               }
             } catch (err) {
               if (abortController.signal.aborted) return;
@@ -543,61 +582,6 @@ async function runDemoSse({ res, model, messages, includeThoughts = true, signal
   writeSseEvent(res, 'done', { model, finishReason: 'STOP', isDemo: true });
 }
 
-function buildGeminiContents(messages) {
-  return messages.map((msg) => {
-    const parts = [];
-    if (msg.content && msg.content.trim().length > 0) {
-      parts.push({ text: msg.content });
-    }
-    if (Array.isArray(msg.attachments)) {
-      for (const att of msg.attachments) {
-        parts.push(...buildAttachmentParts(att));
-      }
-    }
-    if (parts.length === 0) {
-      parts.push({ text: ' ' });
-    }
-    return {
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts,
-    };
-  });
-}
-
-function buildGeminiPayload({
-  contents,
-  systemInstruction,
-  maxOutputTokens,
-  includeThoughts,
-  thinkingLevel = 'medium',
-  withThinkingConfig,
-  withTools,
-}) {
-  const generationConfig = {
-    maxOutputTokens: Number.isFinite(Number(maxOutputTokens))
-      ? Number(maxOutputTokens)
-      : 8192,
-  };
-
-  if (withThinkingConfig && thinkingLevel) {
-    const map = { off: 'OFF', minimal: 'MINIMAL', low: 'LOW', medium: 'MEDIUM', high: 'HIGH' };
-    const apiLevel = map[String(thinkingLevel).toLowerCase()] || 'MEDIUM';
-    generationConfig.thinkingConfig = {
-      includeThoughts: Boolean(includeThoughts) && thinkingLevel !== 'off',
-      thinkingLevel: apiLevel,
-    };
-  }
-
-  const payload = { contents, generationConfig };
-  if (typeof systemInstruction === 'string' && systemInstruction.trim().length > 0) {
-    payload.systemInstruction = { parts: [{ text: systemInstruction.trim() }] };
-  }
-  if (withTools) {
-    payload.tools = [{ functionDeclarations: GITHUB_TOOL_DECLARATIONS }];
-  }
-  return payload;
-}
-
 function extractGeminiError(rawText, status) {
   let msg = `Gemini API error (${status})`;
   try {
@@ -627,133 +611,6 @@ function buildOrderedCandidateKeys(keys) {
     }
   }
   return [...ready, ...cooling];
-}
-
-async function fetchGeminiWithRotationAndRetry({
-  targetModel,
-  apiKeys,
-  contents,
-  systemInstruction,
-  temperature,
-  maxOutputTokens,
-  includeThoughts,
-  thinkingBudget,
-  withTools,
-  signal,
-  onStatus,
-  onInfo,
-}) {
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    targetModel
-  )}:streamGenerateContent?alt=sse`;
-
-  let wantsThinking = Boolean(includeThoughts) && Number(thinkingBudget) !== 0;
-  let enableTools = Boolean(withTools);
-  const orderedKeys = buildOrderedCandidateKeys(apiKeys);
-  const maxAttempts = orderedKeys.length > 1 ? orderedKeys.length : 4;
-
-  let keyPointer = 0;
-  let lastStatus = 503;
-  let lastErrorMessage = 'Semua API Key sedang sibuk atau terkena limit.';
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const current = orderedKeys[keyPointer % orderedKeys.length];
-    const keyLabel = maskKeyLabel(current.key, current.idx);
-
-    const upstream = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': current.key,
-      },
-      body: JSON.stringify(
-        buildGeminiPayload({
-          contents,
-          systemInstruction,
-          temperature,
-          maxOutputTokens,
-          includeThoughts,
-          thinkingBudget,
-          withThinkingConfig: wantsThinking,
-          withTools: enableTools,
-        })
-      ),
-      signal,
-    });
-
-    if (upstream.ok) {
-      if (attempt > 0 && orderedKeys.length > 1) {
-        onInfo(`Berhasil terhubung menggunakan ${keyLabel} (pool ${orderedKeys.length} keys)`);
-      }
-      return { ok: true, response: upstream, usedModel: targetModel };
-    }
-
-    const errBody = await upstream.text();
-    lastStatus = upstream.status;
-    lastErrorMessage = extractGeminiError(errBody, upstream.status);
-
-    if (upstream.status === 400 && wantsThinking && /thinking/i.test(errBody)) {
-      wantsThinking = false;
-      onInfo(`Model ${targetModel} tidak mendukung thinkingConfig; melanjutkan tanpa thinking summaries.`);
-      attempt -= 1;
-      continue;
-    }
-
-    if (upstream.status === 400 && enableTools && /tool|function/i.test(errBody)) {
-      enableTools = false;
-      onInfo(`Model ${targetModel} tidak mendukung function calling; melanjutkan tanpa GitHub tools.`);
-      attempt -= 1;
-      continue;
-    }
-
-    const isBadKey =
-      upstream.status === 401 ||
-      upstream.status === 403 ||
-      (upstream.status === 400 && /api.?key|expired|invalid/i.test(lastErrorMessage));
-
-    const canRotateToAnotherKey = orderedKeys.length > 1;
-    const isRetryable = RETRYABLE_STATUSES.has(upstream.status) || (isBadKey && canRotateToAnotherKey);
-
-    if (isRetryable && attempt + 1 < maxAttempts) {
-      const coolMs = isBadKey ? 120_000 : upstream.status === 429 ? 60_000 : 12_000;
-      keyCooldownMap.set(current.key, Date.now() + coolMs);
-
-      if (canRotateToAnotherKey) {
-        keyPointer += 1;
-        const nextCandidate = orderedKeys[keyPointer % orderedKeys.length];
-        const nextLabel = maskKeyLabel(nextCandidate.key, nextCandidate.idx);
-        const fastRotateDelay = ROTATE_IMMEDIATELY_STATUSES.has(upstream.status) || isBadKey ? 200 : 450;
-
-        onStatus(
-          `${keyLabel} terkena (${upstream.status}). Merotasi ke ${nextLabel} (${attempt + 2}/${maxAttempts})...`
-        );
-        await sleep(fastRotateDelay, signal);
-        continue;
-      }
-
-      const retryAfterSec = Number(upstream.headers.get('retry-after'));
-      const baseDelay =
-        Number.isFinite(retryAfterSec) && retryAfterSec > 0 && retryAfterSec <= 15
-          ? retryAfterSec * 1000
-          : 1200 * Math.pow(2, attempt) + Math.round(Math.random() * 450);
-
-      onStatus(
-        `Server ${targetModel} sedang padat (${upstream.status}). Mencoba ulang otomatis (${attempt + 1}/${maxAttempts - 1}) dalam ${(
-          baseDelay / 1000
-        ).toFixed(1)}s...`
-      );
-      await sleep(baseDelay, signal);
-      continue;
-    }
-
-    return {
-      ok: false,
-      status: lastStatus,
-      message: lastErrorMessage,
-    };
-  }
-
-  return { ok: false, status: lastStatus, message: lastErrorMessage };
 }
 
 app.post('/api/chat', async (req, res) => {

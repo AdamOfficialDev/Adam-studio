@@ -1,8 +1,10 @@
+import { useEffect, useMemo, useState } from 'react';
 import {
   Bookmark,
   Cpu,
   Download,
   FileUp,
+  Keyboard,
   Maximize2,
   MessageSquare,
   MonitorDown,
@@ -22,6 +24,7 @@ import {
   CommandSeparator,
   CommandShortcut,
 } from '@/components/ui/command';
+import { ShortcutsDialog } from '@/components/ShortcutsDialog';
 import { SLASH_PROMPTS } from '@/lib/personas';
 import type { Conversation, ThemeSkin } from '@/types/chat';
 
@@ -62,14 +65,62 @@ export function CommandPalette({
   showInstallOption = false,
   onInstallApp,
 }: CommandPaletteProps) {
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== '?' || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (open) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (
+        tag === 'input' ||
+        tag === 'textarea' ||
+        tag === 'select' ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      if (!shortcutsOpen && document.querySelector('[role="dialog"]')) return;
+      e.preventDefault();
+      setShortcutsOpen((prev) => !prev);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, shortcutsOpen]);
+
+  const searchableConversations = useMemo(() => {
+    const pool = query.trim() ? conversations : conversations.slice(0, 8);
+    return pool.map((conv) => {
+      const corpus = conv.messages
+        .slice(-12)
+        .map((m) => m.content)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .slice(0, 420);
+      return { conv, corpus };
+    });
+  }, [conversations, query]);
+
   const run = (fn: () => void) => {
     onOpenChange(false);
     fn();
   };
 
   return (
-    <CommandDialog open={open} onOpenChange={onOpenChange}>
-      <CommandInput placeholder="Ketik perintah, cari chat, import konteks, atau template..." />
+    <>
+      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      <CommandDialog open={open} onOpenChange={onOpenChange}>
+      <CommandInput
+        value={query}
+        onValueChange={setQuery}
+        placeholder="Ketik perintah, cari judul/isi chat, atau template..."
+      />
       <CommandList>
         <CommandEmpty>Tidak ada perintah atau chat yang cocok.</CommandEmpty>
 
@@ -114,6 +165,11 @@ export function CommandPalette({
             <Settings />
             <span>Buka Workspace Settings & API Key</span>
           </CommandItem>
+          <CommandItem onSelect={() => run(() => setShortcutsOpen(true))}>
+            <Keyboard className="text-primary" />
+            <span>Daftar Shortcut Keyboard & Gestures</span>
+            <CommandShortcut>?</CommandShortcut>
+          </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />
@@ -131,12 +187,19 @@ export function CommandPalette({
           ))}
         </CommandGroup>
 
-        {conversations.length > 0 && (
+        {searchableConversations.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Percakapan Terakhir">
-              {conversations.slice(0, 8).map((conv) => (
-                <CommandItem key={conv.id} onSelect={() => run(() => onSelectConversation(conv.id))}>
+            <CommandGroup
+              heading={query.trim() ? 'Hasil Pencarian Percakapan' : 'Percakapan Terakhir'}
+            >
+              {searchableConversations.map(({ conv, corpus }) => (
+                <CommandItem
+                  key={conv.id}
+                  value={`${conv.title} ${conv.id}`}
+                  keywords={[conv.model, corpus]}
+                  onSelect={() => run(() => onSelectConversation(conv.id))}
+                >
                   <MessageSquare className="text-muted-foreground" />
                   <span className="truncate">{conv.title}</span>
                   <CommandShortcut className="flex items-center gap-1">
@@ -167,5 +230,6 @@ export function CommandPalette({
         <span className="font-mono text-[10px] opacity-80">Adam Studio Command Bar</span>
       </div>
     </CommandDialog>
+    </>
   );
 }

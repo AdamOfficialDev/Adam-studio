@@ -122,12 +122,46 @@ export const SettingsDialog = memo(function SettingsDialog({
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [showKey, setShowKey] = useState(false);
   const [idbStats, setIdbStats] = useState<{ count: number; usedLabel: string } | null>(null);
+  const [keyPoolStatus, setKeyPoolStatus] = useState<
+    Array<{ label: string; status: 'ready' | 'cooldown'; cooldownRemainingSec: number }>
+  >([]);
+  const [keyPoolSource, setKeyPoolSource] = useState<'browser' | 'server' | 'none'>('none');
+  const [checkingKeyPool, setCheckingKeyPool] = useState(false);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
+
+  const fetchKeyPoolStatus = async (rawKeys: string) => {
+    setCheckingKeyPool(true);
+    try {
+      const normalized = rawKeys
+        .split(/[\r\n,;]+/)
+        .map((k) => k.trim())
+        .filter(Boolean)
+        .join(',');
+      const res = await fetch('/api/key-status', {
+        method: 'POST',
+        headers: normalized ? { 'x-gemini-api-keys': normalized } : {},
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json?.keys)) {
+          setKeyPoolStatus(json.keys);
+        }
+        if (json?.source === 'browser' || json?.source === 'server' || json?.source === 'none') {
+          setKeyPoolSource(json.source);
+        }
+      }
+    } catch {
+      toast.error('Gagal memeriksa status cooldown key');
+    } finally {
+      setCheckingKeyPool(false);
+    }
+  };
 
   useEffect(() => {
     if (open) {
       setDraft(settings);
       void getIndexedDbStats().then(setIdbStats);
+      void fetchKeyPoolStatus(settings.apiKey);
     }
   }, [open, settings]);
 
@@ -297,6 +331,60 @@ export const SettingsDialog = memo(function SettingsDialog({
                       <strong>Round-Robin</strong> dan langsung pindah saat limit <code>429</code> /{' '}
                       <code>503</code>.
                     </p>
+
+                    <div className="space-y-2 border-t border-border/60 pt-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-medium text-muted-foreground">
+                          Status Key Pool (
+                          {keyPoolSource === 'browser'
+                            ? 'Browser Keys'
+                            : keyPoolSource === 'server'
+                              ? 'Server Env'
+                              : 'Belum ada key'}
+                          )
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={checkingKeyPool}
+                          onClick={() => void fetchKeyPoolStatus(draft.apiKey)}
+                          className="h-6 rounded-lg px-2 text-[10px]"
+                        >
+                          {checkingKeyPool ? 'Memeriksa...' : 'Refresh Status'}
+                        </Button>
+                      </div>
+                      {keyPoolStatus.length === 0 ? (
+                        <p className="text-[10px] text-amber-400/90">
+                          Belum ada API Key aktif terdeteksi di Browser maupun Server Env.
+                        </p>
+                      ) : (
+                        <div className="flex flex-wrap gap-1.5">
+                          {keyPoolStatus.map((item) => (
+                            <span
+                              key={item.label}
+                              className={cn(
+                                'inline-flex items-center gap-1.5 rounded-lg border px-2 py-0.5 font-mono text-[10px]',
+                                item.status === 'cooldown'
+                                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
+                                  : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-400'
+                              )}
+                            >
+                              <span
+                                className={cn(
+                                  'h-1.5 w-1.5 rounded-full',
+                                  item.status === 'cooldown' ? 'bg-amber-400' : 'bg-emerald-400'
+                                )}
+                              />
+                              {item.label}
+                              {item.status === 'cooldown'
+                                ? ` (${item.cooldownRemainingSec}s)`
+                                : ' Ready'}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="space-y-3 rounded-2xl border bg-card/60 p-4">

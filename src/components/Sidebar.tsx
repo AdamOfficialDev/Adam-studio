@@ -124,27 +124,37 @@ export const Sidebar = memo(function Sidebar({
 
   const touchStartXRef = useRef<number | null>(null);
 
-  const { pinned, grouped, totalTokens, totalCost, filteredTotal } = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const filtered = conversations
-      .filter((c) => {
-        const matchesQuery = !q || c.title.toLowerCase().includes(q);
-        const matchesTab =
-          filterTab === 'all' ||
-          (filterTab === 'pinned' && Boolean(c.pinned)) ||
-          (filterTab === 'canvas' && convHasCanvas(c));
-        return matchesQuery && matchesTab;
-      })
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-
+  const { totalTokens, totalCost, canvasIds } = useMemo(() => {
     let tokens = 0;
     let cost = 0;
+    const withCanvas = new Set<string>();
     for (const c of conversations) {
+      if (convHasCanvas(c)) withCanvas.add(c.id);
       for (const m of c.messages) {
         if (m.usage?.totalTokenCount) tokens += m.usage.totalTokenCount;
         cost += estimateCostNumber(m.model || c.model, m.usage);
       }
     }
+    return { totalTokens: tokens, totalCost: cost, canvasIds: withCanvas };
+  }, [conversations]);
+
+  const { pinned, grouped, filteredTotal } = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const filtered = conversations
+      .filter((c) => {
+        const matchesTitle = c.title.toLowerCase().includes(q);
+        const matchesContent =
+          !matchesTitle &&
+          Boolean(q) &&
+          c.messages.some((m) => m.content && m.content.toLowerCase().includes(q));
+        const matchesQuery = !q || matchesTitle || matchesContent;
+        const matchesTab =
+          filterTab === 'all' ||
+          (filterTab === 'pinned' && Boolean(c.pinned)) ||
+          (filterTab === 'canvas' && canvasIds.has(c.id));
+        return matchesQuery && matchesTab;
+      })
+      .sort((a, b) => b.updatedAt - a.updatedAt);
 
     const pinnedList = filtered.filter((c) => c.pinned);
     const regularList = filtered.filter((c) => !c.pinned);
@@ -162,11 +172,9 @@ export const Sidebar = memo(function Sidebar({
     return {
       pinned: pinnedList,
       grouped: groups,
-      totalTokens: tokens,
-      totalCost: cost,
       filteredTotal: filtered.length,
     };
-  }, [conversations, filterTab, search]);
+  }, [conversations, filterTab, search, canvasIds]);
 
   const commitRename = (id: string) => {
     const trimmed = editingTitle.trim();
@@ -197,7 +205,7 @@ export const Sidebar = memo(function Sidebar({
   const renderConversationRow = (conv: Conversation) => {
     const isActive = conv.id === activeId;
     const isEditing = editingId === conv.id;
-    const hasCanvas = convHasCanvas(conv);
+    const hasCanvas = canvasIds.has(conv.id);
 
     if (isEditing) {
       return (

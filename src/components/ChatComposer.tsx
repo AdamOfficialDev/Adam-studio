@@ -74,7 +74,7 @@ interface SpeechRecognitionInstance {
   interimResults: boolean;
   continuous: boolean;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
@@ -635,9 +635,19 @@ export const ChatComposer = memo(function ChatComposer({
       }
     };
 
-    recognition.onerror = () => {
+    recognition.onerror = (event: { error?: string }) => {
       setIsRecording(false);
       setInterimText('');
+      const errCode = event?.error || '';
+      if (errCode === 'not-allowed' || errCode === 'service-not-allowed') {
+        toast.error('Izin mikrofon ditolak browser. Aktifkan izin mikrofon di address bar.');
+      } else if (errCode === 'audio-capture') {
+        toast.error('Perangkat mikrofon tidak ditemukan atau sedang dipakai aplikasi lain.');
+      } else if (errCode === 'network') {
+        toast.error('Koneksi Web Speech API bermasalah. Coba beralih ke AI Audio STT di Composer.');
+      } else if (errCode && errCode !== 'aborted' && errCode !== 'no-speech') {
+        toast.error(`Pengenalan suara berhenti (${errCode}).`);
+      }
     };
     recognition.onend = () => {
       setIsRecording(false);
@@ -722,6 +732,7 @@ export const ChatComposer = memo(function ChatComposer({
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing || e.key === 'Process') return;
     if (slashSuggestions.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -763,10 +774,15 @@ export const ChatComposer = memo(function ChatComposer({
     <div
       className="relative mx-auto w-full max-w-3xl px-3 pb-3 pt-1.5 sm:px-4 sm:pb-4"
       onDragOver={(e) => {
+        if (!e.dataTransfer?.types?.includes('Files')) return;
         e.preventDefault();
-        setIsDragging(true);
+        if (!isDragging) setIsDragging(true);
       }}
-      onDragLeave={() => setIsDragging(false)}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          setIsDragging(false);
+        }
+      }}
       onDrop={handleDrop}
     >
       <AnimatePresence>
