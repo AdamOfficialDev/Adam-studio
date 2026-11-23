@@ -3,6 +3,7 @@ import {
   buildProjectSystemSection,
   executeGitHubTool,
 } from './_github.js';
+import { hydrateKeyCooldowns, recordKeyCooldown } from './_cooldown.js';
 
 export const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 const ROTATE_IMMEDIATELY_STATUSES = new Set([401, 403, 408, 429]);
@@ -29,6 +30,11 @@ export function getKeyPoolStatus(keys = []) {
       cooldownRemainingSec,
     };
   });
+}
+
+export async function getKeyPoolStatusAsync(keys = []) {
+  await hydrateKeyCooldowns(keys, keyCooldownMap);
+  return getKeyPoolStatus(keys);
 }
 
 export function parseKeyPool(...sources) {
@@ -342,6 +348,7 @@ async function fetchGeminiWithRotationAndRetry({
   let enableToolConfig = true;
   let enableSearch = Boolean(withGoogleSearch);
   let enableUrl = Boolean(withUrlContext);
+  await hydrateKeyCooldowns(apiKeys, keyCooldownMap);
   const orderedKeys = buildOrderedCandidateKeys(apiKeys, excludeKeys);
   const maxAttempts = orderedKeys.length > 1 ? Math.min(Math.max(orderedKeys.length, 4), 14) : 4;
 
@@ -395,7 +402,7 @@ async function fetchGeminiWithRotationAndRetry({
           ? `Koneksi jaringan terputus (${err.message})`
           : 'Gagal terhubung ke Gemini API.';
 
-      keyCooldownMap.set(current.key, Date.now() + 15_000);
+      await recordKeyCooldown(current.key, 15_000, keyCooldownMap);
 
       if (attempt + 1 < maxAttempts) {
         if (orderedKeys.length > 1) {
@@ -518,7 +525,7 @@ async function fetchGeminiWithRotationAndRetry({
 
     if (isRetryable && attempt + 1 < maxAttempts) {
       const coolMs = isBadKey ? 120_000 : upstream.status === 429 ? 60_000 : 12_000;
-      keyCooldownMap.set(current.key, Date.now() + coolMs);
+      await recordKeyCooldown(current.key, coolMs, keyCooldownMap);
 
       if (canRotateToAnotherKey) {
         keyPointer += 1;
@@ -915,7 +922,7 @@ export async function runResilientGeminiChat({
 
       if (roundOutcome.streamError || droppedWithoutFinish) {
         if (result.usedKey) {
-          keyCooldownMap.set(result.usedKey, Date.now() + 60_000);
+          await recordKeyCooldown(result.usedKey, 60_000, keyCooldownMap);
           failedKeysThisRound.add(result.usedKey);
         }
 

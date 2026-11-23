@@ -1,3 +1,5 @@
+import { hydrateKeyCooldowns, recordKeyCooldown } from './_cooldown.js';
+
 export const config = {
   runtime: 'edge',
 };
@@ -50,6 +52,7 @@ async function callGeminiSummary({ model, apiKeys, prompt, signal }) {
   const candidates = Array.from(
     new Set(['gemini-3.8-flash', model || 'gemini-4-hydrogen'].filter(Boolean))
   );
+  await hydrateKeyCooldowns(apiKeys, compactCooldownMap);
   const orderedKeys = buildOrderedCompactKeys(apiKeys);
   const disabledModels = new Set();
 
@@ -112,7 +115,11 @@ async function callGeminiSummary({ model, apiKeys, prompt, signal }) {
               break;
             }
             if (res.status === 429 || res.status === 401 || res.status === 403) {
-              compactCooldownMap.set(key, Date.now() + (res.status === 429 ? 60_000 : 120_000));
+              await recordKeyCooldown(
+                key,
+                res.status === 429 ? 60_000 : 120_000,
+                compactCooldownMap
+              );
             }
           }
         } catch (err) {

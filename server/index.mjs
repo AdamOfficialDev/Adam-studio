@@ -4,7 +4,12 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { handleGitHubAction } from '../api/_github.js';
-import { getKeyPoolStatus, runResilientGeminiChat } from '../api/_gemini.js';
+import { getKeyPoolStatusAsync, runResilientGeminiChat } from '../api/_gemini.js';
+import {
+  hydrateKeyCooldowns,
+  isSharedCooldownEnabled,
+  recordKeyCooldown,
+} from '../api/_cooldown.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -68,7 +73,7 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.post('/api/key-status', (req, res) => {
+app.post('/api/key-status', async (req, res) => {
   const headerKeys = parseKeyPool(
     typeof req.headers['x-gemini-api-keys'] === 'string' ? req.headers['x-gemini-api-keys'] : '',
     typeof req.headers['x-gemini-api-key'] === 'string' ? req.headers['x-gemini-api-key'] : ''
@@ -78,7 +83,8 @@ app.post('/api/key-status', (req, res) => {
   const activeKeys = usingBrowserKeys ? headerKeys : envKeys;
   const now = Date.now();
 
-  const geminiStatuses = getKeyPoolStatus(activeKeys);
+  await hydrateKeyCooldowns(activeKeys, keyCooldownMap);
+  const geminiStatuses = await getKeyPoolStatusAsync(activeKeys);
   const merged = geminiStatuses.map((item, idx) => {
     const rawKey = activeKeys[idx];
     const localCool = keyCooldownMap.get(rawKey) || 0;
@@ -94,6 +100,7 @@ app.post('/api/key-status', (req, res) => {
   res.json({
     ok: true,
     source: usingBrowserKeys ? 'browser' : envKeys.length > 0 ? 'server' : 'none',
+    sharedStore: isSharedCooldownEnabled() ? 'upstash-redis' : 'memory',
     totalKeys: activeKeys.length,
     keys: merged,
   });
@@ -228,6 +235,7 @@ app.post('/api/compact', async (req, res) => {
     const partSummaries = [];
 
     for (let i = 0; i < chunks.length; i++) {
+      await hydrateKeyCooldowns(apiKeys, keyCooldownMap);
       const ordered = buildOrderedCandidateKeys(apiKeys);
       writeSseEvent(res, 'status', {
         message: `Meringkas riwayat bagian ${i + 1}/${chunks.length} tanpa menghilangkan detail teknis...`,
@@ -317,9 +325,10 @@ app.post('/api/compact', async (req, res) => {
                   break;
                 }
                 if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
-                  keyCooldownMap.set(
+                  await recordKeyCooldown(
                     entry.key,
-                    Date.now() + (upstream.status === 429 ? 60_000 : 120_000)
+                    upstream.status === 429 ? 60_000 : 120_000,
+                    keyCooldownMap
                   );
                 }
               }
@@ -492,7 +501,7 @@ app.post('/api/transcribe', async (req, res) => {
           }
 
           if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
-            keyCooldownMap.set(entry.key, Date.now() + 60_000);
+            await recordKeyCooldown(entry.key, 60_000, keyCooldownMap);
           }
           break;
         } catch (err) {

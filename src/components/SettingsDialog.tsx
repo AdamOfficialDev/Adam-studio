@@ -126,6 +126,7 @@ export const SettingsDialog = memo(function SettingsDialog({
     Array<{ label: string; status: 'ready' | 'cooldown'; cooldownRemainingSec: number }>
   >([]);
   const [keyPoolSource, setKeyPoolSource] = useState<'browser' | 'server' | 'none'>('none');
+  const [keyPoolStore, setKeyPoolStore] = useState<'upstash-redis' | 'memory'>('memory');
   const [checkingKeyPool, setCheckingKeyPool] = useState(false);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -148,6 +149,9 @@ export const SettingsDialog = memo(function SettingsDialog({
         }
         if (json?.source === 'browser' || json?.source === 'server' || json?.source === 'none') {
           setKeyPoolSource(json.source);
+        }
+        if (json?.sharedStore === 'upstash-redis' || json?.sharedStore === 'memory') {
+          setKeyPoolStore(json.sharedStore);
         }
       }
     } catch {
@@ -334,15 +338,20 @@ export const SettingsDialog = memo(function SettingsDialog({
 
                     <div className="space-y-2 border-t border-border/60 pt-2.5">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-medium text-muted-foreground">
-                          Status Key Pool (
-                          {keyPoolSource === 'browser'
-                            ? 'Browser Keys'
-                            : keyPoolSource === 'server'
-                              ? 'Server Env'
-                              : 'Belum ada key'}
-                          )
-                        </span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[11px] font-medium text-muted-foreground">
+                            Status Key Pool (
+                            {keyPoolSource === 'browser'
+                              ? 'Browser Keys'
+                              : keyPoolSource === 'server'
+                                ? 'Server Env'
+                                : 'Belum ada key'}
+                            )
+                          </span>
+                          <span className="rounded-md border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground">
+                            {keyPoolStore === 'upstash-redis' ? 'Global Redis' : 'Memory Lokal'}
+                          </span>
+                        </div>
                         <Button
                           type="button"
                           variant="outline"

@@ -1,0 +1,1105 @@
+import {
+  GITHUB_TOOL_DECLARATIONS,
+  buildProjectSystemSection,
+  executeGitHubTool,
+} from './_github.js';
+
+export const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+const ROTATE_IMMEDIATELY_STATUSES = new Set([401, 403, 408, 429]);
+const HARD_STOP_FINISH_REASONS = new Set([
+  'SAFETY',
+  'RECITATION',
+  'PROHIBITED_CONTENT',
+  'SPII',
+  'BLOCKLIST',
+  'IMAGE_SAFETY',
+]);
+
+let roundRobinCursor = Math.floor(Math.random() * 1000);
+const keyCooldownMap = new Map();
+
+export function getKeyPoolStatus(keys = []) {
+  const now = Date.now();
+  return keys.map((key, idx) => {
+    const coolUntil = keyCooldownMap.get(key) || 0;
+    const cooldownRemainingSec = coolUntil > now ? Math.ceil((coolUntil - now) / 1000) : 0;
+    return {
+      label: maskKeyLabel(key, idx),
+      status: cooldownRemainingSec > 0 ? 'cooldown' : 'ready',
+      cooldownRemainingSec,
+    };
+  });
+}
+
+export function parseKeyPool(...sources) {
+  const pool = [];
+  const seen = new Set();
+  for (const src of sources) {
+    if (!src || typeof src !== 'string') continue;
+    for (const part of src.split(/[\r\n,;]+/)) {
+      const k = part.trim();
+      if (k && !seen.has(k)) {
+        seen.add(k);
+        pool.push(k);
+      }
+    }
+  }
+  return pool;
+}
+
+export function maskKeyLabel(key, idx) {
+  const tail = key.length >= 4 ? key.slice(-4) : '****';
+  return `Key #${idx + 1} (•••${tail})`;
+}
+
+export function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function createLinkedTimeoutSignal(parentSignal, timeoutMs) {
+  const controller = new AbortController();
+  let timedOut = false;
+
+  const onParentAbort = () => controller.abort();
+  if (parentSignal?.aborted) {
+    controller.abort();
+  } else {
+    parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+  }
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  return {
+    signal: controller.signal,
+    didTimeout: () => timedOut,
+    cleanup: () => {
+      clearTimeout(timer);
+      parentSignal?.removeEventListener('abort', onParentAbort);
+    },
+  };
+}
+
+export function buildAttachmentParts(att) {
+  if (!att) return [];
+  if (att.kind === 'text' && typeof att.textContent === 'string') {
+    return [
+      {
+        text: `\n\n[Attached File: ${att.name}]\n\`\`\`\n${att.textContent}\n\`\`\``, 
+      },
+    ];
+  }
+  if (att.mimeType && att.data) {
+    return [
+      {
+        inlineData: {
+          mimeType: att.mimeType,
+          data: att.data,
+        },
+      },
+    ];
+  }
+  if (att.name) {
+    return [{ text: `[Attached ${att.kind || 'file'}: ${att.name}]` }];
+  }
+  return [];
+}
+
+export function buildGeminiContents(messages) {
+  return messages.map((msg) => {
+    const parts = [];
+    if (msg.content && msg.content.trim().length > 0) {
+      parts.push({ text: msg.content });
+    }
+    if (Array.isArray(msg.attachments)) {
+      for (const att of msg.attachments) {
+        parts.push(...buildAttachmentParts(att));
+      }
+    }
+    if (parts.length === 0) {
+      parts.push({ text: ' ' });
+    }
+    return {
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts,
+    };
+  });
+}
+
+export function buildOrderedCandidateKeys(keys, excludeKeys = new Set()) {
+  const now = Date.now();
+  const start = roundRobinCursor % keys.length;
+  roundRobinCursor = (roundRobinCursor + 1) % keys.length;
+
+  const rotated = [...keys.slice(start), ...keys.slice(0, start)];
+  const ready = [];
+  const cooling = [];
+  const excluded = [];
+
+  for (const item of rotated) {
+    const origIdx = keys.indexOf(item);
+    const coolUntil = keyCooldownMap.get(item) || 0;
+    if (excludeKeys.has(item)) {
+      excluded.push({ key: item, idx: origIdx });
+    } else if (coolUntil > now) {
+      cooling.push({ key: item, idx: origIdx });
+    } else {
+      ready.push({ key: item, idx: origIdx });
+    }
+  }
+
+  return [...ready, ...cooling, ...excluded];
+}
+
+export function extractGeminiError(rawText, status) {
+  let msg = `Gemini API error (${status})`;
+  try {
+    const parsed = JSON.parse(rawText);
+    if (parsed?.error?.message) msg = parsed.error.message;
+  } catch {
+    if (rawText) msg = rawText;
+  }
+  return msg;
+}
+
+const THINKING_LEVEL_TO_API = {
+  off: 'OFF',
+  minimal: 'MINIMAL',
+  low: 'LOW',
+  medium: 'MEDIUM',
+  high: 'HIGH',
+};
+
+function normalizeThinkingLevelForModel(modelId, rawLevel) {
+  const id = String(modelId || '').toLowerCase().trim();
+  if (/gemini-1\./.test(id) || (/gemini-2\.0/.test(id) && !/thinking/.test(id)) || /gemma|embedding|imagen|veo/.test(id)) {
+    return 'off';
+  }
+  let level = String(rawLevel || 'medium').toLowerCase().trim();
+  if (!THINKING_LEVEL_TO_API[level]) level = 'medium';
+  if (/pro|ultra|hydrogen|deep/.test(id) && !/flash/.test(id)) {
+    if (level === 'off' || level === 'minimal') level = 'low';
+  }
+  if (/gemini-2\.5/.test(id) && level === 'minimal') {
+    level = 'low';
+  }
+  return level;
+}
+
+function extractGroundingFromCandidate(candidate) {
+  if (!candidate || typeof candidate !== 'object') return null;
+
+  const gm = candidate.groundingMetadata;
+  const ucm = candidate.urlContextMetadata;
+
+  const webSearchQueries = Array.isArray(gm?.webSearchQueries)
+    ? gm.webSearchQueries.filter((q) => typeof q === 'string' && q.trim())
+    : [];
+
+  const sourcesMap = new Map();
+  if (Array.isArray(gm?.groundingChunks)) {
+    for (const chunk of gm.groundingChunks) {
+      const web = chunk?.web;
+      if (web?.uri) {
+        sourcesMap.set(web.uri, {
+          uri: web.uri,
+          title: typeof web.title === 'string' && web.title.trim() ? web.title.trim() : undefined,
+        });
+      }
+    }
+  }
+
+  const urlMap = new Map();
+  const urlList = ucm?.urlMetadata || ucm?.url_metadata;
+  if (Array.isArray(urlList)) {
+    for (const item of urlList) {
+      const url = item?.retrievedUrl || item?.retrieved_url;
+      if (url) {
+        urlMap.set(url, {
+          url,
+          status: item?.urlRetrievalStatus || item?.url_retrieval_status || undefined,
+        });
+      }
+    }
+  }
+
+  if (webSearchQueries.length === 0 && sourcesMap.size === 0 && urlMap.size === 0) {
+    return null;
+  }
+
+  return {
+    webSearchQueries: webSearchQueries.length > 0 ? webSearchQueries : undefined,
+    sources: sourcesMap.size > 0 ? Array.from(sourcesMap.values()) : undefined,
+    urlContexts: urlMap.size > 0 ? Array.from(urlMap.values()) : undefined,
+  };
+}
+
+function buildGeminiPayload({
+  contents,
+  systemInstruction,
+  maxOutputTokens,
+  includeThoughts,
+  thinkingLevel,
+  withThinkingConfig,
+  withTools,
+  withGoogleSearch = false,
+  withUrlContext = false,
+  toolMode = 'AUTO',
+  withToolConfig = true,
+}) {
+  const generationConfig = {
+    maxOutputTokens: Number.isFinite(Number(maxOutputTokens))
+      ? Number(maxOutputTokens)
+      : 8192,
+  };
+
+  const apiLevel = THINKING_LEVEL_TO_API[thinkingLevel] || null;
+  if (withThinkingConfig && apiLevel && thinkingLevel !== 'off') {
+    generationConfig.thinkingConfig = {
+      includeThoughts: Boolean(includeThoughts),
+      thinkingLevel: apiLevel,
+    };
+  } else if (withThinkingConfig && thinkingLevel === 'off') {
+    generationConfig.thinkingConfig = {
+      includeThoughts: false,
+      thinkingLevel: 'OFF',
+    };
+  }
+
+  const payload = {
+    contents,
+    generationConfig,
+  };
+
+  if (typeof systemInstruction === 'string' && systemInstruction.trim().length > 0) {
+    payload.systemInstruction = {
+      parts: [{ text: systemInstruction.trim() }],
+    };
+  }
+
+  const tools = [];
+  if (withTools) {
+    tools.push({ functionDeclarations: GITHUB_TOOL_DECLARATIONS });
+  }
+  if (withGoogleSearch) {
+    tools.push({ googleSearch: {} });
+  }
+  if (withUrlContext) {
+    tools.push({ urlContext: {} });
+  }
+  if (tools.length > 0) {
+    payload.tools = tools;
+    if (withTools && withToolConfig && toolMode && !withGoogleSearch && !withUrlContext) {
+      payload.toolConfig = {
+        functionCallingConfig: { mode: toolMode },
+      };
+    }
+  }
+
+  return payload;
+}
+
+async function fetchGeminiWithRotationAndRetry({
+  targetModel,
+  apiKeys,
+  excludeKeys = new Set(),
+  contents,
+  systemInstruction,
+  maxOutputTokens,
+  includeThoughts,
+  thinkingLevel = 'medium',
+  withTools,
+  withGoogleSearch = false,
+  withUrlContext = false,
+  toolMode = 'AUTO',
+  signal,
+  onStatus,
+  onInfo,
+}) {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    targetModel
+  )}:streamGenerateContent?alt=sse`;
+
+  let currentLevel = normalizeThinkingLevelForModel(targetModel, thinkingLevel);
+  let wantsThinking = currentLevel !== 'off' || /gemini-2\.5|gemini-3|gemini-4/.test(String(targetModel).toLowerCase());
+  let enableTools = Boolean(withTools);
+  let enableToolConfig = true;
+  let enableSearch = Boolean(withGoogleSearch);
+  let enableUrl = Boolean(withUrlContext);
+  const orderedKeys = buildOrderedCandidateKeys(apiKeys, excludeKeys);
+  const maxAttempts = orderedKeys.length > 1 ? Math.min(Math.max(orderedKeys.length, 4), 14) : 4;
+
+  let keyPointer = 0;
+  let lastStatus = 503;
+  let lastErrorMessage = 'Semua API Key sedang sibuk atau terkena limit.';
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
+    const current = orderedKeys[keyPointer % orderedKeys.length];
+    const keyLabel = maskKeyLabel(current.key, current.idx);
+    const reqGuard = createLinkedTimeoutSignal(signal, 25_000);
+
+    let upstream;
+    try {
+      upstream = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': current.key,
+        },
+        body: JSON.stringify(
+          buildGeminiPayload({
+            contents,
+            systemInstruction,
+            maxOutputTokens,
+            includeThoughts: Boolean(includeThoughts) && currentLevel !== 'off',
+            thinkingLevel: currentLevel,
+            withThinkingConfig: wantsThinking,
+            withTools: enableTools,
+            withGoogleSearch: enableSearch,
+            withUrlContext: enableUrl,
+            toolMode,
+            withToolConfig: enableToolConfig,
+          })
+        ),
+        signal: reqGuard.signal,
+      });
+    } catch (err) {
+      reqGuard.cleanup();
+      if (signal?.aborted) throw err;
+
+      const isTimeout = reqGuard.didTimeout();
+      lastStatus = isTimeout ? 504 : 502;
+      lastErrorMessage = isTimeout
+        ? `Koneksi ke ${targetModel} timeout (>25s) saat memakai ${keyLabel}.`
+        : err instanceof Error
+          ? `Koneksi jaringan terputus (${err.message})`
+          : 'Gagal terhubung ke Gemini API.';
+
+      keyCooldownMap.set(current.key, Date.now() + 15_000);
+
+      if (attempt + 1 < maxAttempts) {
+        if (orderedKeys.length > 1) {
+          keyPointer += 1;
+          const next = orderedKeys[keyPointer % orderedKeys.length];
+          onStatus(
+            `${lastErrorMessage} Merotasi ke ${maskKeyLabel(next.key, next.idx)} (${attempt + 2}/${maxAttempts})...`
+          );
+          await sleep(250, signal);
+        } else {
+          const delay = 1000 * Math.pow(2, attempt);
+          onStatus(`${lastErrorMessage} Mencoba ulang dalam ${(delay / 1000).toFixed(1)}s...`);
+          await sleep(delay, signal);
+        }
+        continue;
+      }
+
+      return { ok: false, status: lastStatus, message: lastErrorMessage, usedKey: current.key };
+    }
+
+    reqGuard.cleanup();
+
+    if (upstream.ok) {
+      if (attempt > 0 && orderedKeys.length > 1) {
+        onInfo(`Berhasil terhubung menggunakan ${keyLabel} (pool ${orderedKeys.length} keys)`);
+      }
+      return {
+        ok: true,
+        response: upstream,
+        usedModel: targetModel,
+        usedKey: current.key,
+        usedKeyLabel: keyLabel,
+      };
+    }
+
+    const errBody = await upstream.text().catch(() => '');
+      if (
+        upstream.status === 429 &&
+        enableSearch &&
+        /quota|exceeded|billing|limit|grounding|search|resource_exhausted/i.test(errBody)
+      ) {
+        return {
+          ok: false,
+          status: 429,
+          overloaded: false,
+          quotaExceeded: true,
+          message:
+            'Fitur Google Search Grounding memerlukan API Key Google Gemini versi berbayar (Pay-as-you-go / Billing aktif). Akun Free Tier tidak memiliki kuota Search Grounding (limit 0). Matikan toggle Search di bawah untuk melanjutkan chat biasa.',
+        };
+      }
+    lastStatus = upstream.status;
+    lastErrorMessage = extractGeminiError(errBody, upstream.status);
+
+    if (upstream.status === 400 && wantsThinking && /thinking/i.test(errBody)) {
+      if (currentLevel === 'off') {
+        currentLevel = 'minimal';
+        attempt -= 1;
+        continue;
+      }
+      if (currentLevel === 'minimal') {
+        currentLevel = 'low';
+        onInfo(`Model ${targetModel} tidak mendukung Minimal/Off; menyesuaikan otomatis ke Low.`);
+        attempt -= 1;
+        continue;
+      }
+      wantsThinking = false;
+      onInfo(`Model ${targetModel} tidak mendukung thinkingConfig; melanjutkan tanpa thinking.`);
+      attempt -= 1;
+      continue;
+    }
+
+    if (upstream.status === 400 && (enableSearch || enableUrl) && /url_?context|google_?search|search|tool|built-?in|combination|multiple tools/i.test(errBody)) {
+      if (enableUrl && /url_?context/i.test(errBody)) {
+        enableUrl = false;
+        onInfo(`Model ${targetModel} tidak mendukung urlContext; melanjutkan tanpa urlContext.`);
+        attempt -= 1;
+        continue;
+      }
+      if (enableTools && (enableSearch || enableUrl)) {
+        // Beberapa model Gemini tidak mengizinkan functionDeclarations dicampur googleSearch/urlContext
+        enableSearch = false;
+        enableUrl = false;
+        onInfo(`Model ${targetModel} tidak mengizinkan kombinasi GitHub Tools + Web Search/URL Context dalam 1 request; memprioritaskan GitHub Tools.`);
+        attempt -= 1;
+        continue;
+      }
+      if (enableUrl) {
+        enableUrl = false;
+        attempt -= 1;
+        continue;
+      }
+      if (enableSearch) {
+        enableSearch = false;
+        onInfo(`Model ${targetModel} tidak mendukung Google Search Grounding.`);
+        attempt -= 1;
+        continue;
+      }
+    }
+
+    if (upstream.status === 400 && enableTools && enableToolConfig && /toolConfig|functionCallingConfig/i.test(errBody)) {
+      enableToolConfig = false;
+      attempt -= 1;
+      continue;
+    }
+
+    if (upstream.status === 400 && enableTools && /tool|function/i.test(errBody)) {
+      enableTools = false;
+      onInfo(`Model ${targetModel} tidak mendukung function calling; melanjutkan tanpa GitHub tools.`);
+      attempt -= 1;
+      continue;
+    }
+
+    const isBadKey =
+      upstream.status === 401 ||
+      upstream.status === 403 ||
+      (upstream.status === 400 && /api.?key|expired|invalid|quota/i.test(lastErrorMessage));
+
+    const canRotateToAnotherKey = orderedKeys.length > 1;
+    const isRetryable = RETRYABLE_STATUSES.has(upstream.status) || (isBadKey && canRotateToAnotherKey);
+
+    if (isRetryable && attempt + 1 < maxAttempts) {
+      const coolMs = isBadKey ? 120_000 : upstream.status === 429 ? 60_000 : 12_000;
+      keyCooldownMap.set(current.key, Date.now() + coolMs);
+
+      if (canRotateToAnotherKey) {
+        keyPointer += 1;
+        const nextCandidate = orderedKeys[keyPointer % orderedKeys.length];
+        const nextLabel = maskKeyLabel(nextCandidate.key, nextCandidate.idx);
+        const fastRotateDelay = ROTATE_IMMEDIATELY_STATUSES.has(upstream.status) || isBadKey ? 180 : 400;
+
+        onStatus(
+          `${keyLabel} terkena (${upstream.status}). Merotasi ke ${nextLabel} (${attempt + 2}/${maxAttempts})...`
+        );
+        await sleep(fastRotateDelay, signal);
+        continue;
+      }
+
+      const retryAfterSec = Number(upstream.headers.get('retry-after'));
+      const baseDelay =
+        Number.isFinite(retryAfterSec) && retryAfterSec > 0 && retryAfterSec <= 15
+          ? retryAfterSec * 1000
+          : 1100 * Math.pow(2, attempt) + Math.round(Math.random() * 400);
+
+      onStatus(
+        `Server ${targetModel} padat (${upstream.status}). Mencoba ulang (${attempt + 1}/${maxAttempts - 1}) dalam ${(baseDelay / 1000).toFixed(1)}s...`
+      );
+      await sleep(baseDelay, signal);
+      continue;
+    }
+
+    return {
+      ok: false,
+      status: lastStatus,
+      message: lastErrorMessage,
+      usedKey: current.key,
+    };
+  }
+
+  return { ok: false, status: lastStatus, message: lastErrorMessage };
+}
+
+async function readChunkWithIdleTimeout(reader, parentSignal, idleMs = 45_000) {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error('STREAM_IDLE_TIMEOUT'));
+    }, idleMs);
+  });
+  const abortPromise = new Promise((_, reject) => {
+    if (parentSignal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    parentSignal?.addEventListener(
+      'abort',
+      () => reject(new DOMException('Aborted', 'AbortError')),
+      { once: true }
+    );
+  });
+
+  try {
+    return await Promise.race([reader.read(), timeoutPromise, abortPromise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function consumeGeminiStream({ upstream, signal, sendEvent }) {
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const modelTurnParts = [];
+  const functionCalls = [];
+  let deltaText = '';
+  let thoughtText = '';
+  let finishReason;
+  let streamError = null;
+
+  const processBlock = (rawEvent) => {
+    const dataLines = rawEvent
+      .split('\n')
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart());
+
+    if (dataLines.length === 0) return;
+    const jsonString = dataLines.join('\n').trim();
+    if (!jsonString || jsonString === '[DONE]') return;
+
+    let chunk;
+    try {
+      chunk = JSON.parse(jsonString);
+    } catch {
+      return;
+    }
+
+    if (chunk?.error) {
+      streamError = {
+        status: Number(chunk.error.code) || 503,
+        message: chunk.error.message || 'Gemini stream error di tengah respons.',
+      };
+      return;
+    }
+
+    const candidate = chunk?.candidates?.[0];
+    const parts = candidate?.content?.parts;
+
+    if (Array.isArray(parts)) {
+      for (const part of parts) {
+        if (part?.thought && typeof part?.text === 'string' && part.text.length > 0) {
+          thoughtText += part.text;
+          sendEvent('thought', { text: part.text });
+        } else if (part?.functionCall) {
+          modelTurnParts.push(part);
+          functionCalls.push(part.functionCall);
+        } else if (typeof part?.text === 'string' && part.text.length > 0) {
+          modelTurnParts.push(part);
+          deltaText += part.text;
+          sendEvent('delta', { text: part.text });
+        }
+      }
+    }
+
+    const groundingInfo = extractGroundingFromCandidate(candidate);
+    if (groundingInfo) {
+      sendEvent('grounding', { grounding: groundingInfo });
+    }
+
+    if (candidate?.finishReason) finishReason = candidate.finishReason;
+    if (chunk?.usageMetadata) sendEvent('usage', chunk.usageMetadata);
+  };
+
+  try {
+    while (true) {
+      const { value, done } = await readChunkWithIdleTimeout(reader, signal, 45_000);
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+
+      let boundaryIndex;
+      while ((boundaryIndex = buffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = buffer.slice(0, boundaryIndex);
+        buffer = buffer.slice(boundaryIndex + 2);
+        processBlock(rawEvent);
+        if (streamError) break;
+      }
+
+      if (streamError) break;
+    }
+
+    if (!streamError && buffer.trim()) {
+      processBlock(buffer);
+    }
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') throw err;
+    streamError = {
+      status: err instanceof Error && err.message === 'STREAM_IDLE_TIMEOUT' ? 504 : 502,
+      message:
+        err instanceof Error && err.message === 'STREAM_IDLE_TIMEOUT'
+          ? 'Stream Gemini API berhenti merespons (>45 detik tanpa data).'
+          : err instanceof Error
+            ? `Stream terputus di tengah jalan: ${err.message}`
+            : 'Stream upstream terputus.',
+    };
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Abaikan
+    }
+  }
+
+  return {
+    modelTurnParts,
+    functionCalls,
+    deltaText,
+    thoughtText,
+    finishReason,
+    streamError,
+  };
+}
+
+export async function runResilientGeminiChat({
+  model,
+  apiKeys,
+  messages,
+  githubProject,
+  githubToken,
+  systemInstruction,
+  maxOutputTokens,
+  includeThoughts,
+  thinkingLevel = 'medium',
+  autoFallbackOnOverload,
+  fallbackModel,
+  enableGoogleSearch = false,
+  enableUrlContext = true,
+  continueFrom,
+  signal,
+  sendEvent,
+}) {
+  const projectSection = buildProjectSystemSection(githubProject);
+  const mergedSystemInstruction = [systemInstruction, projectSection].filter(Boolean).join('\n\n');
+  const hasGitHubTools = Boolean(
+    githubProject?.owner && githubProject?.repo && githubProject?.agenticToolsEnabled
+  );
+
+  const workingContents = buildGeminiContents(messages);
+  const completedToolSignatureSet = new Set();
+
+  if (continueFrom && typeof continueFrom === 'object') {
+    const prevTools = Array.isArray(continueFrom.completedTools)
+      ? continueFrom.completedTools
+      : [];
+    const partialContent =
+      typeof continueFrom.partialContent === 'string' ? continueFrom.partialContent : '';
+    const partialThought =
+      typeof continueFrom.partialThought === 'string' ? continueFrom.partialThought : '';
+
+    if (prevTools.length > 0) {
+      const doneTools = prevTools.filter((item) => item && item.status === 'done');
+      for (const item of doneTools) {
+        completedToolSignatureSet.add(`${item.name}::${item.argsSummary || ''}`);
+      }
+      const toolSummaryLines = prevTools
+        .map(
+          (item, i) =>
+            `${i + 1}. [${item.status || 'done'}] ${item.name}(${item.argsSummary || ''})${item.resultSummary ? ` -> ${item.resultSummary}` : ''}`
+        )
+        .join('\n');
+
+      workingContents.push({
+        role: 'model',
+        parts: [
+          {
+            text: `[Checkpoint State Sebelumnya — JANGAN DIULANG]\nTool yang sudah dieksekusi:\n${toolSummaryLines}${partialThought ? `\n\nRingkasan analisis sebelumnya:\n${partialThought.slice(-1800)}` : ''}`,
+          },
+        ],
+      });
+      workingContents.push({
+        role: 'user',
+        parts: [
+          {
+            text: partialContent
+              ? 'Langkah tool di atas SUDAH selesai pada sesi sebelumnya. JANGAN mengulangi pemanggilan tool yang sudah sukses di atas. Lanjutkan dari state terakhir.'
+              : 'Langkah tool di atas SUDAH dijalankan sebelumnya sebelum koneksi terputus. JANGAN mengulangi pembacaan file/tool yang sama kecuali ada file baru yang belum dibaca; segera lanjutkan ke langkah berikutnya atau langsung tulis jawaban lengkap.',
+          },
+        ],
+      });
+    }
+
+    if (partialContent.trim().length > 0) {
+      workingContents.push({
+        role: 'model',
+        parts: [{ text: partialContent }],
+      });
+      workingContents.push({
+        role: 'user',
+        parts: [
+          {
+            text: 'Stream sebelumnya terputus di tengah jalan. Lanjutkan jawabanmu PERSIS dari karakter/kalimat terakhir di atas tanpa mengulang penjelasan atau kode yang sudah tertulis.',
+          },
+        ],
+      });
+    }
+  }
+  let activeModel = model;
+  let lastFinishReason;
+  let totalAnswerText = '';
+  let toolsHaveBeenUsed = false;
+
+  const MAX_TOOL_ROUNDS = hasGitHubTools ? 6 : 1;
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const allowToolsThisRound = hasGitHubTools && round < MAX_TOOL_ROUNDS - 1;
+    const isFinalSynthesisRound = hasGitHubTools && !allowToolsThisRound;
+
+    const failedKeysThisRound = new Set();
+    let roundSuccess = false;
+    let roundOutcome = null;
+    let currentThinkingLevel = normalizeThinkingLevelForModel(activeModel, thinkingLevel);
+    let currentIncludeThoughts = Boolean(includeThoughts) && currentThinkingLevel !== 'off';
+    let currentMaxOutputTokens = Number(maxOutputTokens) || 8192;
+    let currentToolMode = isFinalSynthesisRound ? 'NONE' : 'AUTO';
+
+    for (let recoveryAttempt = 0; recoveryAttempt < 3; recoveryAttempt++) {
+      const roundContents =
+        isFinalSynthesisRound && recoveryAttempt === 0
+          ? [
+              ...workingContents,
+              {
+                role: 'user',
+                parts: [
+                  {
+                    text: 'Semua file yang diperlukan sudah dibaca. Sekarang tulis jawaban lengkap dan terstruktur untuk pengguna tanpa memanggil tool lagi.',
+                  },
+                ],
+              },
+            ]
+          : workingContents;
+
+      const sendWithTools = hasGitHubTools && (allowToolsThisRound || toolsHaveBeenUsed);
+      const lastUserMsgText = Array.isArray(messages)
+        ? ([...messages].reverse().find((m) => m?.role === 'user')?.content || '')
+        : '';
+      const promptHasUrl =
+        typeof lastUserMsgText === 'string' &&
+        /https?:\/\/[^\s)>\]"']+/i.test(lastUserMsgText);
+      const sendWithSearch = Boolean(enableGoogleSearch);
+      const sendWithUrl = Boolean(enableUrlContext) && promptHasUrl;
+
+      let result = await fetchGeminiWithRotationAndRetry({
+        targetModel: activeModel,
+        apiKeys,
+        excludeKeys: failedKeysThisRound,
+        contents: roundContents,
+        systemInstruction: mergedSystemInstruction,
+        maxOutputTokens: currentMaxOutputTokens,
+        includeThoughts: currentIncludeThoughts,
+        thinkingLevel: currentThinkingLevel,
+        withTools: sendWithTools,
+        withGoogleSearch: sendWithSearch,
+        withUrlContext: sendWithUrl,
+        toolMode: currentToolMode,
+        signal,
+        onStatus: (message) => sendEvent('status', { message }),
+        onInfo: (message) => sendEvent('info', { message }),
+      });
+
+      if (
+        !result.ok &&
+        (RETRYABLE_STATUSES.has(result.status) || result.status >= 500) &&
+        autoFallbackOnOverload &&
+        fallbackModel &&
+        fallbackModel !== activeModel
+      ) {
+        sendEvent('status', {
+          message: `${activeModel} bermasalah (${result.status}). Beralih otomatis ke ${fallbackModel}...`,
+        });
+        sendEvent('info', {
+          message: `Fallback otomatis ke ${fallbackModel} karena ${activeModel} sedang tidak stabil.`,
+        });
+        result = await fetchGeminiWithRotationAndRetry({
+          targetModel: fallbackModel,
+          apiKeys,
+          excludeKeys: failedKeysThisRound,
+          contents: roundContents,
+          systemInstruction: mergedSystemInstruction,
+          maxOutputTokens: currentMaxOutputTokens,
+          includeThoughts: currentIncludeThoughts,
+          thinkingLevel: normalizeThinkingLevelForModel(fallbackModel, currentThinkingLevel),
+          withTools: sendWithTools,
+          withGoogleSearch: sendWithSearch,
+          withUrlContext: sendWithUrl,
+          toolMode: currentToolMode,
+          signal,
+          onStatus: (message) => sendEvent('status', { message }),
+          onInfo: (message) => sendEvent('info', { message }),
+        });
+      }
+
+      if (!result.ok) {
+    if (sendWithSearch && (result.status === 429 || result.quotaExceeded)) {
+      sendEvent('error', {
+        message:
+          'Fitur Google Search Grounding membutuhkan API Key berbayar (Pay-as-you-go / Billing aktif). Akun Free Tier memiliki limit 0 untuk Search Grounding. Matikan toggle Search untuk melanjutkan chat biasa.',
+      });
+      return;
+    }
+        sendEvent('error', { status: result.status, message: result.message });
+        return;
+      }
+
+      activeModel = result.usedModel;
+      if (!result.response?.body) {
+        if (result.usedKey) failedKeysThisRound.add(result.usedKey);
+        if (recoveryAttempt < 2) continue;
+        sendEvent('error', { status: 502, message: 'Stream respons dari Gemini API kosong.' });
+        return;
+      }
+
+      roundOutcome = await consumeGeminiStream({
+        upstream: result.response,
+        signal,
+        sendEvent,
+      });
+
+      if (roundOutcome.deltaText) {
+        totalAnswerText += roundOutcome.deltaText;
+      }
+      if (roundOutcome.finishReason) {
+        lastFinishReason = roundOutcome.finishReason;
+      }
+
+      const droppedWithoutFinish =
+        !roundOutcome.finishReason &&
+        !roundOutcome.streamError &&
+        roundOutcome.functionCalls.length === 0;
+
+      if (roundOutcome.streamError || droppedWithoutFinish) {
+        if (result.usedKey) {
+          keyCooldownMap.set(result.usedKey, Date.now() + 60_000);
+          failedKeysThisRound.add(result.usedKey);
+        }
+
+        const errMsg =
+          roundOutcome.streamError?.message ||
+          'Koneksi stream terputus mendadak sebelum respons selesai.';
+        const errStatus = roundOutcome.streamError?.status || 502;
+
+        if (totalAnswerText.length > 0 && recoveryAttempt < 2) {
+          sendEvent('status', {
+            message: `${errMsg} Melanjutkan otomatis dengan key cadangan...`,
+          });
+          workingContents.push({ role: 'model', parts: [{ text: totalAnswerText }] });
+          workingContents.push({
+            role: 'user',
+            parts: [
+              {
+                text: 'Koneksi sempat terputus di tengah jawaban. Lanjutkan responsmu PERSIS dari karakter terakhir di atas tanpa mengulang kalimat atau blok kode yang sudah ditulis.',
+              },
+            ],
+          });
+          currentToolMode = 'NONE';
+          await sleep(300, signal);
+          continue;
+        }
+
+        if (totalAnswerText.length === 0 && recoveryAttempt < 2) {
+          sendEvent('status', {
+            message: `${errMsg} Mencoba ulang otomatis dengan key lain...`,
+          });
+          if (
+            recoveryAttempt === 1 &&
+            autoFallbackOnOverload &&
+            fallbackModel &&
+            fallbackModel !== activeModel
+          ) {
+            activeModel = fallbackModel;
+            sendEvent('info', {
+              message: `Stream ${model} putus di tengah proses; beralih otomatis ke ${fallbackModel}.`,
+            });
+          }
+          await sleep(350, signal);
+          continue;
+        }
+
+        sendEvent('error', { status: errStatus, message: errMsg });
+        return;
+      }
+
+      if (
+        HARD_STOP_FINISH_REASONS.has(roundOutcome.finishReason) &&
+        roundOutcome.deltaText.length === 0
+      ) {
+        sendEvent('error', {
+          status: 422,
+          message: `Model menghentikan respons karena kebijakan (${roundOutcome.finishReason}).`,
+        });
+        return;
+      }
+
+      const isEmptyTurn =
+        roundOutcome.functionCalls.length === 0 && roundOutcome.deltaText.length === 0;
+
+      if (isEmptyTurn || roundOutcome.finishReason === 'MALFORMED_FUNCTION_CALL') {
+        if (recoveryAttempt < 2) {
+          if (result.usedKey) failedKeysThisRound.add(result.usedKey);
+
+          if (roundOutcome.finishReason === 'MAX_TOKENS') {
+            currentIncludeThoughts = false;
+            currentThinkingLevel = normalizeThinkingLevelForModel(activeModel, 'minimal');
+            currentMaxOutputTokens = Math.max(currentMaxOutputTokens, 8192);
+            sendEvent('status', {
+              message: 'Token habis saat fase thinking. Mencoba ulang langsung ke jawaban...',
+            });
+          } else if (
+            roundOutcome.finishReason === 'MALFORMED_FUNCTION_CALL' ||
+            toolsHaveBeenUsed
+          ) {
+            currentToolMode = 'NONE';
+            sendEvent('status', {
+              message: 'Tool call tidak selesai. Meminta model menyusun jawaban dari data yang ada...',
+            });
+          } else {
+            sendEvent('status', {
+              message: 'Model mengembalikan respons kosong. Merotasi API key & mencoba ulang...',
+            });
+          }
+
+          await sleep(300, signal);
+          continue;
+        }
+
+        sendEvent('error', {
+          status: 502,
+          message: `Model selesai tanpa teks jawaban (${roundOutcome.finishReason || 'EMPTY_RESPONSE'}). Silakan coba ulangi atau ganti model.`,
+        });
+        return;
+      }
+
+      roundSuccess = true;
+      break;
+    }
+
+    if (!roundSuccess || !roundOutcome) {
+      sendEvent('error', {
+        status: 502,
+        message: 'Gagal mendapatkan respons utuh dari model setelah beberapa kali percobaan.',
+      });
+      return;
+    }
+
+    if (roundOutcome.functionCalls.length === 0 || !allowToolsThisRound) {
+      break;
+    }
+
+    toolsHaveBeenUsed = true;
+    workingContents.push({ role: 'model', parts: roundOutcome.modelTurnParts });
+
+    const functionResponseParts = await Promise.all(
+      roundOutcome.functionCalls.map(async (fc, idx) => {
+        const callId = `tool-${round}-${idx}-${Date.now()}`;
+        const argsSummary =
+          fc.name === 'github_read_file'
+            ? String(fc.args?.path || '')
+            : fc.name === 'github_search_code'
+              ? String(fc.args?.query || '')
+              : String(fc.args?.prefix || 'root');
+
+        sendEvent('tool_call', { id: callId, name: fc.name, argsSummary, status: 'running' });
+
+        const rangeTag =
+          fc.name === 'github_read_file' && (fc.args?.startLine || fc.args?.endLine)
+            ? `#${fc.args?.startLine ?? 1}-${fc.args?.endLine ?? 'end'}`
+            : '';
+        const sig = `${fc.name}::${argsSummary}${rangeTag}`;
+        const toolOutcome = completedToolSignatureSet.has(sig)
+          ? {
+              ok: true,
+              summary: 'Skipped (sudah dijalankan pada state sebelumnya)',
+              response: {
+                alreadyExecuted: true,
+                note: `Tool ${fc.name}(${argsSummary}) sudah dijalankan pada state sebelum Continue. Jangan panggil ulang; gunakan konteks yang sudah ada atau langsung tulis jawaban akhir.`,
+              },
+            }
+          : await executeGitHubTool({
+              name: fc.name,
+              args: fc.args,
+              githubProject,
+              githubToken,
+              signal,
+            });
+        if (toolOutcome.ok) completedToolSignatureSet.add(sig);
+
+        sendEvent('tool_result', {
+          id: callId,
+          name: fc.name,
+          argsSummary,
+          status: toolOutcome.ok ? 'done' : 'error',
+          resultSummary: toolOutcome.summary,
+        });
+
+        return {
+          functionResponse: {
+            name: fc.name,
+            response: toolOutcome.response,
+          },
+        };
+      })
+    );
+
+    workingContents.push({ role: 'user', parts: functionResponseParts });
+  }
+
+  if (totalAnswerText.trim().length === 0) {
+    sendEvent('error', {
+      status: 502,
+      message: `Respons model kosong setelah menjalankan tools (${lastFinishReason || 'NO_TEXT'}).`,
+    });
+    return;
+  }
+
+  sendEvent('done', {
+    model: activeModel,
+    finishReason: lastFinishReason || 'STOP',
+    isDemo: false,
+  });
+}

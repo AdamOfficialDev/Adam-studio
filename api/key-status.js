@@ -1,3 +1,5 @@
+import { hydrateKeyCooldowns, isSharedCooldownEnabled } from './_cooldown.js';
+
 export const config = {
   runtime: 'edge',
 };
@@ -36,16 +38,25 @@ export default async function handler(request) {
   const usingBrowserKeys = headerKeys.length > 0;
   const activeKeys = usingBrowserKeys ? headerKeys : envKeys;
 
+  const tempMap = new Map();
+  await hydrateKeyCooldowns(activeKeys, tempMap);
+  const now = Date.now();
+
   return Response.json(
     {
       ok: true,
       source: usingBrowserKeys ? 'browser' : envKeys.length > 0 ? 'server' : 'none',
+      sharedStore: isSharedCooldownEnabled() ? 'upstash-redis' : 'memory',
       totalKeys: activeKeys.length,
-      keys: activeKeys.map((k, idx) => ({
-        label: maskKeyLabel(k, idx),
-        status: 'ready',
-        cooldownRemainingSec: 0,
-      })),
+      keys: activeKeys.map((k, idx) => {
+        const coolUntil = tempMap.get(k) || 0;
+        const cooldownRemainingSec = coolUntil > now ? Math.ceil((coolUntil - now) / 1000) : 0;
+        return {
+          label: maskKeyLabel(k, idx),
+          status: cooldownRemainingSec > 0 ? 'cooldown' : 'ready',
+          cooldownRemainingSec,
+        };
+      }),
     },
     {
       headers: {
