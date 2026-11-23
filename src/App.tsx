@@ -96,6 +96,7 @@ import type {
   ServerHealth,
   ThemeSkin,
   TokenUsage,
+  GroundingMetadataInfo,
   ToolTraceItem,
   VisualTarget,
 } from '@/types/chat';
@@ -599,6 +600,7 @@ export default function App() {
         ? [...continueMessage.toolEvents]
         : [];
       let accUsage: TokenUsage | undefined = continueMessage?.usage;
+      let accGrounding: GroundingMetadataInfo | undefined = continueMessage?.grounding;
       let chunkCount = 0;
 
       const continueFrom = continueMessage
@@ -623,6 +625,7 @@ export default function App() {
         toolEvents: accTools.length > 0 ? [...accTools] : undefined,
         tps: 0,
         usage: accUsage,
+        grounding: accGrounding,
       };
       setStreamState(initialStream);
 
@@ -668,6 +671,8 @@ export default function App() {
             maxOutputTokens: settings.maxOutputTokens,
             includeThoughts: settings.includeThoughts,
             thinkingLevel: resolveValidThinkingLevel(modelId, settings.thinkingLevel),
+            enableGoogleSearch: settings.enableGoogleSearch,
+            enableUrlContext: settings.enableUrlContext,
             autoFallbackOnOverload: settings.autoFallbackOnOverload,
             fallbackModel: settings.fallbackModel,
             demoMode: settings.demoMode,
@@ -711,6 +716,32 @@ export default function App() {
             },
             onUsage: (usage) => {
               accUsage = usage;
+            },
+            onGrounding: (grounding) => {
+              const prevSources = accGrounding?.sources || [];
+              const nextSources = grounding.sources || [];
+              const mergedMap = new Map<string, { title?: string; uri: string }>();
+              for (const s of [...prevSources, ...nextSources]) {
+                if (s?.uri) mergedMap.set(s.uri, s);
+              }
+              const prevUrls = accGrounding?.urlContexts || [];
+              const nextUrls = grounding.urlContexts || [];
+              const urlMap = new Map<string, { url: string; status?: string }>();
+              for (const u of [...prevUrls, ...nextUrls]) {
+                if (u?.url) urlMap.set(u.url, u);
+              }
+              const mergedQueries = Array.from(
+                new Set([
+                  ...(accGrounding?.webSearchQueries || []),
+                  ...(grounding.webSearchQueries || []),
+                ])
+              );
+              accGrounding = {
+                webSearchQueries: mergedQueries.length > 0 ? mergedQueries : undefined,
+                sources: mergedMap.size > 0 ? Array.from(mergedMap.values()) : undefined,
+                urlContexts: urlMap.size > 0 ? Array.from(urlMap.values()) : undefined,
+              };
+              scheduleFlush();
             },
             onInfo: (infoMsg) => {
               toast.info(infoMsg);

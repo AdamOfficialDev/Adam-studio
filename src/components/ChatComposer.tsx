@@ -10,6 +10,8 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowUp,
   Brain,
+  Globe,
+  Link2,
   Check,
   Crosshair,
   FileAudio,
@@ -947,6 +949,52 @@ export const ChatComposer = memo(function ChatComposer({
               <span className="hidden sm:inline">
                 {thinkingOn ? THINKING_LEVEL_META[effectiveThinkingLevel].label : 'Think'}
               </span>
+            </Button>
+
+            <Button
+              type="button"
+              variant={settings.enableGoogleSearch ? 'secondary' : 'ghost'}
+              size="sm"
+              disabled={isStreaming}
+              onClick={() => {
+                const next = !settings.enableGoogleSearch;
+                onUpdateSettings({ ...settings, enableGoogleSearch: next });
+                toast.success(
+                  next ? 'Google Search Grounding: Aktif' : 'Google Search Grounding: Nonaktif'
+                );
+              }}
+              className={cn(
+                'h-8 gap-1 rounded-xl px-2 text-xs',
+                settings.enableGoogleSearch
+                  ? 'border border-sky-500/35 bg-sky-500/10 text-sky-400 hover:bg-sky-500/20'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+              title="Google Search Grounding (riset web real-time & sitasi)"
+            >
+              <Globe className="h-3.5 w-3.5" />
+              <span className="hidden md:inline">Search</span>
+            </Button>
+
+            <Button
+              type="button"
+              variant={settings.enableUrlContext ? 'secondary' : 'ghost'}
+              size="sm"
+              disabled={isStreaming}
+              onClick={() => {
+                const next = !settings.enableUrlContext;
+                onUpdateSettings({ ...settings, enableUrlContext: next });
+                toast.success(next ? 'URL Context: Aktif' : 'URL Context: Nonaktif');
+              }}
+              className={cn(
+                'h-8 gap-1 rounded-xl px-2 text-xs',
+                settings.enableUrlContext
+                  ? 'border border-emerald-500/35 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+              title="URL Context (baca isi tautan/dokumentasi yang ditempel di prompt)"
+            >
+              <Link2 className="h-3.5 w-3.5" />
+              <span className="hidden md:inline">URL</span>
             </Button>
 
             <Button

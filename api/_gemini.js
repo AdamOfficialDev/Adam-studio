@@ -189,6 +189,54 @@ function normalizeThinkingLevelForModel(modelId, rawLevel) {
   return level;
 }
 
+function extractGroundingFromCandidate(candidate) {
+  if (!candidate || typeof candidate !== 'object') return null;
+
+  const gm = candidate.groundingMetadata;
+  const ucm = candidate.urlContextMetadata;
+
+  const webSearchQueries = Array.isArray(gm?.webSearchQueries)
+    ? gm.webSearchQueries.filter((q) => typeof q === 'string' && q.trim())
+    : [];
+
+  const sourcesMap = new Map();
+  if (Array.isArray(gm?.groundingChunks)) {
+    for (const chunk of gm.groundingChunks) {
+      const web = chunk?.web;
+      if (web?.uri) {
+        sourcesMap.set(web.uri, {
+          uri: web.uri,
+          title: typeof web.title === 'string' && web.title.trim() ? web.title.trim() : undefined,
+        });
+      }
+    }
+  }
+
+  const urlMap = new Map();
+  const urlList = ucm?.urlMetadata || ucm?.url_metadata;
+  if (Array.isArray(urlList)) {
+    for (const item of urlList) {
+      const url = item?.retrievedUrl || item?.retrieved_url;
+      if (url) {
+        urlMap.set(url, {
+          url,
+          status: item?.urlRetrievalStatus || item?.url_retrieval_status || undefined,
+        });
+      }
+    }
+  }
+
+  if (webSearchQueries.length === 0 && sourcesMap.size === 0 && urlMap.size === 0) {
+    return null;
+  }
+
+  return {
+    webSearchQueries: webSearchQueries.length > 0 ? webSearchQueries : undefined,
+    sources: sourcesMap.size > 0 ? Array.from(sourcesMap.values()) : undefined,
+    urlContexts: urlMap.size > 0 ? Array.from(urlMap.values()) : undefined,
+  };
+}
+
 function buildGeminiPayload({
   contents,
   systemInstruction,
@@ -197,6 +245,8 @@ function buildGeminiPayload({
   thinkingLevel,
   withThinkingConfig,
   withTools,
+  withGoogleSearch = false,
+  withUrlContext = false,
   toolMode = 'AUTO',
   withToolConfig = true,
 }) {
@@ -230,9 +280,19 @@ function buildGeminiPayload({
     };
   }
 
+  const tools = [];
   if (withTools) {
-    payload.tools = [{ functionDeclarations: GITHUB_TOOL_DECLARATIONS }];
-    if (withToolConfig && toolMode) {
+    tools.push({ functionDeclarations: GITHUB_TOOL_DECLARATIONS });
+  }
+  if (withGoogleSearch) {
+    tools.push({ googleSearch: {} });
+  }
+  if (withUrlContext) {
+    tools.push({ urlContext: {} });
+  }
+  if (tools.length > 0) {
+    payload.tools = tools;
+    if (withTools && withToolConfig && toolMode && !withGoogleSearch && !withUrlContext) {
       payload.toolConfig = {
         functionCallingConfig: { mode: toolMode },
       };
@@ -252,6 +312,8 @@ async function fetchGeminiWithRotationAndRetry({
   includeThoughts,
   thinkingLevel = 'medium',
   withTools,
+  withGoogleSearch = false,
+  withUrlContext = false,
   toolMode = 'AUTO',
   signal,
   onStatus,
@@ -265,6 +327,8 @@ async function fetchGeminiWithRotationAndRetry({
   let wantsThinking = currentLevel !== 'off' || /gemini-2\.5|gemini-3|gemini-4/.test(String(targetModel).toLowerCase());
   let enableTools = Boolean(withTools);
   let enableToolConfig = true;
+  let enableSearch = Boolean(withGoogleSearch);
+  let enableUrl = Boolean(withUrlContext);
   const orderedKeys = buildOrderedCandidateKeys(apiKeys, excludeKeys);
   const maxAttempts = orderedKeys.length > 1 ? Math.min(Math.max(orderedKeys.length, 4), 14) : 4;
 
@@ -298,6 +362,8 @@ async function fetchGeminiWithRotationAndRetry({
             thinkingLevel: currentLevel,
             withThinkingConfig: wantsThinking,
             withTools: enableTools,
+            withGoogleSearch: enableSearch,
+            withUrlContext: enableUrl,
             toolMode,
             withToolConfig: enableToolConfig,
           })
@@ -353,6 +419,20 @@ async function fetchGeminiWithRotationAndRetry({
     }
 
     const errBody = await upstream.text().catch(() => '');
+      if (
+        upstream.status === 429 &&
+        enableSearch &&
+        /quota|exceeded|billing|limit|grounding|search|resource_exhausted/i.test(errBody)
+      ) {
+        return {
+          ok: false,
+          status: 429,
+          overloaded: false,
+          quotaExceeded: true,
+          message:
+            'Fitur Google Search Grounding memerlukan API Key Google Gemini versi berbayar (Pay-as-you-go / Billing aktif). Akun Free Tier tidak memiliki kuota Search Grounding (limit 0). Matikan toggle Search di bawah untuk melanjutkan chat biasa.',
+        };
+      }
     lastStatus = upstream.status;
     lastErrorMessage = extractGeminiError(errBody, upstream.status);
 
@@ -372,6 +452,34 @@ async function fetchGeminiWithRotationAndRetry({
       onInfo(`Model ${targetModel} tidak mendukung thinkingConfig; melanjutkan tanpa thinking.`);
       attempt -= 1;
       continue;
+    }
+
+    if (upstream.status === 400 && (enableSearch || enableUrl) && /url_?context|google_?search|search|tool|built-?in|combination|multiple tools/i.test(errBody)) {
+      if (enableUrl && /url_?context/i.test(errBody)) {
+        enableUrl = false;
+        onInfo(`Model ${targetModel} tidak mendukung urlContext; melanjutkan tanpa urlContext.`);
+        attempt -= 1;
+        continue;
+      }
+      if (enableTools && (enableSearch || enableUrl)) {
+        // Beberapa model Gemini tidak mengizinkan functionDeclarations dicampur googleSearch/urlContext
+        enableSearch = false;
+        enableUrl = false;
+        onInfo(`Model ${targetModel} tidak mengizinkan kombinasi GitHub Tools + Web Search/URL Context dalam 1 request; memprioritaskan GitHub Tools.`);
+        attempt -= 1;
+        continue;
+      }
+      if (enableUrl) {
+        enableUrl = false;
+        attempt -= 1;
+        continue;
+      }
+      if (enableSearch) {
+        enableSearch = false;
+        onInfo(`Model ${targetModel} tidak mendukung Google Search Grounding.`);
+        attempt -= 1;
+        continue;
+      }
     }
 
     if (upstream.status === 400 && enableTools && enableToolConfig && /toolConfig|functionCallingConfig/i.test(errBody)) {
@@ -517,6 +625,11 @@ async function consumeGeminiStream({ upstream, signal, sendEvent }) {
       }
     }
 
+    const groundingInfo = extractGroundingFromCandidate(candidate);
+    if (groundingInfo) {
+      sendEvent('grounding', { grounding: groundingInfo });
+    }
+
     if (candidate?.finishReason) finishReason = candidate.finishReason;
     if (chunk?.usageMetadata) sendEvent('usage', chunk.usageMetadata);
   };
@@ -583,6 +696,8 @@ export async function runResilientGeminiChat({
   thinkingLevel = 'medium',
   autoFallbackOnOverload,
   fallbackModel,
+  enableGoogleSearch = false,
+  enableUrlContext = true,
   continueFrom,
   signal,
   sendEvent,
@@ -688,6 +803,14 @@ export async function runResilientGeminiChat({
           : workingContents;
 
       const sendWithTools = hasGitHubTools && (allowToolsThisRound || toolsHaveBeenUsed);
+      const lastUserMsgText = Array.isArray(messages)
+        ? ([...messages].reverse().find((m) => m?.role === 'user')?.content || '')
+        : '';
+      const promptHasUrl =
+        typeof lastUserMsgText === 'string' &&
+        /https?:\/\/[^\s)>\]"']+/i.test(lastUserMsgText);
+      const sendWithSearch = Boolean(enableGoogleSearch);
+      const sendWithUrl = Boolean(enableUrlContext) && promptHasUrl;
 
       let result = await fetchGeminiWithRotationAndRetry({
         targetModel: activeModel,
@@ -699,6 +822,8 @@ export async function runResilientGeminiChat({
         includeThoughts: currentIncludeThoughts,
         thinkingLevel: currentThinkingLevel,
         withTools: sendWithTools,
+        withGoogleSearch: sendWithSearch,
+        withUrlContext: sendWithUrl,
         toolMode: currentToolMode,
         signal,
         onStatus: (message) => sendEvent('status', { message }),
@@ -728,6 +853,8 @@ export async function runResilientGeminiChat({
           includeThoughts: currentIncludeThoughts,
           thinkingLevel: normalizeThinkingLevelForModel(fallbackModel, currentThinkingLevel),
           withTools: sendWithTools,
+          withGoogleSearch: sendWithSearch,
+          withUrlContext: sendWithUrl,
           toolMode: currentToolMode,
           signal,
           onStatus: (message) => sendEvent('status', { message }),
@@ -736,6 +863,13 @@ export async function runResilientGeminiChat({
       }
 
       if (!result.ok) {
+    if (sendWithSearch && (result.status === 429 || result.quotaExceeded)) {
+      sendEvent('error', {
+        message:
+          'Fitur Google Search Grounding membutuhkan API Key berbayar (Pay-as-you-go / Billing aktif). Akun Free Tier memiliki limit 0 untuk Search Grounding. Matikan toggle Search untuk melanjutkan chat biasa.',
+      });
+      return;
+    }
         sendEvent('error', { status: result.status, message: result.message });
         return;
       }
@@ -899,7 +1033,11 @@ export async function runResilientGeminiChat({
 
         sendEvent('tool_call', { id: callId, name: fc.name, argsSummary, status: 'running' });
 
-        const sig = `${fc.name}::${argsSummary}`;
+        const rangeTag =
+          fc.name === 'github_read_file' && (fc.args?.startLine || fc.args?.endLine)
+            ? `#${fc.args?.startLine ?? 1}-${fc.args?.endLine ?? 'end'}`
+            : '';
+        const sig = `${fc.name}::${argsSummary}${rangeTag}`;
         const toolOutcome = completedToolSignatureSet.has(sig)
           ? {
               ok: true,

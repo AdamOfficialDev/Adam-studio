@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react';
-import { FileCode2 } from 'lucide-react';
+import { FileCode2, Globe, Link2 } from 'lucide-react';
 import { BrandLogoMark } from '@/components/BrandLogo';
 import { ChatMessage } from '@/components/ChatMessage';
 import { MarkdownRenderer } from '@/components/MarkdownRenderer';
@@ -166,6 +166,41 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
         />
 
         <ToolTraceCard events={override.toolEvents} isStreaming={true} />
+
+        {override.grounding &&
+          ((override.grounding.sources && override.grounding.sources.length > 0) ||
+            (override.grounding.urlContexts && override.grounding.urlContexts.length > 0)) && (
+            <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-border/60 bg-card/50 px-2.5 py-2 text-[11px]">
+              <span className="inline-flex items-center gap-1 font-medium text-primary">
+                <Globe className="h-3 w-3" />
+                Grounding:
+              </span>
+              {override.grounding.urlContexts?.map((u, idx) => (
+                <a
+                  key={`surl-${idx}`}
+                  href={u.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex max-w-[200px] items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-300"
+                >
+                  <Link2 className="h-2.5 w-2.5 shrink-0" />
+                  <span className="truncate">{u.url}</span>
+                </a>
+              ))}
+              {override.grounding.sources?.slice(0, 6).map((src, idx) => (
+                <a
+                  key={`ssrc-${idx}`}
+                  href={src.uri}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex max-w-[180px] items-center gap-1 rounded-md border bg-background/60 px-1.5 py-0.5 text-[10px] text-foreground/85 hover:text-primary"
+                >
+                  <span className="font-mono text-[9px] text-primary">[{idx + 1}]</span>
+                  <span className="truncate">{src.title || src.uri}</span>
+                </a>
+              ))}
+            </div>
+          )}
 
         {hasAnswerStarted ? (
           <div className="w-full min-w-0 space-y-2">

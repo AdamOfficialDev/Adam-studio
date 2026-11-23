@@ -1,4 +1,4 @@
-import type { Attachment, GitHubProjectContext, ThinkingLevel, TokenUsage, ToolTraceItem, VisualTarget } from '@/types/chat';
+import type { Attachment, GitHubProjectContext, GroundingMetadataInfo, ThinkingLevel, TokenUsage, ToolTraceItem, VisualTarget } from '@/types/chat';
 
 export interface StreamChatPayload {
   model: string;
@@ -14,6 +14,8 @@ export interface StreamChatPayload {
   maxOutputTokens: number;
   includeThoughts: boolean;
   thinkingLevel: ThinkingLevel;
+  enableGoogleSearch?: boolean;
+  enableUrlContext?: boolean;
   autoFallbackOnOverload: boolean;
   fallbackModel: string;
   demoMode: boolean;
@@ -35,6 +37,7 @@ export interface StreamHandlers {
   onThought: (text: string) => void;
   onDelta: (text: string) => void;
   onUsage: (usage: TokenUsage) => void;
+  onGrounding?: (grounding: GroundingMetadataInfo) => void;
   onToolCall?: (item: ToolTraceItem) => void;
   onToolResult?: (item: ToolTraceItem) => void;
   onStatus?: (message: string) => void;
@@ -99,6 +102,8 @@ export async function streamChatCompletion(
       maxOutputTokens: payload.maxOutputTokens,
       includeThoughts: payload.includeThoughts,
       thinkingLevel: payload.thinkingLevel,
+      enableGoogleSearch: Boolean(payload.enableGoogleSearch),
+      enableUrlContext: Boolean(payload.enableUrlContext),
       autoFallbackOnOverload: payload.autoFallbackOnOverload,
       fallbackModel: payload.fallbackModel,
       demoMode: payload.demoMode,
@@ -154,6 +159,8 @@ export async function streamChatCompletion(
       handlers.onToolCall?.(parsed as unknown as ToolTraceItem);
     } else if (eventName === 'tool_result') {
       handlers.onToolResult?.(parsed as unknown as ToolTraceItem);
+    } else if (eventName === 'grounding' && parsed.grounding) {
+      handlers.onGrounding?.(parsed.grounding as unknown as GroundingMetadataInfo);
     } else if (eventName === 'usage') {
       handlers.onUsage(parsed as TokenUsage);
     } else if (eventName === 'status' && typeof parsed.message === 'string') {

@@ -24,6 +24,22 @@ export interface VisualTarget {
   outerHtml: string;
 }
 
+export interface GroundingSource {
+  title?: string;
+  uri: string;
+}
+
+export interface UrlContextItem {
+  url: string;
+  status?: string;
+}
+
+export interface GroundingMetadataInfo {
+  webSearchQueries?: string[];
+  sources?: GroundingSource[];
+  urlContexts?: UrlContextItem[];
+}
+
 export interface ToolTraceItem {
   id: string;
   name: string;
@@ -79,6 +95,7 @@ export interface ChatMessage {
   thought?: string;
   statusText?: string;
   toolEvents?: ToolTraceItem[];
+  grounding?: GroundingMetadataInfo;
   visualTarget?: VisualTarget;
   attachments?: Attachment[];
   createdAt: number;
@@ -122,6 +139,8 @@ export interface AppSettings {
   maxOutputTokens: number;
   includeThoughts: boolean;
   thinkingLevel: ThinkingLevel;
+  enableGoogleSearch: boolean;
+  enableUrlContext: boolean;
   autoFallbackOnOverload: boolean;
   fallbackModel: string;
   maxHistoryMessages: number;

@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -11,6 +11,8 @@ import {
   FileText,
   FileVideo,
   GitBranch,
+  Globe,
+  Link2,
   Layers,
   Pencil,
   Play,
@@ -32,6 +34,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { MarkdownRenderer } from '@/components/MarkdownRenderer';
 import { extractArtifactsFromMarkdown } from '@/lib/artifacts';
 import { estimateCostUsd } from '@/lib/models';
+import { speakMessageAloud, stopSpeechAloud } from '@/lib/speech';
 import type { ArtifactItem, ChatMessage as ChatMessageType } from '@/types/chat';
 import { cn } from '@/lib/utils';
 
@@ -70,6 +73,12 @@ export const ChatMessage = memo(function ChatMessage({
   const [speaking, setSpeaking] = useState(false);
   const [targetCodeOpen, setTargetCodeOpen] = useState(true);
 
+  useEffect(() => {
+    return () => {
+      if (speaking) stopSpeechAloud();
+    };
+  }, [speaking, message.id]);
+
   const isUser = message.role === 'user';
   const costLabel = estimateCostUsd(message.model || 'gemini-4-hydrogen', message.usage);
 
@@ -90,24 +99,21 @@ export const ChatMessage = memo(function ChatMessage({
   };
 
   const handleReadAloud = () => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      toast.error('Browser tidak mendukung Text-to-Speech');
-      return;
-    }
     if (speaking) {
-      window.speechSynthesis.cancel();
+      stopSpeechAloud();
       setSpeaking(false);
       return;
     }
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(
-      message.content.replace(/```[\s\S]*?```/g, ' kode ')
-    );
-    utterance.lang = 'id-ID';
-    utterance.onend = () => setSpeaking(false);
-    utterance.onerror = () => setSpeaking(false);
     setSpeaking(true);
-    window.speechSynthesis.speak(utterance);
+    const ok = speakMessageAloud(message.content, {
+      onStart: () => setSpeaking(true),
+      onEnd: () => setSpeaking(false),
+      onError: (errMsg) => {
+        setSpeaking(false);
+        toast.error(errMsg);
+      },
+    });
+    if (!ok) setSpeaking(false);
   };
 
   const handleSaveEdit = () => {
@@ -369,6 +375,87 @@ export const ChatMessage = memo(function ChatMessage({
             </div>
           )
         )}
+
+        {message.grounding &&
+          ((message.grounding.sources && message.grounding.sources.length > 0) ||
+            (message.grounding.urlContexts && message.grounding.urlContexts.length > 0) ||
+            (message.grounding.webSearchQueries && message.grounding.webSearchQueries.length > 0)) && (
+            <div className="mt-2 rounded-xl border border-border/70 bg-card/50 px-3 py-2.5 text-xs">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-semibold text-muted-foreground">
+                <span className="inline-flex items-center gap-1.5">
+                  <Globe className="h-3.5 w-3.5 text-primary" />
+                  Sumber Grounding & URL Context
+                </span>
+                {message.grounding.webSearchQueries &&
+                  message.grounding.webSearchQueries.length > 0 && (
+                    <span className="truncate font-mono text-[10px] opacity-80">
+                      Query: {message.grounding.webSearchQueries.slice(0, 2).join(' · ')}
+                    </span>
+                  )}
+              </div>
+
+              {message.grounding.urlContexts && message.grounding.urlContexts.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {message.grounding.urlContexts.map((u, idx) => {
+                    const isFailed = Boolean(
+                      u.status && /error|fail|unsafe|unavailable|timeout/i.test(u.status)
+                    );
+                    return (
+                      <a
+                        key={`url-${idx}`}
+                        href={u.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={cn(
+                          'inline-flex max-w-full items-center gap-1 rounded-lg border px-2 py-0.5 text-[11px]',
+                          isFailed
+                            ? 'border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
+                            : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'
+                        )}
+                        title={u.status || u.url}
+                      >
+                        <Link2 className="h-3 w-3 shrink-0" />
+                        <span className="max-w-[200px] truncate">{u.url}</span>
+                        {isFailed && (
+                          <span className="rounded bg-amber-500/20 px-1 text-[9px] font-semibold">
+                            Gagal
+                          </span>
+                        )}
+                      </a>
+                    );
+                  })}
+                </div>
+              )}
+
+              {message.grounding.sources && message.grounding.sources.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {message.grounding.sources.map((src, idx) => {
+                    let host = src.uri;
+                    try {
+                      host = new URL(src.uri).hostname.replace(/^www\./, '');
+                    } catch {
+                      // keep raw
+                    }
+                    return (
+                      <a
+                        key={`src-${idx}`}
+                        href={src.uri}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex max-w-[260px] items-center gap-1.5 rounded-lg border border-border/80 bg-background/60 px-2 py-1 text-[11px] text-foreground/90 transition-colors hover:border-primary/40 hover:text-primary"
+                        title={src.title || src.uri}
+                      >
+                        <span className="rounded bg-primary/15 px-1 font-mono text-[9px] font-semibold text-primary">
+                          {idx + 1}
+                        </span>
+                        <span className="truncate">{src.title || host}</span>
+                      </a>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
         {artifacts.length > 0 && (
           <div className="flex flex-wrap gap-2 pt-1">

@@ -11,6 +11,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxOutputTokens: 8192,
   includeThoughts: true,
   thinkingLevel: PERSONA_PRESETS[0].recommendedThinkingLevel,
+  enableGoogleSearch: false,
+  enableUrlContext: true,
   autoFallbackOnOverload: true,
   fallbackModel: 'gemini-3.8-flash',
   maxHistoryMessages: 0,

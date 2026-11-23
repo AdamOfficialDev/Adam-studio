@@ -29,6 +29,8 @@ export default async function handler(request) {
     autoFallbackOnOverload = false,
     fallbackModel = 'gemini-3.8-flash',
     demoMode = false,
+    enableGoogleSearch = false,
+    enableUrlContext = true,
     continueFrom,
   } = body || {};
 
@@ -131,6 +133,8 @@ export default async function handler(request) {
           thinkingLevel,
           autoFallbackOnOverload,
           fallbackModel,
+          enableGoogleSearch,
+          enableUrlContext,
           continueFrom,
           signal: request.signal,
           sendEvent,

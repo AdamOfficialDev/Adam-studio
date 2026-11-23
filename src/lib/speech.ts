@@ -271,3 +271,206 @@ export async function transcribeAudioWithAI(params: {
 
   return { ok: true, text: data.text.trim() };
 }
+
+// ============================================================================
+// Text-to-Speech (Read Aloud) — Chunked Queue & Watchdog Fallback
+// ============================================================================
+let ttsSessionToken = 0;
+
+export function isTtsSupported(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    'speechSynthesis' in window &&
+    typeof SpeechSynthesisUtterance !== 'undefined'
+  );
+}
+
+export function stopSpeechAloud(): void {
+  ttsSessionToken += 1;
+  if (!isTtsSupported()) return;
+  try {
+    window.speechSynthesis.cancel();
+  } catch {
+    // Abaikan
+  }
+}
+
+function cleanMarkdownForTts(raw: string): string {
+  return raw
+    .replace(/```[\s\S]*?```/g, ' blok kode ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/https?:\/\/[^\s)>\]]+/gi, ' tautan ')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/[*_~>-]{1,3}/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function detectTtsLang(text: string): string {
+  const sample = text.slice(0, 400).toLowerCase();
+  const idHints = (sample.match(/\b(yang|dan|untuk|dengan|dari|pada|tidak|ini|itu|adalah|bisa|akan|sudah)\b/g) || []).length;
+  const enHints = (sample.match(/\b(the|and|for|with|from|this|that|is|are|can|will|have|you)\b/g) || []).length;
+  return enHints > idHints + 2 ? 'en-US' : 'id-ID';
+}
+
+function splitTtsChunks(text: string, maxLen = 175): string[] {
+  if (!text) return [];
+  if (text.length <= maxLen) return [text];
+
+  const sentences = text.match(/[^.!?\n]+[.!?\n]*/g) || [text];
+  const chunks: string[] = [];
+  let buf = '';
+
+  for (const rawSentence of sentences) {
+    const s = rawSentence.trim();
+    if (!s) continue;
+    if ((buf + ' ' + s).trim().length <= maxLen) {
+      buf = (buf + ' ' + s).trim();
+    } else {
+      if (buf) chunks.push(buf);
+      if (s.length <= maxLen) {
+        buf = s;
+      } else {
+        let wordBuf = '';
+        for (const w of s.split(' ')) {
+          if ((wordBuf + ' ' + w).trim().length <= maxLen) {
+            wordBuf = (wordBuf + ' ' + w).trim();
+          } else {
+            if (wordBuf) chunks.push(wordBuf);
+            wordBuf = w;
+          }
+        }
+        buf = wordBuf;
+      }
+    }
+  }
+  if (buf) chunks.push(buf);
+  return chunks;
+}
+
+export function speakMessageAloud(
+  rawText: string,
+  callbacks?: {
+    onStart?: () => void;
+    onEnd?: () => void;
+    onError?: (message: string) => void;
+  }
+): boolean {
+  if (!isTtsSupported()) {
+    callbacks?.onError?.('Browser/perangkat ini tidak mendukung Text-to-Speech.');
+    return false;
+  }
+
+  const clean = cleanMarkdownForTts(rawText);
+  const chunks = splitTtsChunks(clean);
+  if (chunks.length === 0) {
+    callbacks?.onError?.('Tidak ada teks yang bisa dibacakan.');
+    return false;
+  }
+
+  const synth = window.speechSynthesis;
+  const session = ++ttsSessionToken;
+  const wasBusy = synth.speaking || synth.pending;
+
+  try {
+    if (wasBusy) synth.cancel();
+    if (synth.paused) synth.resume();
+  } catch {
+    // Abaikan
+  }
+
+  const lang = detectTtsLang(clean);
+  const voices = synth.getVoices ? synth.getVoices() : [];
+  const matchedVoice =
+    voices.find((v) => v.lang.toLowerCase().startsWith(lang.slice(0, 2).toLowerCase())) || null;
+
+  let started = false;
+  let index = 0;
+
+  const speakNext = (skipCustomVoice: boolean) => {
+    if (session !== ttsSessionToken) return;
+    if (index >= chunks.length) {
+      callbacks?.onEnd?.();
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(chunks[index]);
+    utterance.lang = lang;
+    utterance.rate = 1.02;
+    if (!skipCustomVoice && matchedVoice) {
+      utterance.voice = matchedVoice;
+    }
+
+    let settled = false;
+    let watchdog: number | undefined;
+
+    if (!started) {
+      watchdog = window.setTimeout(() => {
+        if (session === ttsSessionToken && !started && !settled && !synth.speaking) {
+          try {
+            synth.cancel();
+          } catch {
+            // Abaikan
+          }
+          if (!skipCustomVoice && matchedVoice) {
+            speakNext(true);
+          } else {
+            settled = true;
+            callbacks?.onError?.('Mesin suara perangkat tidak merespons (cek volume/TTS engine perangkat).');
+          }
+        }
+      }, 3200);
+    }
+
+    utterance.onstart = () => {
+      if (watchdog) window.clearTimeout(watchdog);
+      if (session !== ttsSessionToken) return;
+      if (!started) {
+        started = true;
+        callbacks?.onStart?.();
+      }
+    };
+
+    utterance.onend = () => {
+      if (watchdog) window.clearTimeout(watchdog);
+      if (settled || session !== ttsSessionToken) return;
+      settled = true;
+      index += 1;
+      speakNext(skipCustomVoice);
+    };
+
+    utterance.onerror = (ev) => {
+      if (watchdog) window.clearTimeout(watchdog);
+      if (settled || session !== ttsSessionToken) return;
+      settled = true;
+      const errCode = (ev as SpeechSynthesisErrorEvent)?.error || '';
+      if (errCode === 'canceled' || errCode === 'interrupted') {
+        callbacks?.onEnd?.();
+        return;
+      }
+      if (!skipCustomVoice && !started) {
+        speakNext(true);
+        return;
+      }
+      callbacks?.onError?.(`Gagal memutar suara (${errCode || 'unknown'}).`);
+    };
+
+    try {
+      synth.speak(utterance);
+      if (synth.paused) synth.resume();
+    } catch {
+      if (watchdog) window.clearTimeout(watchdog);
+      callbacks?.onError?.('Gagal memanggil speechSynthesis.speak().');
+    }
+  };
+
+  // Panggil sinkron saat !wasBusy untuk menjaga user-gesture lock di Android/iOS Safari
+  if (wasBusy) {
+    window.setTimeout(() => speakNext(false), 65);
+  } else {
+    speakNext(false);
+  }
+  return true;
+}

@@ -529,6 +529,37 @@ export const SettingsDialog = memo(function SettingsDialog({
                     />
                   </div>
 
+                  <div className="space-y-3 rounded-2xl border bg-card/50 p-4">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <div className="text-xs font-semibold">Google Search Grounding</div>
+                        <p className="text-[11px] text-muted-foreground">
+                          Izinkan model mencari fakta terbaru di Google beserta sitasi sumber.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={Boolean(draft.enableGoogleSearch)}
+                        onCheckedChange={(checked) =>
+                          setDraft({ ...draft, enableGoogleSearch: checked })
+                        }
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-4 border-t border-border/60 pt-3">
+                      <div>
+                        <div className="text-xs font-semibold">URL Context</div>
+                        <p className="text-[11px] text-muted-foreground">
+                          Izinkan model membaca langsung isi halaman web/dokumentasi dari URL di prompt.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={Boolean(draft.enableUrlContext)}
+                        onCheckedChange={(checked) =>
+                          setDraft({ ...draft, enableUrlContext: checked })
+                        }
+                      />
+                    </div>
+                  </div>
+
                   <div className="rounded-2xl border bg-card/50 p-4">
                     <div className="space-y-2.5">
                       <div className="flex items-center justify-between text-xs font-medium">
