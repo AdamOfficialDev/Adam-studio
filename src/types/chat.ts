@@ -1,4 +1,5 @@
 export type ThemeSkin = 'obsidian' | 'claude' | 'aurora' | 'paper';
+export type BuilderMode = 'chat' | 'emergent';
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high';
 
 export interface Attachment {
@@ -52,6 +53,38 @@ export interface GitHubProjectFile {
   path: string;
   content: string;
   tokens: number;
+}
+
+export interface EmergentPlanTask {
+  id: string;
+  title: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  detail?: string;
+}
+
+export interface EmergentPlan {
+  title: string;
+  summary: string;
+  stack: string[];
+  tasks: EmergentPlanTask[];
+  status: 'planning' | 'building' | 'verifying' | 'ready' | 'error';
+  updatedAt: number;
+}
+
+export interface WorkspaceFile {
+  path: string;
+  content: string;
+  language: string;
+  updatedAt: number;
+}
+
+export interface VirtualWorkspace {
+  files: Record<string, WorkspaceFile>;
+  activePath: string;
+  entryPath: string;
+  plan?: EmergentPlan;
+  lastBuildError?: string | null;
+  updatedAt: number;
 }
 
 export interface GitHubProjectContext {
@@ -128,6 +161,8 @@ export interface Conversation {
   sessionSystemInstruction?: string;
   importedSource?: string;
   githubProject?: GitHubProjectContext;
+  builderMode?: BuilderMode;
+  workspace?: VirtualWorkspace;
   compactedContext?: CompactedContextState;
   messages: ChatMessage[];
   createdAt: number;

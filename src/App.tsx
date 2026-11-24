@@ -55,6 +55,13 @@ import {
 import { StudioScroll, type StudioScrollHandle } from '@/components/ui/studio-scroll';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ArtifactPanel } from '@/components/ArtifactPanel';
+import { WorkspacePanel } from '@/components/WorkspacePanel';
+import {
+  createEmptyWorkspace,
+  removeWorkspaceFile,
+  updateWorkspacePlan,
+  upsertWorkspaceFile,
+} from '@/lib/workspace';
 import { BookmarksDialog } from '@/components/BookmarksDialog';
 import { ChatComposer } from '@/components/ChatComposer';
 import { StreamingChatMessage } from '@/components/StreamingChatMessage';
@@ -92,6 +99,8 @@ import { cn, estimateTokens, generateId } from '@/lib/utils';
 import type {
   AppSettings,
   ArtifactItem,
+  BuilderMode,
+  EmergentPlan,
   Attachment,
   ChatMessage as ChatMessageType,
   CompactedContextState,
@@ -102,6 +111,7 @@ import type {
   TokenUsage,
   GroundingMetadataInfo,
   ToolTraceItem,
+  VirtualWorkspace,
   VisualTarget,
 } from '@/types/chat';
 
@@ -252,6 +262,8 @@ export default function App() {
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
   const [activeArtifact, setActiveArtifact] = useState<ArtifactItem | null>(null);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [draftBuilderMode, setDraftBuilderMode] = useState<BuilderMode>('chat');
   const [artifactFullscreen, setArtifactFullscreen] = useState(false);
   const [artifactWidthPct, setArtifactWidthPct] = useState(46);
   const [isResizingPane, setIsResizingPane] = useState(false);
@@ -520,6 +532,7 @@ export default function App() {
     if (isStreamingActive) handleStopStream();
     setActiveId(null);
     setActiveArtifact(null);
+    setWorkspaceOpen(false);
     setArtifactFullscreen(false);
     setVisualTarget(null);
   }, [handleStopStream, isStreamingActive]);
@@ -583,7 +596,9 @@ export default function App() {
       sessionSystemInstruction?: string,
       compactedContext?: CompactedContextState,
       githubProject?: GitHubProjectContext,
-      continueMessage?: ChatMessageType
+      continueMessage?: ChatMessageType,
+      builderMode?: BuilderMode,
+      workspace?: VirtualWorkspace
     ) => {
       abortControllerRef.current?.abort();
       const controller = new AbortController();
@@ -837,6 +852,8 @@ export default function App() {
             })),
             githubProject: activeGithubProject,
             githubToken: settings.githubToken,
+            builderMode: builderMode || 'chat',
+            workspace,
             systemInstruction: effectiveSystemInstruction,
             maxOutputTokens: settings.maxOutputTokens,
             includeThoughts: settings.includeThoughts,
@@ -851,6 +868,35 @@ export default function App() {
           },
           {
             signal: controller.signal,
+            onWorkspacePlan: (plan: EmergentPlan) => {
+              setConversations((prev) =>
+                prev.map((conv) =>
+                  conv.id !== convId
+                    ? conv
+                    : {
+                        ...conv,
+                        workspace: updateWorkspacePlan(conv.workspace, plan),
+                        updatedAt: Date.now(),
+                      }
+                )
+              );
+            },
+            onWorkspaceFile: (evt) => {
+              setConversations((prev) =>
+                prev.map((conv) => {
+                  if (conv.id !== convId) return conv;
+                  const nextWs =
+                    evt.action === 'delete'
+                      ? removeWorkspaceFile(conv.workspace, evt.path)
+                      : upsertWorkspaceFile(conv.workspace, evt.path, evt.content || '');
+                  return { ...conv, workspace: nextWs, updatedAt: Date.now() };
+                })
+              );
+              if (evt.action === 'write') {
+                setActiveArtifact(null);
+                setWorkspaceOpen(true);
+              }
+            },
             onToolCall: (item) => {
               currentStatus = undefined;
               accTools = [...accTools, item];
@@ -1116,6 +1162,7 @@ export default function App() {
           id: newId,
           title,
           model: currentModelId,
+          builderMode: draftBuilderMode,
           messages: [userMessage, assistantPlaceholder],
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -1123,7 +1170,18 @@ export default function App() {
 
         setConversations((prev) => [newConv, ...prev]);
         setActiveId(newId);
-        void runStreamForConversation(newId, currentModelId, [userMessage], assistantMessageId);
+        void runStreamForConversation(
+          newId,
+          currentModelId,
+          [userMessage],
+          assistantMessageId,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          draftBuilderMode,
+          undefined
+        );
       } else {
         const historyForModel = [...activeConversation.messages, userMessage];
         const nextCompacted: CompactedContextState | undefined = activeConversation.compactedContext
@@ -1154,7 +1212,10 @@ export default function App() {
           assistantMessageId,
           activeConversation.sessionSystemInstruction,
           nextCompacted,
-          activeConversation.githubProject
+          activeConversation.githubProject,
+          undefined,
+          activeConversation.builderMode || 'chat',
+          activeConversation.workspace
         );
       }
     },
@@ -1205,7 +1266,9 @@ export default function App() {
       activeConversation.sessionSystemInstruction,
       activeConversation.compactedContext,
       activeConversation.githubProject,
-      resumableSnapshot
+      resumableSnapshot,
+      activeConversation.builderMode || 'chat',
+      activeConversation.workspace
     );
   }, [activeConversation, isStreamingActive, runStreamForConversation]);
 
@@ -1250,7 +1313,10 @@ export default function App() {
         assistantMessageId,
         activeConversation.sessionSystemInstruction,
         activeConversation.compactedContext,
-        activeConversation.githubProject
+        activeConversation.githubProject,
+        undefined,
+        activeConversation.builderMode || 'chat',
+        activeConversation.workspace
       );
     },
     [activeConversation, isStreamingActive, runStreamForConversation]
@@ -2125,7 +2191,19 @@ export default function App() {
                             className={settings.density === 'compact' ? 'pb-4' : 'pb-6'}
                           >
                             <StreamingChatMessage
-                              convId={activeConversation.id}
+                        convId={activeConversation.id}
+                        livePlan={
+                          msg.id === lastAssistantId && isStreamingActive
+                            ? activeConversation.workspace?.plan || null
+                            : null
+                        }
+                        workspaceFileCount={
+                          Object.keys(activeConversation.workspace?.files || {}).length
+                        }
+                        onOpenWorkspace={() => {
+                          setActiveArtifact(null);
+                          setWorkspaceOpen(true);
+                        }}
                               message={msg}
                               compact={settings.density === 'compact'}
                               thinkingEnabled={thinkingEnabled}
@@ -2153,6 +2231,32 @@ export default function App() {
             </div>
 
             <ChatComposer
+            builderMode={activeConversation ? activeConversation.builderMode || 'chat' : draftBuilderMode}
+            onToggleBuilderMode={(nextMode) => {
+              if (!activeConversation) {
+                setDraftBuilderMode(nextMode);
+              } else {
+                setConversations((prev) =>
+                  prev.map((c) =>
+                    c.id === activeConversation.id
+                      ? { ...c, builderMode: nextMode, updatedAt: Date.now() }
+                      : c
+                  )
+                );
+              }
+              toast.success(
+                nextMode === 'emergent'
+                  ? 'Emergent Autonomous Builder AKTIF (Plan → Build → Verify)'
+                  : 'Kembali ke Chat Mode'
+              );
+            }}
+            workspaceFileCount={
+              Object.keys(activeConversation?.workspace?.files || {}).length
+            }
+            onOpenWorkspace={() => {
+              setActiveArtifact(null);
+              setWorkspaceOpen(true);
+            }}
               model={currentModelId}
               isStreaming={isStreamingActive}
               settings={settings}
@@ -2169,7 +2273,67 @@ export default function App() {
           </div>
 
           <AnimatePresence>
-            {activeArtifact && (
+            {workspaceOpen && activeConversation && (
+        <WorkspacePanel
+          workspace={activeConversation.workspace || createEmptyWorkspace()}
+          onChangeActiveFile={(filePath) =>
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === activeConversation.id && c.workspace
+                  ? { ...c, workspace: { ...c.workspace, activePath: filePath } }
+                  : c
+              )
+            )
+          }
+          onEditFile={(filePath, content) =>
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === activeConversation.id
+                  ? {
+                      ...c,
+                      workspace: upsertWorkspaceFile(c.workspace, filePath, content),
+                      updatedAt: Date.now(),
+                    }
+                  : c
+              )
+            )
+          }
+          onCreateFile={(filePath) =>
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === activeConversation.id
+                  ? {
+                      ...c,
+                      workspace: upsertWorkspaceFile(c.workspace, filePath, ''),
+                      updatedAt: Date.now(),
+                    }
+                  : c
+              )
+            )
+          }
+          onDeleteFile={(filePath) =>
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === activeConversation.id
+                  ? {
+                      ...c,
+                      workspace: removeWorkspaceFile(c.workspace, filePath),
+                      updatedAt: Date.now(),
+                    }
+                  : c
+              )
+            )
+          }
+          onAutoFixError={(errorMsg) => {
+            handleSend(
+              `Live Preview mengalami error runtime/build berikut. Periksa file workspace terkait, perbaiki bug-nya, lalu jalankan workspace_verify_project:\n\n\`\`\`\n${errorMsg}\n\`\`\``,
+              []
+            );
+          }}
+          onClose={() => setWorkspaceOpen(false)}
+        />
+      )}
+      {activeArtifact && !workspaceOpen && (
               <>
                 {!artifactFullscreen && (
                   <div

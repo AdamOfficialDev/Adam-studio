@@ -4,11 +4,12 @@ import { BrandLogoMark } from '@/components/BrandLogo';
 import { ChatMessage } from '@/components/ChatMessage';
 import { MarkdownRenderer } from '@/components/MarkdownRenderer';
 import { ThinkingCard } from '@/components/ThinkingCard';
+import { EmergentPlanCard } from '@/components/EmergentPlanCard';
 import { ToolTraceCard } from '@/components/ToolTraceCard';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { useMessageStreamOverride } from '@/lib/streamStore';
-import type { ArtifactItem, ChatMessage as ChatMessageType } from '@/types/chat';
+import type { ArtifactItem, ChatMessage as ChatMessageType, EmergentPlan } from '@/types/chat';
 
 interface StreamingChatMessageProps {
   convId: string;
@@ -25,6 +26,9 @@ interface StreamingChatMessageProps {
   onToggleStar?: (messageId: string) => void;
   onOpenArtifact: (artifact: ArtifactItem) => void;
   onPreviewImage: (url: string) => void;
+  livePlan?: EmergentPlan | null;
+  workspaceFileCount?: number;
+  onOpenWorkspace?: () => void;
 }
 
 function splitStreamingContent(content: string): {
@@ -97,6 +101,9 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
   onToggleStar,
   onOpenArtifact,
   onPreviewImage,
+  livePlan = null,
+  workspaceFileCount = 0,
+  onOpenWorkspace,
 }: StreamingChatMessageProps) {
   const override = useMessageStreamOverride(convId, message.id);
 
@@ -165,6 +172,13 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
           hasTools={Boolean(override.toolEvents?.length)}
         />
 
+        {livePlan && (
+          <EmergentPlanCard
+            plan={livePlan}
+            fileCount={workspaceFileCount}
+            onOpenWorkspace={onOpenWorkspace}
+          />
+        )}
         <ToolTraceCard events={override.toolEvents} isStreaming={true} />
 
         {override.grounding &&

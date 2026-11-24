@@ -4,6 +4,293 @@ import {
   executeGitHubTool,
 } from './_github.js';
 import { hydrateKeyCooldowns, recordKeyCooldown } from './_cooldown.js';
+// ============================================================================
+// EMERGENT E1 AUTONOMOUS BUILDER SKILL & VIRTUAL WORKSPACE TOOLS
+// ============================================================================
+const EMERGENT_AGENT_SKILL = [
+  '[EMERGENT E1 AUTONOMOUS APP BUILDER WORKFLOW — AKTIF]',
+  'Kamu bekerja di dalam Multi-File Virtual Workspace yang terhubung ke Code Editor & Live Preview di sebelah kanan layar pengguna.',
+  'IKUTI SIKLUS EMERGENT SECARA BERURUTAN:',
+  '1. PLANNING: Di awal tugas pembuatan/perubahan aplikasi, WAJIB panggil emergent_set_plan dengan judul proyek, ringkasan arsitektur, stack, dan 3-6 task konkret.',
+  '2. INSPECT: Jika workspace sudah memiliki file (atau GitHub repo terhubung), panggil workspace_list_files / workspace_read_file sebelum mengubah.',
+  '3. BUILD MODULAR: Buat & edit file lewat workspace_write_file atau workspace_patch_file.',
+  '   - Untuk app React interaktif: gunakan entry src/App.tsx + pecah komponen ke src/components/... + CSS di src/styles.css.',
+  '   - Agar langsung berjalan mulus di Live Preview browser, gunakan hanya React (react, react-dom), Tailwind CSS classes, dan ikon dari lucide-react.',
+  '   - Untuk web HTML murni: gunakan index.html, styles.css, dan app.js.',
+  '4. PROGRESS TRACKING: Update progres setiap task via emergent_update_task (in_progress -> completed).',
+  '5. SELF-VERIFICATION: Sebelum menyusun balasan akhir, WAJIB panggil workspace_verify_project untuk mengecek entry point, import lokal, dan bebas placeholder.',
+  '6. FINAL REPORT: Jangan tulis ulang semua isi kode ke chat karena sudah ada di IDE Workspace. Berikan ringkasan elegan fitur, arsitektur file, dan hasil verifikasi.',
+].join('\n');
+
+const WORKSPACE_TOOL_DECLARATIONS = [
+  {
+    name: 'emergent_set_plan',
+    description: 'Menetapkan atau memperbarui Blueprint Plan & daftar task di Emergent Plan Card.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        title: { type: 'STRING', description: 'Judul singkat proyek atau fitur' },
+        summary: { type: 'STRING', description: 'Ringkasan arsitektur singkat' },
+        stack: { type: 'ARRAY', items: { type: 'STRING' }, description: 'Stack teknologi utama' },
+        status: { type: 'STRING', description: 'planning | building | verifying | ready | error' },
+        tasks: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              id: { type: 'STRING' },
+              title: { type: 'STRING' },
+              status: { type: 'STRING', description: 'pending | in_progress | completed | failed' },
+              detail: { type: 'STRING' },
+            },
+            required: ['id', 'title', 'status'],
+          },
+        },
+      },
+      required: ['title', 'summary', 'tasks'],
+    },
+  },
+  {
+    name: 'emergent_update_task',
+    description: 'Memperbarui status satu task di Emergent Plan Card.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        taskId: { type: 'STRING' },
+        status: { type: 'STRING', description: 'pending | in_progress | completed | failed' },
+        planStatus: { type: 'STRING', description: 'planning | building | verifying | ready | error' },
+        detail: { type: 'STRING' },
+      },
+      required: ['taskId', 'status'],
+    },
+  },
+  {
+    name: 'workspace_list_files',
+    description: 'Melihat daftar file yang saat ini ada di Emergent Virtual Workspace.',
+    parameters: { type: 'OBJECT', properties: {} },
+  },
+  {
+    name: 'workspace_read_file',
+    description: 'Membaca isi lengkap satu file di Emergent Virtual Workspace.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        path: { type: 'STRING', description: 'Path file, misal src/App.tsx' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'workspace_write_file',
+    description: 'Membuat atau menulis ulang file secara lengkap di Emergent Virtual Workspace & Live Preview.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        path: { type: 'STRING', description: 'Path file, misal src/App.tsx atau index.html' },
+        content: { type: 'STRING', description: 'Isi file utuh dan valid tanpa placeholder' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'workspace_patch_file',
+    description: 'Mengganti blok teks tertentu pada file yang sudah ada di workspace.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        path: { type: 'STRING' },
+        search: { type: 'STRING', description: 'Teks lama persis yang akan diganti' },
+        replace: { type: 'STRING', description: 'Teks baru pengganti' },
+      },
+      required: ['path', 'search', 'replace'],
+    },
+  },
+  {
+    name: 'workspace_delete_file',
+    description: 'Menghapus file dari Emergent Virtual Workspace.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        path: { type: 'STRING' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'workspace_verify_project',
+    description: 'Memvalidasi entry point, import lokal, dan kebersihan sintaks proyek di workspace.',
+    parameters: { type: 'OBJECT', properties: {} },
+  },
+];
+
+function normWsPath(rawPath) {
+  return String(rawPath || '').trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '').replace(/\/{2,}/g, '/');
+}
+
+function detectWsLang(p) {
+  const lower = p.toLowerCase();
+  if (lower.endsWith('.tsx')) return 'tsx';
+  if (lower.endsWith('.ts')) return 'typescript';
+  if (lower.endsWith('.jsx')) return 'jsx';
+  if (lower.endsWith('.js') || lower.endsWith('.mjs')) return 'javascript';
+  if (lower.endsWith('.css')) return 'css';
+  if (lower.endsWith('.html')) return 'html';
+  if (lower.endsWith('.json')) return 'json';
+  return 'text';
+}
+
+function executeWorkspaceTool({ name, args, workspaceState, sendEvent }) {
+  const files = workspaceState.files;
+  try {
+    if (name === 'emergent_set_plan') {
+      const plan = {
+        title: String(args?.title || 'Emergent Build Plan'),
+        summary: String(args?.summary || ''),
+        stack: Array.isArray(args?.stack) ? args.stack.map(String) : ['React', 'Tailwind CSS'],
+        status: args?.status || 'building',
+        tasks: Array.isArray(args?.tasks)
+          ? args.tasks.map((t, i) => ({
+              id: String(t?.id || "task-" + (i + 1)),
+              title: String(t?.title || "Step " + (i + 1)),
+              status: t?.status || 'pending',
+              detail: t?.detail ? String(t.detail) : undefined,
+            }))
+          : [],
+        updatedAt: Date.now(),
+      };
+      workspaceState.plan = plan;
+      sendEvent('workspace_plan', { plan });
+      return {
+        ok: true,
+        summary: "Plan \"" + plan.title + "\" (" + plan.tasks.length + " task) ditetapkan",
+        response: { ok: true, plan },
+      };
+    }
+
+    if (name === 'emergent_update_task') {
+      if (!workspaceState.plan) {
+        return { ok: false, summary: 'Plan belum dibuat', response: { error: 'Panggil emergent_set_plan terlebih dahulu.' } };
+      }
+      const taskId = String(args?.taskId || '');
+      const status = String(args?.status || 'completed');
+      const tasks = workspaceState.plan.tasks.map((t) =>
+        t.id === taskId ? { ...t, status, ...(args?.detail ? { detail: String(args.detail) } : {}) } : t
+      );
+      const allDone = tasks.length > 0 && tasks.every((t) => t.status === 'completed');
+      workspaceState.plan = {
+        ...workspaceState.plan,
+        tasks,
+        status: args?.planStatus || (allDone ? 'verifying' : workspaceState.plan.status),
+        updatedAt: Date.now(),
+      };
+      sendEvent('workspace_plan', { plan: workspaceState.plan });
+      return { ok: true, summary: "Task " + taskId + " -> " + status, response: { ok: true, taskId, status } };
+    }
+
+    if (name === 'workspace_list_files') {
+      const list = Object.keys(files).map((p) => ({ path: p, language: files[p].language, bytes: files[p].content.length }));
+      return { ok: true, summary: list.length + " file di workspace", response: { count: list.length, files: list } };
+    }
+
+    if (name === 'workspace_read_file') {
+      const p = normWsPath(args?.path);
+      if (!files[p]) {
+        return { ok: false, summary: "Tidak ditemukan: " + p, response: { error: "File tidak ditemukan: " + p } };
+      }
+      return { ok: true, summary: "Membaca " + p, response: { path: p, content: files[p].content } };
+    }
+
+    if (name === 'workspace_write_file') {
+      const p = normWsPath(args?.path);
+      const content = String(args?.content ?? '');
+      if (!p) return { ok: false, summary: 'Path kosong', response: { error: 'Path wajib diisi' } };
+      const language = detectWsLang(p);
+      files[p] = { path: p, content, language, updatedAt: Date.now() };
+      sendEvent('workspace_file', { action: 'write', path: p, content, language });
+      return {
+        ok: true,
+        summary: "Menulis " + p + " (" + content.split("\n").length + " baris)",
+        response: { ok: true, path: p, bytes: content.length },
+      };
+    }
+
+    if (name === 'workspace_patch_file') {
+      const p = normWsPath(args?.path);
+      if (!files[p]) {
+        return { ok: false, summary: "Patch gagal: " + p, response: { error: "File tidak ditemukan." } };
+      }
+      const search = String(args?.search ?? '');
+      const replace = String(args?.replace ?? '');
+      if (!search || !files[p].content.includes(search)) {
+        return { ok: false, summary: "Search tidak cocok di " + p, response: { error: "Blok search tidak ditemukan." } };
+      }
+      const nextContent = files[p].content.replace(search, replace);
+      files[p] = { ...files[p], content: nextContent, updatedAt: Date.now() };
+      sendEvent('workspace_file', { action: 'write', path: p, content: nextContent, language: files[p].language });
+      return { ok: true, summary: "Patch " + p + " sukses", response: { ok: true, path: p } };
+    }
+
+    if (name === 'workspace_delete_file') {
+      const p = normWsPath(args?.path);
+      if (!files[p]) return { ok: false, summary: "File tidak ada: " + p, response: { error: "Not found" } };
+      delete files[p];
+      sendEvent('workspace_file', { action: 'delete', path: p });
+      return { ok: true, summary: "Menghapus " + p, response: { ok: true, path: p } };
+    }
+
+    if (name === 'workspace_verify_project') {
+      const keys = Object.keys(files);
+      const issues = [];
+      if (keys.length === 0) issues.push('Workspace kosong. Buat src/App.tsx atau index.html.');
+      const hasEntry =
+        Boolean(files['src/App.tsx']) || Boolean(files['src/App.jsx']) || Boolean(files['App.tsx']) || Boolean(files['index.html']);
+      if (keys.length > 0 && !hasEntry) issues.push('Entry file tidak ditemukan (butuh src/App.tsx, App.tsx, atau index.html).');
+      for (const p of keys) {
+        const text = files[p].content;
+        if (/\/\/\s*TODO\b/i.test(text)) issues.push(p + ": masih mengandung komentar TODO.");
+        if (/\.(tsx|ts|jsx|js)$/.test(p)) {
+          const importRegex = /(?:import|from)\s+['"]((?:\.|@\/)[^'"]+)['"]/g;
+          let m;
+          while ((m = importRegex.exec(text)) !== null) {
+            const req = m[1];
+            if (req.endsWith('.css')) continue;
+            const rawBase = req.startsWith('@/') ? 'src/' + req.slice(2) : normWsPath(p.split('/').slice(0, -1).concat(req).join('/'));
+            const parts = [];
+            for (const seg of rawBase.split('/')) {
+              if (!seg || seg === '.') continue;
+              if (seg === '..') parts.pop();
+              else parts.push(seg);
+            }
+            const resolvedBase = parts.join('/');
+            const exists = [
+              resolvedBase, resolvedBase + ".tsx", resolvedBase + ".ts", resolvedBase + ".jsx", resolvedBase + ".js",
+              resolvedBase + "/index.tsx", resolvedBase + "/index.ts"
+            ].some((c) => Boolean(files[c]));
+            if (!exists) issues.push(p + ": import \"" + req + "\" tidak ditemukan di workspace.");
+          }
+        }
+      }
+      if (workspaceState.plan) {
+        workspaceState.plan = {
+          ...workspaceState.plan,
+          status: issues.length === 0 ? 'ready' : 'error',
+          updatedAt: Date.now(),
+        };
+        sendEvent('workspace_plan', { plan: workspaceState.plan });
+      }
+      return {
+        ok: issues.length === 0,
+        summary: issues.length === 0 ? "Verifikasi lulus (" + keys.length + " file valid)" : issues.length + " masalah ditemukan",
+        response: { passed: issues.length === 0, fileCount: keys.length, issues },
+      };
+    }
+
+    return { ok: false, summary: "Unknown tool: " + name, response: { error: "Unknown tool" } };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, summary: msg, response: { error: msg } };
+  }
+}
 
 export const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 const ROTATE_IMMEDIATELY_STATUSES = new Set([401, 403, 408, 429]);
@@ -264,6 +551,7 @@ function buildGeminiPayload({
   thinkingLevel,
   withThinkingConfig,
   withTools,
+  functionDeclarations = GITHUB_TOOL_DECLARATIONS,
   withGoogleSearch = false,
   withUrlContext = false,
   toolMode = 'AUTO',
@@ -300,8 +588,8 @@ function buildGeminiPayload({
   }
 
   const tools = [];
-  if (withTools) {
-    tools.push({ functionDeclarations: GITHUB_TOOL_DECLARATIONS });
+  if (withTools && Array.isArray(functionDeclarations) && functionDeclarations.length > 0) {
+    tools.push({ functionDeclarations });
   }
   if (withGoogleSearch) {
     tools.push({ googleSearch: {} });
@@ -331,6 +619,7 @@ async function fetchGeminiWithRotationAndRetry({
   includeThoughts,
   thinkingLevel = 'medium',
   withTools,
+  functionDeclarations = GITHUB_TOOL_DECLARATIONS,
   withGoogleSearch = false,
   withUrlContext = false,
   toolMode = 'AUTO',
@@ -382,6 +671,7 @@ async function fetchGeminiWithRotationAndRetry({
             thinkingLevel: currentLevel,
             withThinkingConfig: wantsThinking,
             withTools: enableTools,
+            functionDeclarations,
             withGoogleSearch: enableSearch,
             withUrlContext: enableUrl,
             toolMode,
@@ -704,12 +994,22 @@ async function consumeGeminiStream({ upstream, signal, sendEvent }) {
   };
 }
 
+const UNIVERSAL_MASTER_SKILL = [
+  '[ADAM STUDIO UNIVERSAL PRINCIPAL SKILL — AKTIF UNTUK SEMUA MODEL]',
+  '1. Zero-Placeholder Rule: Dilarang menyingkat kode dengan "// TODO", "// ...", atau implementasi setengah jadi. Semua kode dan solusi wajib utuh dan siap jalan.',
+  '2. Engineering Rigor: Pastikan konsistensi nama variabel, tipe data, path import, null/error handling, dan edge-case sebelum menyusun jawaban akhir.',
+  '3. UI/UX Craftsmanship: Setiap antarmuka wajib memiliki hierarki tipografi yang jelas, kontras tinggi, aksesibilitas, serta responsif penuh dari mobile (360px) hingga desktop lebar.',
+  '4. Clarity & Honesty: Sampaikan fakta teknis yang terverifikasi, tanpa mengarang API atau perilaku yang tidak ada.',
+].join('\n');
+
 export async function runResilientGeminiChat({
   model,
   apiKeys,
   messages,
   githubProject,
   githubToken,
+  builderMode = 'chat',
+  workspaceSnapshot = null,
   systemInstruction,
   maxOutputTokens,
   includeThoughts,
@@ -722,11 +1022,31 @@ export async function runResilientGeminiChat({
   signal,
   sendEvent,
 }) {
+  const isEmergentMode = builderMode === 'emergent';
+  const workspaceState = {
+    files:
+      workspaceSnapshot && workspaceSnapshot.files && typeof workspaceSnapshot.files === 'object'
+        ? { ...workspaceSnapshot.files }
+        : {},
+    plan: workspaceSnapshot && workspaceSnapshot.plan ? workspaceSnapshot.plan : null,
+  };
   const projectSection = buildProjectSystemSection(githubProject);
-  const mergedSystemInstruction = [systemInstruction, projectSection].filter(Boolean).join('\n\n');
+  const mergedSystemInstruction = [
+    UNIVERSAL_MASTER_SKILL,
+    isEmergentMode ? EMERGENT_AGENT_SKILL : '',
+    systemInstruction,
+    projectSection,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
   const hasGitHubTools = Boolean(
     githubProject?.owner && githubProject?.repo && githubProject?.agenticToolsEnabled
   );
+  const hasAnyTools = hasGitHubTools || isEmergentMode;
+  const activeDeclarations = [
+    ...(hasGitHubTools ? GITHUB_TOOL_DECLARATIONS : []),
+    ...(isEmergentMode ? WORKSPACE_TOOL_DECLARATIONS : []),
+  ];
 
   const workingContents = buildGeminiContents(messages);
   const completedToolSignatureSet = new Set();
@@ -792,11 +1112,11 @@ export async function runResilientGeminiChat({
   let totalAnswerText = '';
   let toolsHaveBeenUsed = false;
 
-  const MAX_TOOL_ROUNDS = hasGitHubTools ? 6 : 1;
+  const MAX_TOOL_ROUNDS = isEmergentMode ? 14 : hasGitHubTools ? 6 : 1;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const allowToolsThisRound = hasGitHubTools && round < MAX_TOOL_ROUNDS - 1;
-    const isFinalSynthesisRound = hasGitHubTools && !allowToolsThisRound;
+    const allowToolsThisRound = hasAnyTools && round < MAX_TOOL_ROUNDS - 1;
+    const isFinalSynthesisRound = hasAnyTools && !allowToolsThisRound;
 
     const failedKeysThisRound = new Set();
     let roundSuccess = false;
@@ -815,22 +1135,24 @@ export async function runResilientGeminiChat({
                 role: 'user',
                 parts: [
                   {
-                    text: 'Semua file yang diperlukan sudah dibaca. Sekarang tulis jawaban lengkap dan terstruktur untuk pengguna tanpa memanggil tool lagi.',
+                    text: isEmergentMode
+                      ? 'Semua tahap build/verifikasi telah selesai. Sekarang tulis ringkasan hasil akhir yang singkat dan jelas untuk pengguna tanpa memanggil tool lagi.'
+                      : 'Semua file yang diperlukan sudah dibaca. Sekarang tulis jawaban lengkap dan terstruktur untuk pengguna tanpa memanggil tool lagi.',
                   },
                 ],
               },
             ]
           : workingContents;
 
-      const sendWithTools = hasGitHubTools && (allowToolsThisRound || toolsHaveBeenUsed);
+      const sendWithTools = hasAnyTools && (allowToolsThisRound || toolsHaveBeenUsed);
       const lastUserMsgText = Array.isArray(messages)
         ? ([...messages].reverse().find((m) => m?.role === 'user')?.content || '')
         : '';
       const promptHasUrl =
         typeof lastUserMsgText === 'string' &&
         /https?:\/\/[^\s)>\]"']+/i.test(lastUserMsgText);
-      const sendWithSearch = Boolean(enableGoogleSearch);
-      const sendWithUrl = Boolean(enableUrlContext) && promptHasUrl;
+      const sendWithSearch = Boolean(enableGoogleSearch) && !isEmergentMode;
+      const sendWithUrl = Boolean(enableUrlContext) && promptHasUrl && !isEmergentMode;
 
       let result = await fetchGeminiWithRotationAndRetry({
         targetModel: activeModel,
@@ -842,6 +1164,7 @@ export async function runResilientGeminiChat({
         includeThoughts: currentIncludeThoughts,
         thinkingLevel: currentThinkingLevel,
         withTools: sendWithTools,
+        functionDeclarations: activeDeclarations,
         withGoogleSearch: sendWithSearch,
         withUrlContext: sendWithUrl,
         toolMode: currentToolMode,
@@ -873,6 +1196,7 @@ export async function runResilientGeminiChat({
           includeThoughts: currentIncludeThoughts,
           thinkingLevel: normalizeThinkingLevelForModel(fallbackModel, currentThinkingLevel),
           withTools: sendWithTools,
+          functionDeclarations: activeDeclarations,
           withGoogleSearch: sendWithSearch,
           withUrlContext: sendWithUrl,
           toolMode: currentToolMode,
@@ -1044,8 +1368,18 @@ export async function runResilientGeminiChat({
     const functionResponseParts = await Promise.all(
       roundOutcome.functionCalls.map(async (fc, idx) => {
         const callId = `tool-${round}-${idx}-${Date.now()}`;
-        const argsSummary =
-          fc.name === 'github_read_file'
+        const isWorkspaceTool =
+          typeof fc.name === 'string' &&
+          (fc.name.startsWith('emergent_') || fc.name.startsWith('workspace_'));
+
+        const argsSummary = isWorkspaceTool
+          ? String(
+              fc.args?.path ||
+                fc.args?.taskId ||
+                fc.args?.title ||
+                (fc.name === 'workspace_verify_project' ? 'verify' : 'workspace')
+            )
+          : fc.name === 'github_read_file'
             ? String(fc.args?.path || '')
             : fc.name === 'github_search_code'
               ? String(fc.args?.query || '')
@@ -1058,7 +1392,8 @@ export async function runResilientGeminiChat({
             ? `#${fc.args?.startLine ?? 1}-${fc.args?.endLine ?? 'end'}`
             : '';
         const sig = `${fc.name}::${argsSummary}${rangeTag}`;
-        const toolOutcome = completedToolSignatureSet.has(sig)
+        const shouldSkipCached = !isWorkspaceTool && completedToolSignatureSet.has(sig);
+        const toolOutcome = shouldSkipCached
           ? {
               ok: true,
               summary: 'Skipped (sudah dijalankan pada state sebelumnya)',
@@ -1067,13 +1402,20 @@ export async function runResilientGeminiChat({
                 note: `Tool ${fc.name}(${argsSummary}) sudah dijalankan pada state sebelum Continue. Jangan panggil ulang; gunakan konteks yang sudah ada atau langsung tulis jawaban akhir.`,
               },
             }
-          : await executeGitHubTool({
-              name: fc.name,
-              args: fc.args,
-              githubProject,
-              githubToken,
-              signal,
-            });
+          : isWorkspaceTool
+            ? executeWorkspaceTool({
+                name: fc.name,
+                args: fc.args || {},
+                workspaceState,
+                sendEvent,
+              })
+            : await executeGitHubTool({
+                name: fc.name,
+                args: fc.args,
+                githubProject,
+                githubToken,
+                signal,
+              });
         if (toolOutcome.ok) completedToolSignatureSet.add(sig);
 
         sendEvent('tool_result', {

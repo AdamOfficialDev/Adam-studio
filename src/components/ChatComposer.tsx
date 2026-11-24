@@ -23,6 +23,7 @@ import {
   Paperclip,
   Slash,
   SlidersHorizontal,
+  Rocket,
   Sparkles,
   Square,
   Terminal,
@@ -52,7 +53,7 @@ import {
   formatDuration,
 } from '@/lib/tokens';
 import { estimateTokens, formatBytes, generateId } from '@/lib/utils';
-import type { AppSettings, Attachment, VisualTarget } from '@/types/chat';
+import type { AppSettings, Attachment, BuilderMode, VisualTarget } from '@/types/chat';
 import { cn } from '@/lib/utils';
 
 interface SpeechRecognitionAlternativeLike {
@@ -95,6 +96,10 @@ interface ChatComposerProps {
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
   onPreviewImage: (url: string) => void;
+  builderMode?: BuilderMode;
+  onToggleBuilderMode?: (mode: BuilderMode) => void;
+  workspaceFileCount?: number;
+  onOpenWorkspace?: () => void;
 }
 
 const TEXT_EXTENSIONS = new Set([
@@ -265,6 +270,10 @@ export const ChatComposer = memo(function ChatComposer({
   onSend,
   onStop,
   onPreviewImage,
+  builderMode = 'chat',
+  onToggleBuilderMode,
+  workspaceFileCount = 0,
+  onOpenWorkspace,
 }: ChatComposerProps) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -1030,7 +1039,9 @@ export const ChatComposer = memo(function ChatComposer({
             placeholder={
               visualTarget
                 ? `Instruksi edit untuk <${visualTarget.selector}>...`
-                : `Tanya ${model}...`
+                : builderMode === 'emergent'
+                  ? 'Deskripsikan aplikasi yang ingin dibangun Emergent Agent...'
+                  : `Tanya ${model}...`
             }
             className="min-h-[42px] w-full resize-none overflow-hidden border-0 bg-transparent px-2 py-2 text-[15px] leading-relaxed shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
           />
@@ -1046,6 +1057,40 @@ export const ChatComposer = memo(function ChatComposer({
               className="hidden"
               onChange={handleFileChange}
             />
+
+            {onToggleBuilderMode && (
+              <Button
+                type="button"
+                variant={builderMode === 'emergent' ? 'secondary' : 'ghost'}
+                size="sm"
+                disabled={isStreaming}
+                onClick={() => onToggleBuilderMode(builderMode === 'emergent' ? 'chat' : 'emergent')}
+                className={cn(
+                  'h-8 gap-1.5 rounded-xl px-2.5 text-xs font-semibold transition-colors',
+                  builderMode === 'emergent'
+                    ? 'border border-primary/45 bg-primary/15 text-primary hover:bg-primary/25'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+                title="Switch Mode: Chat Biasa vs Emergent Autonomous App Builder"
+              >
+                <Rocket className="h-3.5 w-3.5" />
+                <span>{builderMode === 'emergent' ? 'Emergent' : 'Chat'}</span>
+              </Button>
+            )}
+
+            {workspaceFileCount > 0 && onOpenWorkspace && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={onOpenWorkspace}
+                className="h-8 gap-1 rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-2.5 font-mono text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500/20"
+                title="Buka Emergent Multi-File IDE & Preview"
+              >
+                <FileCode2 className="h-3.5 w-3.5" />
+                <span>IDE ({workspaceFileCount})</span>
+              </Button>
+            )}
 
             <Button
               type="button"

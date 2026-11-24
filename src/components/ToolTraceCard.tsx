@@ -24,6 +24,7 @@ export const ToolTraceCard = memo(function ToolTraceCard({
   if (events.length === 0) return null;
 
   const hasRunning = events.some((e) => e.status === 'running');
+  const hasEmergentTool = events.some((e) => e.name.startsWith('emergent_') || e.name.startsWith('workspace_'));
   const isOpen = manualOpen ?? (isStreaming && hasRunning);
 
   return (
@@ -41,8 +42,12 @@ export const ToolTraceCard = memo(function ToolTraceCard({
           )}
           <span className="truncate font-semibold text-foreground">
             {hasRunning
-              ? 'Membaca Repository GitHub...'
-              : `GitHub MCP Tools (${events.length} langkah)`}
+              ? hasEmergentTool
+                ? 'Emergent Agent sedang bekerja...'
+                : 'Membaca Repository GitHub...'
+              : hasEmergentTool
+                ? `Emergent Agent Tools (${events.length} langkah)`
+                : `GitHub MCP Tools (${events.length} langkah)`}
           </span>
         </div>
 

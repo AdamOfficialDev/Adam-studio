@@ -1,4 +1,4 @@
-import type { Attachment, GitHubProjectContext, GroundingMetadataInfo, ThinkingLevel, TokenUsage, ToolTraceItem, VisualTarget } from '@/types/chat';
+import type { Attachment, BuilderMode, EmergentPlan, GitHubProjectContext, GroundingMetadataInfo, ThinkingLevel, TokenUsage, ToolTraceItem, VirtualWorkspace, VisualTarget } from '@/types/chat';
 
 export interface StreamChatPayload {
   model: string;
@@ -10,6 +10,8 @@ export interface StreamChatPayload {
   }>;
   githubProject?: GitHubProjectContext;
   githubToken?: string;
+  builderMode?: BuilderMode;
+  workspace?: VirtualWorkspace;
   systemInstruction: string;
   maxOutputTokens: number;
   includeThoughts: boolean;
@@ -40,6 +42,8 @@ export interface StreamHandlers {
   onGrounding?: (grounding: GroundingMetadataInfo) => void;
   onToolCall?: (item: ToolTraceItem) => void;
   onToolResult?: (item: ToolTraceItem) => void;
+  onWorkspacePlan?: (plan: EmergentPlan) => void;
+  onWorkspaceFile?: (evt: { action: 'write' | 'delete'; path: string; content?: string; language?: string }) => void;
   onStatus?: (message: string) => void;
   onInfo?: (message: string) => void;
   onDone: (meta: { model: string; finishReason?: string; isDemo?: boolean }) => void;
@@ -135,10 +139,20 @@ function buildSafeChatPayloadJson(payload: StreamChatPayload): { json: string; b
         }
       : undefined;
 
+    const wsSnapshot = payload.workspace
+      ? {
+          files: payload.workspace.files,
+          plan: payload.workspace.plan,
+          entryPath: payload.workspace.entryPath,
+        }
+      : undefined;
+
     return JSON.stringify({
       model: payload.model,
       messages: mappedMessages,
       githubProject: gh,
+      builderMode: payload.builderMode || 'chat',
+      workspaceSnapshot: wsSnapshot,
       systemInstruction: payload.systemInstruction,
       maxOutputTokens: payload.maxOutputTokens,
       includeThoughts: payload.includeThoughts,
@@ -280,6 +294,10 @@ export async function streamChatCompletion(
       handlers.onToolCall?.(parsed as unknown as ToolTraceItem);
     } else if (eventName === 'tool_result') {
       handlers.onToolResult?.(parsed as unknown as ToolTraceItem);
+    } else if (eventName === 'workspace_plan' && parsed.plan) {
+      handlers.onWorkspacePlan?.(parsed.plan as unknown as EmergentPlan);
+    } else if (eventName === 'workspace_file' && typeof parsed.path === 'string') {
+      handlers.onWorkspaceFile?.(parsed as unknown as { action: 'write' | 'delete'; path: string; content?: string; language?: string });
     } else if (eventName === 'grounding' && parsed.grounding) {
       handlers.onGrounding?.(parsed.grounding as unknown as GroundingMetadataInfo);
     } else if (eventName === 'usage') {
