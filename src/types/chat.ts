@@ -58,12 +58,14 @@ export interface GitHubProjectContext {
   owner: string;
   repo: string;
   branch: string;
+  commitSha?: string;
   isPrivate?: boolean;
   totalFiles: number;
   treePaths: string[];
   pinnedFiles: GitHubProjectFile[];
   agenticToolsEnabled: boolean;
   attachedAt: number;
+  lastSyncedAt?: number;
 }
 
 export interface TokenUsage {

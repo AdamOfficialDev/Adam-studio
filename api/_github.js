@@ -90,6 +90,39 @@ export async function fetchGitHubRawFile(owner, repo, branch, filePath, token, s
   }
 }
 
+export async function fetchLatestCommitSha(owner, repo, branch, token, signal) {
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+    repo
+  )}/commits/${encodeURIComponent(branch)}`;
+
+  const timeoutController = new AbortController();
+  const onParentAbort = () => timeoutController.abort();
+  if (signal?.aborted) timeoutController.abort();
+  else signal?.addEventListener('abort', onParentAbort, { once: true });
+  const timer = setTimeout(() => timeoutController.abort(), 8_000);
+
+  try {
+    const res = await fetch(url, {
+      headers: { ...buildGitHubHeaders(token), Accept: 'application/vnd.github.sha' },
+      signal: timeoutController.signal,
+    });
+    if (!res.ok) return null;
+    const raw = (await res.text()).trim();
+    if (/^[0-9a-f]{40}$/i.test(raw)) return raw;
+    try {
+      const parsed = JSON.parse(raw);
+      return typeof parsed?.sha === 'string' ? parsed.sha : null;
+    } catch {
+      return null;
+    }
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onParentAbort);
+  }
+}
+
 export async function handleGitHubAction({ action, body, token }) {
   if (action === 'list-repos') {
     if (!token) {
@@ -156,12 +189,15 @@ export async function handleGitHubAction({ action, body, token }) {
 
     const meta = await metaRes.json();
     const branch = String(body?.branch || meta.default_branch || 'main').trim();
-    const treeRes = await fetch(
-      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
-        repo
-      )}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
-      { headers: buildGitHubHeaders(token) }
-    );
+    const [treeRes, commitSha] = await Promise.all([
+      fetch(
+        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+          repo
+        )}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+        { headers: buildGitHubHeaders(token) }
+      ),
+      fetchLatestCommitSha(owner, repo, branch, token),
+    ]);
     if (!treeRes.ok) {
       const err = await treeRes.json().catch(() => ({}));
       return {
@@ -213,6 +249,7 @@ export async function handleGitHubAction({ action, body, token }) {
           owner,
           repo,
           branch,
+          commitSha: commitSha || undefined,
           isPrivate: Boolean(meta.private),
           totalFiles: allBlobs.length,
           treePaths,
@@ -241,6 +278,90 @@ export async function handleGitHubAction({ action, body, token }) {
     return { status: 200, payload: { ok: true, files } };
   }
 
+  if (action === 'sync-project') {
+    const {
+      owner,
+      repo,
+      branch = 'main',
+      currentCommitSha,
+      pinnedPaths = [],
+      force = false,
+    } = body || {};
+    if (!owner || !repo) {
+      return { status: 400, payload: { ok: false, message: 'Parameter sync-project tidak lengkap.' } };
+    }
+
+    const latestSha = await fetchLatestCommitSha(owner, repo, branch, token);
+    if (!force && currentCommitSha && latestSha && currentCommitSha === latestSha) {
+      return {
+        status: 200,
+        payload: { ok: true, updated: false, commitSha: latestSha },
+      };
+    }
+
+    if (!latestSha && !force) {
+      return {
+        status: 200,
+        payload: { ok: true, updated: false, skipped: true },
+      };
+    }
+
+    const treeRes = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+        repo
+      )}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+      { headers: buildGitHubHeaders(token) }
+    );
+    if (!treeRes.ok) {
+      const err = await treeRes.json().catch(() => ({}));
+      if (force) {
+        return {
+          status: treeRes.status,
+          payload: { ok: false, message: err.message || `Gagal sinkron tree branch ${branch}` },
+        };
+      }
+      return {
+        status: 200,
+        payload: { ok: true, updated: false, skipped: true },
+      };
+    }
+
+    const treeJson = await treeRes.json();
+    const allBlobs = (Array.isArray(treeJson.tree) ? treeJson.tree : [])
+      .filter((item) => item.type === 'blob' && item.path && !IGNORED_PATH_REGEX.test(item.path))
+      .map((item) => ({ path: item.path, size: item.size || 0 }));
+
+    const treePaths = allBlobs.slice(0, 600).map((b) => b.path);
+    const validPinnedPaths = (Array.isArray(pinnedPaths) ? pinnedPaths : [])
+      .filter((p) => typeof p === 'string' && treePaths.includes(p))
+      .slice(0, 15);
+
+    const fetchedResults = await Promise.all(
+      validPinnedPaths.map(async (filePath) => {
+        const content = await fetchGitHubRawFile(owner, repo, branch, filePath, token);
+        if (content === null) return null;
+        return {
+          path: filePath,
+          content,
+          tokens: Math.max(1, Math.ceil(content.length / 4)),
+        };
+      })
+    );
+    const pinnedFiles = fetchedResults.filter(Boolean);
+
+    return {
+      status: 200,
+      payload: {
+        ok: true,
+        updated: true,
+        commitSha: latestSha || currentCommitSha || undefined,
+        totalFiles: allBlobs.length,
+        treePaths,
+        pinnedFiles,
+      },
+    };
+  }
+
   return { status: 400, payload: { ok: false, message: 'Action tidak dikenal.' } };
 }
 
@@ -255,8 +376,12 @@ export function buildProjectSystemSection(githubProject) {
         .join('\n\n')
     : '';
 
+  const commitTag = githubProject.commitSha
+    ? `, commit: ${String(githubProject.commitSha).slice(0, 7)}`
+    : '';
+
   return [
-    `[CONNECTED GITHUB PROJECT: ${githubProject.owner}/${githubProject.repo} (branch: ${githubProject.branch || 'main'})]`,
+    `[CONNECTED GITHUB PROJECT: ${githubProject.owner}/${githubProject.repo} (branch: ${githubProject.branch || 'main'}${commitTag})]`,
     'Kamu terhubung langsung ke repository GitHub ini sebagai AI Project Assistant.',
     githubProject.agenticToolsEnabled
       ? 'ATURAN EFISIENSI TOOLS: Daftar path file sudah ada di bawah (JANGAN panggil github_list_files kecuali perlu). Jika pertanyaan sudah terjawab dari struktur file + file yang disematkan, LANGSUNG JAWAB tanpa memanggil tool. Jika butuh membaca file lain, panggil github_read_file secara PARALEL sekaligus (maks 4 file) dalam 1 giliran, lalu langsung berikan jawaban lengkap.'

@@ -660,6 +660,81 @@ export default function App() {
       };
 
       try {
+        let activeGithubProject = githubProject;
+        if (activeGithubProject && !settings.demoMode) {
+          currentStatus = `Mengecek commit terbaru ${activeGithubProject.owner}/${activeGithubProject.repo}...`;
+          commitStreamSnapshot();
+          try {
+            const ghHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (settings.githubToken?.trim()) {
+              ghHeaders['x-github-token'] = settings.githubToken.trim();
+            }
+            const syncRes = await fetch('/api/github', {
+              method: 'POST',
+              headers: ghHeaders,
+              body: JSON.stringify({
+                action: 'sync-project',
+                owner: activeGithubProject.owner,
+                repo: activeGithubProject.repo,
+                branch: activeGithubProject.branch,
+                currentCommitSha: activeGithubProject.commitSha,
+                pinnedPaths: activeGithubProject.pinnedFiles.map((f) => f.path),
+              }),
+              signal: controller.signal,
+            });
+            if (syncRes.ok) {
+              const syncData = (await syncRes.json()) as {
+                ok?: boolean;
+                updated?: boolean;
+                commitSha?: string;
+                totalFiles?: number;
+                treePaths?: string[];
+                pinnedFiles?: GitHubProjectContext['pinnedFiles'];
+              };
+              if (syncData.ok && syncData.updated) {
+                activeGithubProject = {
+                  ...activeGithubProject,
+                  commitSha: syncData.commitSha ?? activeGithubProject.commitSha,
+                  totalFiles: syncData.totalFiles ?? activeGithubProject.totalFiles,
+                  treePaths: syncData.treePaths ?? activeGithubProject.treePaths,
+                  pinnedFiles: syncData.pinnedFiles ?? activeGithubProject.pinnedFiles,
+                  lastSyncedAt: Date.now(),
+                };
+                setConversations((prev) =>
+                  prev.map((conv) =>
+                    conv.id !== convId ? conv : { ...conv, githubProject: activeGithubProject }
+                  )
+                );
+                toast.info(
+                  `Repo tersinkron ke commit terbaru${
+                    activeGithubProject.commitSha
+                      ? ` (${activeGithubProject.commitSha.slice(0, 7)})`
+                      : ''
+                  }`
+                );
+              } else if (syncData.ok && syncData.commitSha && !activeGithubProject.commitSha) {
+                activeGithubProject = {
+                  ...activeGithubProject,
+                  commitSha: syncData.commitSha,
+                  lastSyncedAt: Date.now(),
+                };
+                setConversations((prev) =>
+                  prev.map((conv) =>
+                    conv.id !== convId ? conv : { ...conv, githubProject: activeGithubProject }
+                  )
+                );
+              }
+            }
+          } catch (syncErr) {
+            if (syncErr instanceof Error && syncErr.name === 'AbortError') {
+              throw syncErr;
+            }
+          } finally {
+            currentStatus = continueMessage ? 'Melanjutkan dari state terakhir...' : undefined;
+            commitStreamSnapshot();
+          }
+        }
+
         let finalHistoryForApi = trimmedHistory;
         const estimatedTextBytes = finalHistoryForApi.reduce(
           (sum, m) =>
@@ -750,7 +825,7 @@ export default function App() {
               visualTarget: m.visualTarget,
               attachments: m.attachments,
             })),
-            githubProject,
+            githubProject: activeGithubProject,
             githubToken: settings.githubToken,
             systemInstruction: effectiveSystemInstruction,
             maxOutputTokens: settings.maxOutputTokens,

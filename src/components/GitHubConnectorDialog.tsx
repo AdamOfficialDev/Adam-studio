@@ -75,6 +75,7 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
 
   const [loadedProject, setLoadedProject] = useState<GitHubProjectContext | null>(null);
   const [loadingTree, setLoadingTree] = useState(false);
+  const [syncingRepo, setSyncingRepo] = useState(false);
   const [fileSearch, setFileSearch] = useState('');
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [agenticToolsEnabled, setAgenticToolsEnabled] = useState(true);
@@ -173,6 +174,7 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
           owner: string;
           repo: string;
           branch: string;
+          commitSha?: string;
           isPrivate: boolean;
           totalFiles: number;
           treePaths: string[];
@@ -183,10 +185,12 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
         setErrorMsg(data.message || 'Gagal membaca struktur repository.');
         return;
       }
+      const now = Date.now();
       const proj: GitHubProjectContext = {
         ...data.project,
         agenticToolsEnabled,
-        attachedAt: Date.now(),
+        attachedAt: now,
+        lastSyncedAt: now,
       };
       setLoadedProject(proj);
       setRepoInput(`${proj.owner}/${proj.repo}`);
@@ -197,6 +201,61 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
       setErrorMsg('Gagal membaca repository GitHub.');
     } finally {
       setLoadingTree(false);
+    }
+  };
+
+  const handleSyncLoadedProject = async () => {
+    if (!loadedProject) return;
+    onUpdateGithubToken(tokenDraft.trim());
+    setSyncingRepo(true);
+    setErrorMsg(null);
+    try {
+      const res = await fetch('/api/github', {
+        method: 'POST',
+        headers: makeHeaders(tokenDraft.trim()),
+        body: JSON.stringify({
+          action: 'sync-project',
+          owner: loadedProject.owner,
+          repo: loadedProject.repo,
+          branch: loadedProject.branch,
+          currentCommitSha: loadedProject.commitSha,
+          pinnedPaths: selectedPaths,
+          force: true,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        message?: string;
+        commitSha?: string;
+        totalFiles?: number;
+        treePaths?: string[];
+        pinnedFiles?: GitHubProjectFile[];
+      };
+      if (!res.ok || !data.ok) {
+        setErrorMsg(data.message || 'Gagal menyinkronkan repository.');
+        return;
+      }
+      const nextTreePaths = data.treePaths ?? loadedProject.treePaths;
+      const nextSelected = selectedPaths.filter((p) => nextTreePaths.includes(p));
+      const nextProj: GitHubProjectContext = {
+        ...loadedProject,
+        commitSha: data.commitSha ?? loadedProject.commitSha,
+        totalFiles: data.totalFiles ?? loadedProject.totalFiles,
+        treePaths: nextTreePaths,
+        pinnedFiles: data.pinnedFiles ?? loadedProject.pinnedFiles,
+        lastSyncedAt: Date.now(),
+      };
+      setLoadedProject(nextProj);
+      setSelectedPaths(nextSelected);
+      toast.success(
+        nextProj.commitSha
+          ? `Repo disinkronkan ke commit ${nextProj.commitSha.slice(0, 7)}`
+          : 'Repo berhasil disinkronkan'
+      );
+    } catch {
+      setErrorMsg('Gagal menyinkronkan commit terbaru dari GitHub.');
+    } finally {
+      setSyncingRepo(false);
     }
   };
 
@@ -240,11 +299,13 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
         .map((p) => existingMap.get(p))
         .filter((f): f is GitHubProjectFile => Boolean(f));
 
+      const now = Date.now();
       onAttachProject({
         ...loadedProject,
         pinnedFiles: finalPinned,
         agenticToolsEnabled,
-        attachedAt: Date.now(),
+        attachedAt: now,
+        lastSyncedAt: loadedProject.lastSyncedAt ?? now,
       });
       onOpenChange(false);
     } catch {
@@ -429,10 +490,29 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
                         <GitBranch className="h-2.5 w-2.5" />
                         {loadedProject.branch}
                       </Badge>
+                      {loadedProject.commitSha && (
+                        <Badge variant="secondary" className="font-mono text-[10px]">
+                          {loadedProject.commitSha.slice(0, 7)}
+                        </Badge>
+                      )}
                     </div>
-                    <span className="font-mono text-[11px] text-muted-foreground">
-                      {loadedProject.totalFiles} file terindeks
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[11px] text-muted-foreground">
+                        {loadedProject.totalFiles} file terindeks
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={syncingRepo || loadingTree}
+                        onClick={() => void handleSyncLoadedProject()}
+                        className="h-7 gap-1 rounded-lg px-2 text-[11px]"
+                        title="Cek & tarik commit terbaru tanpa mereset file tersemat"
+                      >
+                        <RefreshCw className={cn('h-3 w-3', syncingRepo && 'animate-spin')} />
+                        <span>Sync Terbaru</span>
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-between gap-3 rounded-xl border bg-background/60 px-3 py-2.5">

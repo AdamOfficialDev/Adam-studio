@@ -120,6 +120,7 @@ function buildSafeChatPayloadJson(payload: StreamChatPayload): { json: string; b
           owner: payload.githubProject.owner,
           repo: payload.githubProject.repo,
           branch: payload.githubProject.branch,
+          commitSha: payload.githubProject.commitSha,
           treePaths: opts.maxTreePaths
             ? payload.githubProject.treePaths.slice(0, opts.maxTreePaths)
             : payload.githubProject.treePaths,
