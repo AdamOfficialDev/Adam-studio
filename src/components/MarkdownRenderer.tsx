@@ -20,7 +20,7 @@ import { Button } from '@/components/ui/button';
 import { MermaidBlock } from '@/components/MermaidBlock';
 import { detectArtifactKind, getExtensionForLanguage, isArtifactCandidate } from '@/lib/artifacts';
 import type { ArtifactItem } from '@/types/chat';
-import { cn, formatBytes } from '@/lib/utils';
+import { cn, copyToClipboard, formatBytes } from '@/lib/utils';
 
 const CodeBlockContext = createContext(false);
 const highlightCache = new Map<string, string>();
@@ -84,12 +84,12 @@ function CodeBlock({ language, code, isStreaming, onOpenArtifact }: CodeBlockPro
   }, [code, collapsed, language, isStreaming]);
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(code);
+    const ok = await copyToClipboard(code);
+    if (ok) {
       setCopied(true);
       toast.success('Kode disalin');
       setTimeout(() => setCopied(false), 1800);
-    } catch {
+    } else {
       toast.error('Gagal menyalin');
     }
   };

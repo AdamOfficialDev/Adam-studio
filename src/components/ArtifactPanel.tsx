@@ -51,7 +51,7 @@ import { MarkdownRenderer } from '@/components/MarkdownRenderer';
 import { buildPreviewSrcDoc, getExtensionForLanguage } from '@/lib/artifacts';
 import { computeLineDiff } from '@/lib/diff';
 import type { ArtifactItem, VisualTarget } from '@/types/chat';
-import { cn, formatBytes, generateId } from '@/lib/utils';
+import { cn, copyToClipboard, formatBytes, generateId } from '@/lib/utils';
 
 const LazyCodeMirrorEditor = lazy(() => import('@/components/CodeMirrorEditor'));
 
@@ -308,12 +308,12 @@ export const ArtifactPanel = memo(function ArtifactPanel({
   );
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(editableContent);
+    const ok = await copyToClipboard(editableContent);
+    if (ok) {
       setCopied(true);
       toast.success('Kode artifact disalin');
       setTimeout(() => setCopied(false), 1800);
-    } catch {
+    } else {
       toast.error('Gagal menyalin');
     }
   };

@@ -36,7 +36,7 @@ import { extractArtifactsFromMarkdown } from '@/lib/artifacts';
 import { estimateCostUsd } from '@/lib/models';
 import { speakMessageAloud, stopSpeechAloud } from '@/lib/speech';
 import type { ArtifactItem, ChatMessage as ChatMessageType } from '@/types/chat';
-import { cn } from '@/lib/utils';
+import { cn, copyToClipboard } from '@/lib/utils';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -88,12 +88,12 @@ export const ChatMessage = memo(function ChatMessage({
   }, [isUser, message.content, message.id, message.isStreaming]);
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(message.content);
+    const ok = await copyToClipboard(message.content);
+    if (ok) {
       setCopied(true);
       toast.success('Pesan disalin');
       setTimeout(() => setCopied(false), 1800);
-    } catch {
+    } else {
       toast.error('Gagal menyalin');
     }
   };

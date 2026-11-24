@@ -3,6 +3,7 @@ import { Check, Code2, Copy, GitFork, Maximize2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import type { ArtifactItem } from '@/types/chat';
+import { copyToClipboard } from '@/lib/utils';
 
 interface MermaidBlockProps {
   code: string;
@@ -52,12 +53,12 @@ export const MermaidBlock = memo(function MermaidBlock({
   }, [code, isStreaming, uniqueId]);
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(code);
+    const ok = await copyToClipboard(code);
+    if (ok) {
       setCopied(true);
       toast.success('Kode Mermaid disalin');
       setTimeout(() => setCopied(false), 1800);
-    } catch {
+    } else {
       toast.error('Gagal menyalin');
     }
   };

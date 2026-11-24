@@ -196,33 +196,119 @@
   @apply my-3 max-w-full overflow-x-auto rounded-xl border bg-muted/30 px-4 py-3;
 }
 
+@keyframes studio-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes studio-overlay-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes studio-dialog-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes studio-dialog-out {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0) scale(0.98);
+  }
+}
+
+/* Backdrop blur konsisten di semua modal dialog, dipromosikan ke GPU layer agar tetap 60fps */
+.studio-modal-overlay {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: opacity;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+html[data-skin='paper'] .studio-modal-overlay {
+  background-color: rgba(15, 23, 42, 0.36);
+}
+
+.studio-modal-overlay[data-state='open'] {
+  animation: studio-overlay-in 150ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.studio-modal-overlay[data-state='closed'] {
+  animation: studio-overlay-out 115ms ease-in forwards;
+}
+
 .studio-modal-shell {
-  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
-  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  contain: layout style;
+  will-change: transform, opacity;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
   background-image: radial-gradient(
-    ellipse 85% 42% at 50% -8%,
-    hsl(var(--primary) / 0.13),
-    transparent 72%
+    ellipse 85% 40% at 50% -10%,
+    hsl(var(--primary) / 0.11),
+    transparent 70%
   );
   box-shadow:
-    0 32px 80px -16px rgba(0, 0, 0, 0.72),
+    0 18px 42px -12px rgba(0, 0, 0, 0.56),
     0 0 0 1px hsl(var(--foreground) / 0.06),
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+}
+
+html[data-skin='paper'] .studio-modal-shell {
+  box-shadow:
+    0 18px 40px -12px rgba(15, 23, 42, 0.16),
+    0 0 0 1px hsl(var(--foreground) / 0.06);
+}
+
+.studio-modal-shell[data-state='open'] {
+  animation: studio-dialog-in 175ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.studio-modal-shell[data-state='closed'] {
+  animation: studio-dialog-out 120ms ease-in forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-modal-overlay[data-state='open'],
+  .studio-modal-overlay[data-state='closed'],
+  .studio-modal-shell[data-state='open'],
+  .studio-modal-shell[data-state='closed'] {
+    animation-duration: 1ms;
+  }
 }
 
 .studio-modal-header {
   background: linear-gradient(
     180deg,
-    hsl(var(--card) / 0.96) 0%,
-    hsl(var(--card) / 0.65) 100%
+    hsl(var(--card) / 0.98) 0%,
+    hsl(var(--card) / 0.72) 100%
   );
 }
 
 .studio-modal-footer {
   background: linear-gradient(
     180deg,
-    hsl(var(--card) / 0.72) 0%,
-    hsl(var(--card) / 0.96) 100%
+    hsl(var(--card) / 0.78) 0%,
+    hsl(var(--card) / 0.98) 100%
   );
 }
 

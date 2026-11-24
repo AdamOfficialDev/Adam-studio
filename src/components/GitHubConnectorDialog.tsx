@@ -589,7 +589,7 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
               )}
             </div>
 
-            <DialogFooter className="studio-modal-footer shrink-0 justify-between border-t border-border/70 px-4 py-3.5 sm:px-6">
+            <DialogFooter className="studio-modal-footer shrink-0 flex-col-reverse items-stretch gap-2 border-t border-border/70 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
               {currentProject && onDetachProject ? (
                 <Button
                   type="button"
@@ -599,21 +599,21 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
                     onDetachProject();
                     onOpenChange(false);
                   }}
-                  className="text-xs text-destructive hover:text-destructive"
+                  className="h-9 w-full justify-center rounded-xl text-xs text-destructive hover:bg-destructive/10 hover:text-destructive sm:w-auto sm:justify-start"
                 >
                   Putus Repo dari Sesi
                 </Button>
               ) : (
-                <span />
+                <span className="hidden sm:block" />
               )}
 
-              <div className="flex items-center gap-2">
+              <div className="flex w-full items-center gap-2 sm:w-auto sm:justify-end">
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   onClick={() => onOpenChange(false)}
-                  className="rounded-xl px-4"
+                  className="h-9 flex-1 rounded-xl px-4 sm:flex-initial"
                 >
                   Batal
                 </Button>
@@ -622,14 +622,14 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
                   size="sm"
                   disabled={!loadedProject || applying}
                   onClick={() => void handleAttachToSession()}
-                  className="gap-1.5 rounded-xl px-4"
+                  className="h-9 flex-[2] gap-1.5 rounded-xl px-3.5 sm:flex-initial sm:px-4"
                 >
                   {applying ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
                   ) : (
-                    <Sparkles className="h-3.5 w-3.5" />
+                    <Sparkles className="h-3.5 w-3.5 shrink-0" />
                   )}
-                  <span>Jadikan Project di Sesi Ini</span>
+                  <span className="truncate">Jadikan Project di Sesi Ini</span>
                 </Button>
               </div>
             </DialogFooter>
