@@ -13,10 +13,9 @@ import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  StudioModalBody,
+  StudioModalFooter,
+  StudioModalHeader,
 } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -139,24 +138,21 @@ export function ContextManagerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[90dvh] max-w-xl flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="max-w-xl">
         {open && (
           <>
-            <DialogHeader className="studio-modal-header shrink-0 border-b border-border/70 px-5 py-4 sm:px-6">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary ring-1 ring-primary/30 shadow-sm">
-                  <Cpu className="h-[18px] w-[18px]" />
-                </div>
-                <div>
-                  <DialogTitle>Context Window Manager (Sesi Ini)</DialogTitle>
-                  <DialogDescription className="mt-0.5 text-xs">
-                    Optimalkan ukuran token tanpa menghapus riwayat visual & Canvas di layar.
-                  </DialogDescription>
-                </div>
-              </div>
-            </DialogHeader>
+            <StudioModalHeader
+              icon={<Cpu className="h-[18px] w-[18px]" />}
+              title="Context Window Manager"
+              badge={
+                <span className="rounded-full border border-border/80 bg-background/70 px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+                  Sesi Ini
+                </span>
+              }
+              description="Optimalkan ukuran token tanpa menghapus riwayat visual & Canvas di layar."
+            />
 
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 overscroll-contain sm:p-6">
+            <StudioModalBody className="space-y-4">
               {/* Token Status Card */}
               <div
                 className={cn(
@@ -319,9 +315,9 @@ export function ContextManagerDialog({
                   </Button>
                 </div>
               </div>
-            </div>
+            </StudioModalBody>
 
-            <DialogFooter className="studio-modal-footer shrink-0 justify-between border-t border-border/70 px-4 py-3.5 sm:px-6">
+            <StudioModalFooter className="sm:justify-between">
               {conversation.compactedContext ? (
                 <Button
                   type="button"
@@ -329,24 +325,24 @@ export function ContextManagerDialog({
                   size="sm"
                   disabled={isSummarizing}
                   onClick={handleResetRaw}
-                  className="gap-1.5 text-xs text-muted-foreground"
+                  className="h-9 w-full justify-center gap-1.5 rounded-xl text-xs text-muted-foreground hover:text-foreground sm:w-auto sm:justify-start"
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
-                  Kembalikan Utuh
+                  <span>Kembalikan Utuh</span>
                 </Button>
               ) : (
-                <span />
+                <span className="hidden sm:block" />
               )}
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={() => onOpenChange(false)}
-                className="rounded-xl px-4"
+                className="h-9 w-full rounded-xl px-5 sm:w-auto"
               >
                 Tutup
               </Button>
-            </DialogFooter>
+            </StudioModalFooter>
           </>
         )}
       </DialogContent>

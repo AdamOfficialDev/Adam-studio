@@ -12,7 +12,7 @@ const Command = React.forwardRef<
   <CommandPrimitive
     ref={ref}
     className={cn(
-      'flex h-full w-full flex-col overflow-hidden rounded-2xl bg-popover text-popover-foreground',
+      'flex h-full w-full flex-col overflow-hidden rounded-[24px] bg-card text-popover-foreground',
       className
     )}
     {...props}
@@ -23,7 +23,7 @@ Command.displayName = CommandPrimitive.displayName;
 const CommandDialog = ({ children, ...props }: DialogProps) => {
   return (
     <Dialog {...props}>
-      <DialogContent className="max-w-xl overflow-hidden border-border/85 bg-popover p-0">
+      <DialogContent className="max-w-xl border-border/90 bg-card p-0">
         <DialogHeader className="sr-only">
           <DialogTitle>Command Palette</DialogTitle>
         </DialogHeader>
@@ -39,7 +39,7 @@ const CommandInput = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive.Input>,
   React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input>
 >(({ className, ...props }, ref) => (
-  <div className="studio-modal-header flex items-center gap-2.5 border-b border-border/75 px-3.5 pr-14" cmdk-input-wrapper="">
+  <div className="studio-modal-header flex items-center gap-3 border-b border-border/75 px-5 py-1.5 pr-16" cmdk-input-wrapper="">
     <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary ring-1 ring-primary/25">
       <Search className="h-3.5 w-3.5" />
     </div>

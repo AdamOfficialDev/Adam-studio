@@ -3,10 +3,9 @@ import { BrandLogo } from '@/components/BrandLogo';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  StudioModalBody,
+  StudioModalFooter,
+  StudioModalHeader,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 
@@ -27,38 +26,33 @@ export function InstallAppDialog({
 }: InstallAppDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[90dvh] max-w-md flex-col gap-0 overflow-hidden p-0">
-        <DialogHeader className="studio-modal-header shrink-0 border-b border-border/70 px-5 py-4 sm:px-6">
-          <div className="flex items-center gap-3">
-            <BrandLogo size="md" />
-            <div>
-              <div className="flex items-center gap-2">
-                <DialogTitle>Install Adam Studio</DialogTitle>
-                <span className="rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-400">
-                  PWA
-                </span>
-              </div>
-              <DialogDescription className="mt-0.5 text-xs">
-                PWA Desktop & Mobile — standalone seperti native app.
-              </DialogDescription>
-            </div>
-          </div>
-        </DialogHeader>
+      <DialogContent className="max-w-md">
+        <StudioModalHeader
+          icon={<BrandLogo size="md" />}
+          iconClassName="bg-transparent ring-0 p-0"
+          title="Install Adam Studio"
+          badge={
+            <span className="rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-400">
+              PWA
+            </span>
+          }
+          description="PWA Desktop & Mobile — standalone seperti native app."
+        />
 
-        <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto p-5 text-xs overscroll-contain sm:p-6">
-          <div className="grid grid-cols-3 gap-2">
-            <div className="rounded-xl border border-border/75 bg-card/70 p-2.5 text-center">
-              <Laptop className="mx-auto mb-1 h-4 w-4 text-primary" />
+        <StudioModalBody className="space-y-3.5 text-xs">
+          <div className="grid grid-cols-1 gap-2 xs:grid-cols-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-border/80 bg-card/85 p-3 text-center">
+              <Laptop className="mx-auto mb-1.5 h-4 w-4 text-primary" />
               <div className="font-semibold text-foreground">Standalone</div>
               <div className="text-[10px] text-muted-foreground">Tanpa URL bar</div>
             </div>
-            <div className="rounded-xl border border-border/75 bg-card/70 p-2.5 text-center">
-              <CheckCircle2 className="mx-auto mb-1 h-4 w-4 text-emerald-400" />
+            <div className="rounded-xl border border-border/80 bg-card/85 p-3 text-center">
+              <CheckCircle2 className="mx-auto mb-1.5 h-4 w-4 text-emerald-400" />
               <div className="font-semibold text-foreground">Offline Cache</div>
               <div className="text-[10px] text-muted-foreground">Akses instan</div>
             </div>
-            <div className="rounded-xl border border-border/75 bg-card/70 p-2.5 text-center">
-              <Smartphone className="mx-auto mb-1 h-4 w-4 text-primary" />
+            <div className="rounded-xl border border-border/80 bg-card/85 p-3 text-center">
+              <Smartphone className="mx-auto mb-1.5 h-4 w-4 text-primary" />
               <div className="font-semibold text-foreground">Dock / Home</div>
               <div className="text-[10px] text-muted-foreground">1-klik buka</div>
             </div>
@@ -70,7 +64,7 @@ export function InstallAppDialog({
               <strong>Install Sekarang</strong> di bawah.
             </div>
           ) : isIos ? (
-            <div className="space-y-2.5 rounded-2xl border border-border/75 bg-muted/35 p-4">
+            <div className="space-y-2.5 rounded-2xl border border-border/80 bg-card/85 p-4">
               <div className="flex items-center gap-2 font-semibold">
                 <Smartphone className="h-4 w-4 text-primary" />
                 <span>Cara Install di iPhone / iPad (Safari)</span>
@@ -104,7 +98,7 @@ export function InstallAppDialog({
               </ol>
             </div>
           ) : (
-            <div className="space-y-2 rounded-2xl border border-border/75 bg-muted/35 p-4">
+            <div className="space-y-2 rounded-2xl border border-border/80 bg-card/85 p-4">
               <div className="flex items-center gap-2 font-semibold">
                 <Laptop className="h-4 w-4 text-primary" />
                 <span>Cara Install di Chrome / Edge / Brave</span>
@@ -117,15 +111,15 @@ export function InstallAppDialog({
               </p>
             </div>
           )}
-        </div>
+        </StudioModalBody>
 
-        <DialogFooter className="studio-modal-footer shrink-0 border-t border-border/70 px-5 py-3.5 sm:px-6">
+        <StudioModalFooter>
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={() => onOpenChange(false)}
-            className="rounded-xl px-4"
+            className="h-9 w-full rounded-xl px-4 sm:w-auto"
           >
             Tutup
           </Button>
@@ -134,13 +128,13 @@ export function InstallAppDialog({
               type="button"
               size="sm"
               onClick={onNativeInstall}
-              className="gap-1.5 rounded-xl px-4 shadow-sm shadow-primary/25"
+              className="h-9 w-full gap-1.5 rounded-xl px-4 sm:w-auto"
             >
               <MonitorDown className="h-4 w-4" />
               Install Sekarang
             </Button>
           )}
-        </DialogFooter>
+        </StudioModalFooter>
       </DialogContent>
     </Dialog>
   );

@@ -2,10 +2,11 @@ import { Keyboard, Smartphone } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
+  StudioModalBody,
+  StudioModalFooter,
+  StudioModalHeader,
 } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
 
 interface ShortcutsDialogProps {
   open: boolean;
@@ -39,38 +40,30 @@ const SHORTCUT_GROUPS: Array<{
 export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg overflow-hidden p-0">
-        <DialogHeader className="studio-modal-header border-b border-border/70 px-5 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/15 text-primary ring-1 ring-primary/30">
-              <Keyboard className="h-4 w-4" />
-            </div>
-            <div>
-              <DialogTitle>Keyboard Shortcuts & Gestures</DialogTitle>
-              <DialogDescription className="text-xs">
-                Pintasan cepat untuk produktivitas di Adam Studio (gunakan ⌘ di macOS).
-              </DialogDescription>
-            </div>
-          </div>
-        </DialogHeader>
+      <DialogContent className="max-w-lg">
+        <StudioModalHeader
+          icon={<Keyboard className="h-[18px] w-[18px]" />}
+          title="Keyboard Shortcuts & Gestures"
+          description="Pintasan cepat untuk produktivitas di Adam Studio (gunakan ⌘ di macOS)."
+        />
 
-        <div className="space-y-4 p-5">
+        <StudioModalBody className="space-y-4">
           {SHORTCUT_GROUPS.map((group) => (
             <div key={group.title} className="space-y-2">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                 {group.title}
               </div>
-              <div className="divide-y divide-border/60 rounded-2xl border bg-card/60">
+              <div className="divide-y divide-border/60 rounded-2xl border border-border/80 bg-card/85">
                 {group.items.map((item) => (
                   <div
                     key={item.label}
-                    className="flex items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
+                    className="flex items-center justify-between gap-3 px-4 py-2.5 text-xs"
                   >
                     <span className="text-foreground/90">{item.label}</span>
                     <div className="flex shrink-0 items-center gap-1">
                       {item.keys.map((k, idx) => (
                         <span key={`${item.label}-${k}`} className="inline-flex items-center gap-1">
-                          <kbd className="rounded-md border border-border/80 bg-muted/70 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-foreground shadow-sm">
+                          <kbd className="rounded-md border border-border/80 bg-background/80 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-foreground shadow-sm">
                             {k}
                           </kbd>
                           {idx < item.keys.length - 1 && (
@@ -85,14 +78,26 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
             </div>
           ))}
 
-          <div className="flex items-start gap-2.5 rounded-2xl border border-primary/25 bg-primary/5 p-3 text-xs text-muted-foreground">
+          <div className="flex items-start gap-2.5 rounded-2xl border border-primary/25 bg-primary/[0.08] p-3.5 text-xs text-muted-foreground">
             <Smartphone className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
             <div>
               <span className="font-semibold text-foreground">Gesture Mobile:</span> Geser sidebar ke
               arah kiri untuk menutup drawer riwayat percakapan.
             </div>
           </div>
-        </div>
+        </StudioModalBody>
+
+        <StudioModalFooter>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenChange(false)}
+            className="h-9 w-full rounded-xl px-5 sm:w-auto"
+          >
+            Tutup
+          </Button>
+        </StudioModalFooter>
       </DialogContent>
     </Dialog>
   );

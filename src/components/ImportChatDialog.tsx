@@ -14,10 +14,9 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  StudioModalBody,
+  StudioModalFooter,
+  StudioModalHeader,
 } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -146,25 +145,16 @@ export function ImportChatDialog({
         onOpenChange(next);
       }}
     >
-      <DialogContent className="flex max-h-[90dvh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="max-w-2xl">
         {open && (
           <>
-            <DialogHeader className="studio-modal-header shrink-0 border-b border-border/70 px-5 py-4 sm:px-6">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary ring-1 ring-primary/30 shadow-sm">
-                  <FileUp className="h-[18px] w-[18px]" />
-                </div>
-                <div>
-                  <DialogTitle>Import Konteks Chat (.json / .md)</DialogTitle>
-                  <DialogDescription className="mt-0.5 text-xs">
-                    Impor history dari Google AI Studio (Drive JSON), Adam Studio, atau Markdown
-                    khusus untuk sesi ini saja.
-                  </DialogDescription>
-                </div>
-              </div>
-            </DialogHeader>
+            <StudioModalHeader
+              icon={<FileUp className="h-[18px] w-[18px]" />}
+              title="Import Konteks Chat (.json / .md)"
+              description="Impor history dari Google AI Studio (Drive JSON), Adam Studio, atau Markdown khusus untuk sesi ini saja."
+            />
 
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 overscroll-contain sm:p-6">
+            <StudioModalBody className="space-y-4">
               <div
                 onDragOver={(e) => {
                   e.preventDefault();
@@ -357,15 +347,15 @@ export function ImportChatDialog({
                   </div>
                 </div>
               )}
-            </div>
+            </StudioModalBody>
 
-            <DialogFooter className="studio-modal-footer shrink-0 border-t border-border/70 px-4 py-3.5 sm:px-6">
+            <StudioModalFooter>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={() => onOpenChange(false)}
-                className="rounded-xl px-4"
+                className="h-9 w-full rounded-xl px-4 sm:w-auto"
               >
                 Batal
               </Button>
@@ -374,16 +364,16 @@ export function ImportChatDialog({
                 size="sm"
                 disabled={!parsed?.ok || parsed.messages.length === 0}
                 onClick={handleConfirm}
-                className="gap-1.5 rounded-xl px-4"
+                className="h-9 w-full gap-1.5 rounded-xl px-4 sm:w-auto"
               >
-                <Sparkles className="h-3.5 w-3.5" />
-                <span>
+                <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">
                   {hasActiveSession && mode === 'append'
                     ? 'Gabungkan ke Sesi Ini'
                     : 'Lanjutkan di Sesi Baru'}
                 </span>
               </Button>
-            </DialogFooter>
+            </StudioModalFooter>
           </>
         )}
       </DialogContent>

@@ -4,9 +4,9 @@ import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
+  StudioModalBody,
+  StudioModalFooter,
+  StudioModalHeader,
 } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -91,38 +91,27 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        onOpenAutoFocus={(e) => e.preventDefault()}
-        className="flex max-h-[90dvh] max-w-2xl flex-col gap-0 overflow-hidden p-0"
-      >
+      <DialogContent className="max-w-2xl">
         {open && (
           <>
-            <DialogHeader className="studio-modal-header shrink-0 border-b border-border/70 px-5 py-4 sm:px-6">
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary ring-1 ring-primary/30">
-                  <Cpu className="h-[18px] w-[18px]" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <DialogTitle>Model Selection</DialogTitle>
-                    <span className="max-w-[210px] truncate rounded-full border border-primary/25 bg-primary/10 px-2.5 py-0.5 font-mono text-[10px] font-medium text-primary">
-                      {selectedModel}
-                    </span>
-                  </div>
-                  <DialogDescription className="mt-0.5 text-xs">
-                    Pilih engine AI terbaik untuk coding, reasoning, atau custom endpoint.
-                  </DialogDescription>
-                </div>
-              </div>
-
-              <div className="mt-3.5 space-y-2.5">
+            <StudioModalHeader
+              icon={<Cpu className="h-[18px] w-[18px]" />}
+              title="Model Selection"
+              badge={
+                <span className="max-w-[190px] truncate rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 font-mono text-[10px] font-medium text-primary sm:max-w-[260px]">
+                  {selectedModel}
+                </span>
+              }
+              description="Pilih engine AI terbaik untuk coding, reasoning, atau custom endpoint."
+            >
+              <div className="space-y-2.5">
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     placeholder="Cari nama model, ID, atau kemampuan..."
-                    className="h-9 rounded-xl border-border/75 bg-background/85 pl-9 pr-9 text-xs sm:text-sm"
+                    className="h-9 rounded-xl border-border/80 bg-background/80 pl-9 pr-9 text-xs sm:text-sm"
                   />
                   {search && (
                     <button
@@ -136,7 +125,7 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                   )}
                 </div>
 
-                <div className="inline-flex w-full items-center gap-1 rounded-xl border border-border/70 bg-muted/50 p-1 sm:w-auto">
+                <div className="grid w-full grid-cols-4 gap-1 rounded-xl border border-border/75 bg-background/60 p-1 sm:inline-flex sm:w-auto">
                   {FILTER_TABS.map((tab) => {
                     const active = activeTab === tab;
                     const count = tabCounts[tab];
@@ -146,20 +135,20 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                         type="button"
                         onClick={() => setActiveTab(tab)}
                         className={cn(
-                          'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors duration-150 sm:flex-initial',
+                          'flex items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors duration-150 sm:px-3.5',
                           active
                             ? 'bg-primary text-primary-foreground shadow-sm'
-                            : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                            : 'text-muted-foreground hover:bg-muted/70 hover:text-foreground'
                         )}
                       >
-                        <span>{tab}</span>
+                        <span className="truncate">{tab}</span>
                         {tab !== 'Custom' && (
                           <span
                             className={cn(
-                              'rounded-md px-1.5 py-0 font-mono text-[10px]',
+                              'hidden rounded-md px-1.5 py-0 font-mono text-[10px] xs:inline-block sm:inline-block',
                               active
                                 ? 'bg-primary-foreground/20 text-primary-foreground'
-                                : 'bg-background/70 text-muted-foreground'
+                                : 'bg-muted text-muted-foreground'
                             )}
                           >
                             {count}
@@ -170,9 +159,9 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                   })}
                 </div>
               </div>
-            </DialogHeader>
+            </StudioModalHeader>
 
-            <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-4 overscroll-contain sm:p-6">
+            <StudioModalBody className="space-y-3">
               {activeTab !== 'Custom' ? (
                 <>
                   {filteredModels.map((model) => {
@@ -191,13 +180,13 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                           }
                         }}
                         className={cn(
-                          'group relative cursor-pointer overflow-hidden rounded-2xl border p-3.5 text-left transition-[border-color,background-color,transform] duration-150 active:scale-[0.99] sm:p-4',
+                          'group relative cursor-pointer overflow-hidden rounded-2xl border p-4 text-left transition-[border-color,background-color,transform] duration-150 active:scale-[0.992]',
                           isSelected
-                            ? 'border-primary/80 bg-primary/[0.08] ring-1 ring-primary/35'
-                            : 'border-border/75 bg-card/75 hover:border-primary/45 hover:bg-accent/40'
+                            ? 'border-primary/80 bg-primary/[0.09] ring-1 ring-primary/35'
+                            : 'border-border/80 bg-card/85 hover:border-primary/45 hover:bg-card'
                         )}
                       >
-                        <div className="flex items-start justify-between gap-2.5">
+                        <div className="flex items-start justify-between gap-3">
                           <div className="flex min-w-0 items-center gap-3">
                             <div
                               className={cn(
@@ -207,19 +196,19 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                                   : 'bg-primary/15 text-primary group-hover:bg-primary/20'
                               )}
                             >
-                              <Sparkles className="h-5 w-5" />
+                              <Sparkles className="h-[18px] w-[18px]" />
                             </div>
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
-                                <span className="truncate font-semibold text-foreground">
+                                <span className="truncate text-sm font-semibold text-foreground">
                                   {model.name}
                                 </span>
                                 {model.isNew && (
                                   <Badge
                                     variant="secondary"
-                                    className="gap-1.5 bg-emerald-500/15 px-2 py-0 text-[10px] text-emerald-500"
+                                    className="gap-1.5 rounded-full bg-emerald-500/15 px-2 py-0 text-[10px] font-semibold text-emerald-400"
                                   >
-                                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                                     New
                                   </Badge>
                                 )}
@@ -232,7 +221,7 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                                 <button
                                   type="button"
                                   onClick={(e) => copyId(e, model.id)}
-                                  className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                                  className="inline-flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                                   title="Copy Model ID"
                                 >
                                   <Copy className="h-3 w-3" />
@@ -242,7 +231,7 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                           </div>
 
                           {isSelected && (
-                            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/15 px-2.5 py-1 text-[11px] font-medium text-primary">
+                            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/30 bg-primary/15 px-2.5 py-1 text-[11px] font-semibold text-primary">
                               <Check className="h-3.5 w-3.5" />
                               <span className="hidden sm:inline">Active</span>
                             </span>
@@ -254,20 +243,20 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                           <span>{model.description}</span>
                         </p>
 
-                        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
-                          <span className="inline-flex items-center gap-1 rounded-lg border bg-background/60 px-2 py-1 text-muted-foreground">
+                        <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[11px]">
+                          <span className="inline-flex items-center gap-1 rounded-lg border border-border/75 bg-background/70 px-2 py-1 text-muted-foreground">
                             <DollarSign className="h-3 w-3 text-emerald-400" />
                             In ${model.inputPricePerMillion.toFixed(2)} • Out $
                             {model.outputPricePerMillion.toFixed(2)}
                           </span>
-                          <span className="inline-flex items-center gap-1 rounded-lg border bg-background/60 px-2 py-1 text-muted-foreground">
+                          <span className="inline-flex items-center gap-1 rounded-lg border border-border/75 bg-background/70 px-2 py-1 text-muted-foreground">
                             <Rocket className="h-3 w-3 text-primary" />
                             {model.releaseDate}
                           </span>
-                          <span className="rounded-lg border bg-background/60 px-2 py-1 text-muted-foreground">
+                          <span className="rounded-lg border border-border/75 bg-background/70 px-2 py-1 text-muted-foreground">
                             {model.contextLabel}
                           </span>
-                          <span className="inline-flex items-center gap-1 rounded-lg border border-primary/25 bg-primary/10 px-2 py-1 text-primary">
+                          <span className="inline-flex items-center gap-1 rounded-lg border border-primary/25 bg-primary/10 px-2 py-1 font-medium text-primary">
                             <Brain className="h-3 w-3" />
                             {thinkingCaps.supported
                               ? thinkingCaps.supportedLevels
@@ -281,13 +270,13 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                   })}
 
                   {filteredModels.length === 0 && (
-                    <div className="rounded-2xl border border-dashed py-10 text-center text-xs text-muted-foreground">
+                    <div className="rounded-2xl border border-dashed border-border/80 bg-card/40 py-10 text-center text-xs text-muted-foreground">
                       Tidak ada model yang cocok. Gunakan kolom Custom Model ID di bawah.
                     </div>
                   )}
                 </>
               ) : (
-                <div className="rounded-2xl border border-dashed bg-card/50 p-5 text-center text-xs leading-relaxed text-muted-foreground">
+                <div className="rounded-2xl border border-dashed border-border/80 bg-card/60 p-5 text-center text-xs leading-relaxed text-muted-foreground">
                   Masukkan ID model Gemini apa saja pada kolom di bawah (misal{' '}
                   <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
                     gemini-4-hydrogen
@@ -295,12 +284,12 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                   atau preview endpoint terbaru).
                 </div>
               )}
-            </div>
+            </StudioModalBody>
 
-            <div className="studio-modal-footer shrink-0 border-t border-border/70 px-4 py-3.5 sm:px-6">
-              <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
+            <StudioModalFooter className="block space-y-2 sm:block">
+              <div className="flex items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
                 <span>Custom Model ID</span>
-                <span className="truncate font-mono text-[10px] text-primary/90">
+                <span className="truncate font-mono text-[10px] text-primary">
                   {customModelInput.trim()
                     ? (() => {
                         const c = getModelThinkingCapabilities(customModelInput.trim());
@@ -308,10 +297,10 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                           ? `Auto Thinking: ${c.supportedLevels.map((l) => THINKING_LEVEL_META[l].label).join(' / ')}`
                           : 'Auto: Tanpa Thinking';
                       })()
-                    : 'Enter untuk terapkan'}
+                    : 'Tekan Enter untuk terapkan'}
                 </span>
               </div>
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2">
                 <div className="relative flex-1">
                   <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 font-mono text-xs font-bold text-primary">
                     &gt;_
@@ -323,7 +312,7 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                       if (e.key === 'Enter') handleApplyCustom();
                     }}
                     placeholder="gemini-4-hydrogen"
-                    className="h-9 rounded-xl bg-background/80 pl-9 font-mono text-xs"
+                    className="h-9 rounded-xl border-border/80 bg-background/85 pl-9 font-mono text-xs"
                   />
                 </div>
                 <Button
@@ -331,12 +320,12 @@ export const ModelSelectorDialog = memo(function ModelSelectorDialog({
                   size="sm"
                   onClick={handleApplyCustom}
                   disabled={!customModelInput.trim()}
-                  className="h-9 shrink-0 rounded-xl px-4 shadow-sm shadow-primary/20"
+                  className="h-9 shrink-0 rounded-xl px-4"
                 >
                   Pakai
                 </Button>
               </div>
-            </div>
+            </StudioModalFooter>
           </>
         )}
       </DialogContent>

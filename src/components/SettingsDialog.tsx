@@ -23,10 +23,9 @@ import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  StudioModalBody,
+  StudioModalFooter,
+  StudioModalHeader,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -251,31 +250,23 @@ export const SettingsDialog = memo(function SettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[90dvh] max-w-xl flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="max-w-xl">
         {open && (
           <>
-            <DialogHeader className="studio-modal-header shrink-0 border-b border-border/70 px-5 py-4 sm:px-6">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary ring-1 ring-primary/30 shadow-sm">
-                  <Settings className="h-[18px] w-[18px]" />
-                </div>
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <DialogTitle>Settings & Appearance</DialogTitle>
-                    <span className="rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-medium capitalize text-primary">
-                      {draft.skin}
-                    </span>
-                  </div>
-                  <DialogDescription className="mt-0.5 text-xs">
-                    API Key Rotation, Persona AI, Thinking Level, & Theme Skin.
-                  </DialogDescription>
-                </div>
-              </div>
-            </DialogHeader>
+            <StudioModalHeader
+              icon={<Settings className="h-[18px] w-[18px]" />}
+              title="Settings & Appearance"
+              badge={
+                <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 font-mono text-[10px] font-medium capitalize text-primary">
+                  {draft.skin}
+                </span>
+              }
+              description="API Key Rotation, Persona AI, Thinking Level, & Theme Skin."
+            />
 
             <Tabs defaultValue="connection" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="shrink-0 border-b border-border/60 bg-muted/20 px-4 py-2.5 sm:px-6">
-                <TabsList className="grid h-10 w-full grid-cols-3 rounded-xl border border-border/60 bg-muted/50 p-1">
+              <div className="shrink-0 border-b border-border/75 bg-card/85 px-5 py-2.5">
+                <TabsList className="grid h-10 w-full grid-cols-3 rounded-xl border border-border/75 bg-background/60 p-1">
                   <TabsTrigger
                     value="connection"
                     className="gap-1.5 rounded-lg text-[11px] sm:text-xs"
@@ -297,7 +288,7 @@ export const SettingsDialog = memo(function SettingsDialog({
                 </TabsList>
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto p-4 overscroll-contain sm:p-6">
+              <StudioModalBody>
                 <TabsContent value="connection" className="mt-0 space-y-4">
                   <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -364,8 +355,8 @@ export const SettingsDialog = memo(function SettingsDialog({
                       <code>503</code>.
                     </p>
 
-                    <div className="space-y-2 border-t border-border/60 pt-2.5">
-                      <div className="flex items-center justify-between gap-2">
+                    <div className="space-y-2.5 border-t border-border/60 pt-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span className="text-[11px] font-medium text-muted-foreground">
                             Status Key Pool (
@@ -380,68 +371,100 @@ export const SettingsDialog = memo(function SettingsDialog({
                             {keyPoolStore === 'upstash-redis' ? 'Global Redis' : 'Memory Lokal'}
                           </span>
                         </div>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={checkingKeyPool}
-                          onClick={() => void fetchKeyPoolStatus(draft.apiKey)}
-                          className="h-6 rounded-lg px-2 text-[10px]"
-                        >
-                          {checkingKeyPool ? 'Memeriksa...' : 'Refresh Status'}
-                        </Button>
+
+                        <div className="flex items-center gap-1.5">
+                          {keyPoolStatus.length > 0 && (
+                            <div className="flex items-center gap-1 font-mono text-[10px]">
+                              <span className="rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 font-semibold text-emerald-400">
+                                {keyPoolStatus.filter((k) => k.status === 'ready').length} Ready
+                              </span>
+                              {keyPoolStatus.some((k) => k.status === 'cooldown') && (
+                                <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 font-semibold text-amber-400">
+                                  {keyPoolStatus.filter((k) => k.status === 'cooldown').length}{' '}
+                                  Cooldown
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={checkingKeyPool}
+                            onClick={() => void fetchKeyPoolStatus(draft.apiKey)}
+                            className="h-7 rounded-lg px-2.5 text-[10px]"
+                          >
+                            {checkingKeyPool ? 'Memeriksa...' : 'Refresh Status'}
+                          </Button>
+                        </div>
                       </div>
+
                       {keyPoolStatus.length === 0 ? (
-                        <p className="text-[10px] text-amber-400/90">
+                        <p className="text-[11px] text-amber-400/90">
                           Belum ada API Key aktif terdeteksi di Browser maupun Server Env.
                         </p>
                       ) : (
-                        <div className="space-y-2">
-                          <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
-                            <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-emerald-400">
-                              {keyPoolStatus.filter((k) => k.status === 'ready').length} Ready
-                            </span>
-                            {keyPoolStatus.some((k) => k.status === 'cooldown') && (
-                              <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-amber-400">
-                                {keyPoolStatus.filter((k) => k.status === 'cooldown').length}{' '}
-                                Cooldown
-                              </span>
-                            )}
-                          </div>
-                          <div className="grid grid-cols-2 gap-1.5 sm:flex sm:flex-wrap">
-                            {keyPoolStatus.map((item) => (
-                              <span
+                        <div
+                          className={cn(
+                            'grid grid-cols-2 gap-2 sm:grid-cols-3',
+                            keyPoolStatus.length > 6 &&
+                              'max-h-56 overflow-y-auto overscroll-contain rounded-xl border border-border/70 bg-background/50 p-2'
+                          )}
+                        >
+                          {keyPoolStatus.map((item) => {
+                            const isCooldown = item.status === 'cooldown';
+                            const match = item.label.match(/^(Key #\d+)\s*\((.+)\)$/);
+                            const keyName = match ? match[1] : item.label;
+                            const keySuffix = match ? match[2] : '';
+
+                            return (
+                              <div
                                 key={item.label}
                                 className={cn(
-                                  'inline-flex items-center gap-1.5 truncate rounded-lg border px-2 py-1 font-mono text-[10px]',
-                                  item.status === 'cooldown'
-                                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
-                                    : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-400'
+                                  'flex items-center justify-between gap-2 rounded-xl border px-2.5 py-2 font-mono text-[11px] transition-colors',
+                                  isCooldown
+                                    ? 'border-amber-500/40 bg-amber-500/[0.08] text-amber-400'
+                                    : 'border-emerald-500/25 bg-emerald-500/[0.06] text-emerald-400'
                                 )}
                               >
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <span
+                                    className={cn(
+                                      'h-1.5 w-1.5 shrink-0 rounded-full',
+                                      isCooldown
+                                        ? 'animate-pulse bg-amber-400'
+                                        : 'bg-emerald-400'
+                                    )}
+                                  />
+                                  <div className="min-w-0 leading-tight">
+                                    <div className="truncate font-semibold text-foreground/90">
+                                      {keyName}
+                                    </div>
+                                    {keySuffix && (
+                                      <div className="truncate text-[10px] text-muted-foreground">
+                                        {keySuffix}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
                                 <span
                                   className={cn(
-                                    'h-1.5 w-1.5 shrink-0 rounded-full',
-                                    item.status === 'cooldown'
-                                      ? 'animate-pulse bg-amber-400'
-                                      : 'bg-emerald-400'
+                                    'shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold tabular-nums',
+                                    isCooldown
+                                      ? 'bg-amber-500/15 text-amber-400'
+                                      : 'bg-emerald-500/15 text-emerald-400'
                                   )}
-                                />
-                                <span className="truncate">
-                                  {item.label}
-                                  {item.status === 'cooldown'
-                                    ? ` (${item.cooldownRemainingSec}s)`
-                                    : ' Ready'}
+                                >
+                                  {isCooldown ? `${item.cooldownRemainingSec}s` : 'Ready'}
                                 </span>
-                              </span>
-                            ))}
-                          </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
-                  </div>
-
-                  <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
+                  </div><div className="space-y-3 rounded-2xl border bg-card/60 p-4">
                     <div className="flex items-center justify-between gap-4">
                       <div className="space-y-0.5">
                         <div className="flex items-center gap-2 text-sm font-semibold">
@@ -894,27 +917,27 @@ export const SettingsDialog = memo(function SettingsDialog({
                     </div>
                   </div>
                 </TabsContent>
-              </div>
+              </StudioModalBody>
             </Tabs>
 
-            <DialogFooter className="studio-modal-footer shrink-0 justify-between border-t border-border/70 px-4 py-3.5 sm:px-6">
+            <StudioModalFooter className="sm:justify-between">
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
                 onClick={handleReset}
-                className="gap-1.5 rounded-xl text-xs text-muted-foreground hover:text-foreground"
+                className="h-9 w-full justify-center gap-1.5 rounded-xl text-xs text-muted-foreground hover:text-foreground sm:w-auto sm:justify-start"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Reset Default</span>
+                <span>Reset Default</span>
               </Button>
-              <div className="flex items-center gap-2">
+              <div className="flex w-full items-center gap-2 sm:w-auto sm:justify-end">
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   onClick={() => onOpenChange(false)}
-                  className="rounded-xl px-4"
+                  className="h-9 flex-1 rounded-xl px-4 sm:flex-initial"
                 >
                   Batal
                 </Button>
@@ -922,12 +945,12 @@ export const SettingsDialog = memo(function SettingsDialog({
                   type="button"
                   size="sm"
                   onClick={handleSave}
-                  className="rounded-xl px-5 shadow-sm shadow-primary/25"
+                  className="h-9 flex-[2] rounded-xl px-5 sm:flex-initial"
                 >
                   Simpan Perubahan
                 </Button>
               </div>
-            </DialogFooter>
+            </StudioModalFooter>
           </>
         )}
       </DialogContent>

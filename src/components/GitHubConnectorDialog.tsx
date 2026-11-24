@@ -21,10 +21,9 @@ import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  StudioModalBody,
+  StudioModalFooter,
+  StudioModalHeader,
 } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -317,34 +316,26 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[90dvh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="max-w-2xl">
         {open && (
           <>
-            <DialogHeader className="studio-modal-header shrink-0 border-b border-border/70 px-5 py-4 sm:px-6">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary ring-1 ring-primary/30 shadow-sm">
-                  <FolderGit2 className="h-[18px] w-[18px]" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <DialogTitle>GitHub Project Connector (MCP)</DialogTitle>
-                    {loadedProject && (
-                      <Badge
-                        variant="secondary"
-                        className="bg-emerald-500/15 font-mono text-[10px] text-emerald-400"
-                      >
-                        {loadedProject.owner}/{loadedProject.repo}
-                      </Badge>
-                    )}
-                  </div>
-                  <DialogDescription className="mt-0.5 text-xs">
-                    Pilih repository GitHub untuk dipelajari & diedit AI khusus di sesi chat ini.
-                  </DialogDescription>
-                </div>
-              </div>
-            </DialogHeader>
+            <StudioModalHeader
+              icon={<FolderGit2 className="h-[18px] w-[18px]" />}
+              title="GitHub Project Connector (MCP)"
+              badge={
+                loadedProject && (
+                  <Badge
+                    variant="secondary"
+                    className="rounded-full border border-emerald-500/30 bg-emerald-500/15 font-mono text-[10px] text-emerald-400"
+                  >
+                    {loadedProject.owner}/{loadedProject.repo}
+                  </Badge>
+                )
+              }
+              description="Pilih repository GitHub untuk dipelajari & diedit AI khusus di sesi chat ini."
+            />
 
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 overscroll-contain sm:p-6">
+            <StudioModalBody className="space-y-4">
               <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-xs font-semibold">
@@ -587,9 +578,9 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
                   </div>
                 </div>
               )}
-            </div>
+            </StudioModalBody>
 
-            <DialogFooter className="studio-modal-footer shrink-0 flex-col-reverse items-stretch gap-2 border-t border-border/70 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+            <StudioModalFooter className="sm:justify-between">
               {currentProject && onDetachProject ? (
                 <Button
                   type="button"
@@ -632,7 +623,7 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
                   <span className="truncate">Jadikan Project di Sesi Ini</span>
                 </Button>
               </div>
-            </DialogFooter>
+            </StudioModalFooter>
           </>
         )}
       </DialogContent>

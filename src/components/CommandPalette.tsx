@@ -212,7 +212,7 @@ export function CommandPalette({
           </>
         )}
       </CommandList>
-      <div className="studio-modal-footer flex items-center justify-between border-t border-border/70 px-3.5 py-2 text-[11px] text-muted-foreground">
+      <div className="studio-modal-footer flex items-center justify-between border-t border-border/75 px-5 py-3 text-[11px] text-muted-foreground">
         <div className="flex items-center gap-3">
           <span className="inline-flex items-center gap-1">
             <kbd className="rounded border border-border/70 bg-muted/65 px-1 py-0.5 font-mono text-[10px]">
