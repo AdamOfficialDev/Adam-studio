@@ -262,6 +262,17 @@ export default function App() {
   const isStreamingActive = useIsStreamingActive();
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [scrollViewport, setScrollViewport] = useState<HTMLElement | null>(null);
+  const [isMobileViewport, setIsMobileViewport] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const onChange = (e: MediaQueryListEvent) => setIsMobileViewport(e.matches);
+    setIsMobileViewport(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   const { isStandalone, isIos, isOnline, canNativeInstall, triggerNativeInstall } = usePwaInstall();
 
@@ -514,13 +525,14 @@ export default function App() {
   }, [handleStopStream, isStreamingActive]);
 
   const handleCycleSkin = useCallback(() => {
-    setSettings((prev) => {
-      const idx = SKIN_ORDER.indexOf(prev.skin);
-      const nextSkin = SKIN_ORDER[(idx + 1) % SKIN_ORDER.length];
-      toast.success(`Tema diganti ke ${nextSkin.toUpperCase()}`);
-      return { ...prev, skin: nextSkin };
+    const idx = SKIN_ORDER.indexOf(settings.skin);
+    const nextSkin = SKIN_ORDER[(idx + 1) % SKIN_ORDER.length];
+    setSettings((prev) => ({ ...prev, skin: nextSkin }));
+    toast.success(`Tema diganti ke ${nextSkin.toUpperCase()}`, {
+      id: 'theme-skin-toast',
+      duration: 2000,
     });
-  }, []);
+  }, [settings.skin]);
 
   useEffect(() => {
     const onKeyDown = (e: globalThis.KeyboardEvent) => {
@@ -705,13 +717,11 @@ export default function App() {
                     conv.id !== convId ? conv : { ...conv, githubProject: activeGithubProject }
                   )
                 );
-                toast.info(
-                  `Repo tersinkron ke commit terbaru${
-                    activeGithubProject.commitSha
-                      ? ` (${activeGithubProject.commitSha.slice(0, 7)})`
-                      : ''
-                  }`
-                );
+                toast.success('Repo tersinkron ke commit terbaru', {
+                  description: activeGithubProject.commitSha
+                    ? `${activeGithubProject.owner}/${activeGithubProject.repo} @ ${activeGithubProject.commitSha.slice(0, 7)}`
+                    : `${activeGithubProject.owner}/${activeGithubProject.repo}`,
+                });
               } else if (syncData.ok && syncData.commitSha && !activeGithubProject.commitSha) {
                 activeGithubProject = {
                   ...activeGithubProject,
@@ -1578,10 +1588,17 @@ export default function App() {
     <MotionConfig reducedMotion="user">
       <TooltipProvider>
         <Toaster
-          richColors
-          position="bottom-right"
-          theme={settings.skin === 'paper' ? 'light' : 'dark'}
-        />
+        position={isMobileViewport ? 'top-center' : 'top-right'}
+        theme={settings.skin === 'paper' ? 'light' : 'dark'}
+        closeButton
+        visibleToasts={isMobileViewport ? 1 : 3}
+        gap={8}
+        duration={3200}
+        offset={isMobileViewport ? 58 : 64}
+        toastOptions={{
+          className: 'adam-toast',
+        }}
+      />
 
         <div className="flex h-[100dvh] w-full max-w-full overflow-hidden bg-background text-foreground">
           {!zenMode && (

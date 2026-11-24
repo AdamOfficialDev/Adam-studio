@@ -225,3 +225,176 @@
     hsl(var(--card) / 0.96) 100%
   );
 }
+
+/* === Adam Studio Sonner Toast UI === */
+[data-sonner-toaster] {
+  z-index: 90 !important;
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif !important;
+}
+
+@media (max-width: 767px) {
+  [data-sonner-toaster][data-y-position='top'] {
+    top: calc(env(safe-area-inset-top, 0px) + 58px) !important;
+    left: 12px !important;
+    right: 12px !important;
+    transform: none !important;
+    width: auto !important;
+    max-width: 400px !important;
+    margin-inline: auto !important;
+    --width: 100%;
+    --mobile-offset: 0px;
+  }
+
+  [data-sonner-toaster][data-y-position='top'] [data-sonner-toast].adam-toast {
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    margin-inline: auto !important;
+  }
+}
+
+@media (min-width: 768px) {
+  [data-sonner-toaster][data-y-position='top'][data-x-position='right'] {
+    top: 64px !important;
+    right: 20px !important;
+    --width: 368px;
+  }
+}
+
+/* Pertahankan position & stacking bawaan Sonner, tanpa backdrop-filter berat agar 60fps di HP */
+[data-sonner-toast].adam-toast {
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 10px 36px 10px 12px !important;
+  border-radius: 13px !important;
+  border: 1px solid hsl(var(--border)) !important;
+  background: hsl(var(--card)) !important;
+  color: hsl(var(--foreground)) !important;
+  box-shadow: 0 10px 24px -8px rgb(0 0 0 / 0.45) !important;
+  will-change: transform, opacity;
+}
+
+html[data-skin='paper'] [data-sonner-toast].adam-toast {
+  box-shadow: 0 10px 24px -8px rgb(15 23 42 / 0.14) !important;
+}
+
+[data-sonner-toast].adam-toast[data-type='info'] {
+  border-color: hsl(var(--primary) / 0.45) !important;
+}
+
+[data-sonner-toast].adam-toast[data-type='success'] {
+  border-color: rgb(16 185 129 / 0.42) !important;
+}
+
+[data-sonner-toast].adam-toast[data-type='warning'] {
+  border-color: rgb(245 158 11 / 0.45) !important;
+}
+
+[data-sonner-toast].adam-toast[data-type='error'] {
+  border-color: rgb(244 63 94 / 0.48) !important;
+}
+
+[data-sonner-toast].adam-toast [data-icon] {
+  width: 26px !important;
+  height: 26px !important;
+  margin: 0 !important;
+  border-radius: 8px;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-shrink: 0;
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+
+[data-sonner-toast].adam-toast[data-type='info'] [data-icon] {
+  background: hsl(var(--primary) / 0.15);
+  color: hsl(var(--primary));
+}
+
+[data-sonner-toast].adam-toast[data-type='success'] [data-icon] {
+  background: rgb(16 185 129 / 0.15);
+  color: rgb(52 211 153);
+}
+
+html[data-skin='paper'] [data-sonner-toast].adam-toast[data-type='success'] [data-icon] {
+  color: rgb(5 150 105);
+}
+
+[data-sonner-toast].adam-toast[data-type='warning'] [data-icon] {
+  background: rgb(245 158 11 / 0.15);
+  color: rgb(251 191 36);
+}
+
+html[data-skin='paper'] [data-sonner-toast].adam-toast[data-type='warning'] [data-icon] {
+  color: rgb(217 119 6);
+}
+
+[data-sonner-toast].adam-toast[data-type='error'] [data-icon] {
+  background: rgb(244 63 94 / 0.15);
+  color: rgb(251 113 133);
+}
+
+html[data-skin='paper'] [data-sonner-toast].adam-toast[data-type='error'] [data-icon] {
+  color: rgb(225 29 72);
+}
+
+[data-sonner-toast].adam-toast [data-content] {
+  gap: 2px !important;
+  min-width: 0;
+}
+
+[data-sonner-toast].adam-toast [data-title] {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  line-height: 1.35 !important;
+}
+
+[data-sonner-toast].adam-toast [data-description] {
+  font-family: 'JetBrains Mono', ui-monospace, monospace !important;
+  font-size: 11px !important;
+  line-height: 1.35 !important;
+  color: hsl(var(--muted-foreground)) !important;
+}
+
+[data-sonner-toast].adam-toast [data-button] {
+  height: 28px !important;
+  padding: 0 10px !important;
+  border-radius: 8px !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  background: hsl(var(--primary)) !important;
+  color: hsl(var(--primary-foreground)) !important;
+}
+
+[data-sonner-toast].adam-toast [data-close-button] {
+  position: absolute !important;
+  top: 50% !important;
+  right: 8px !important;
+  left: auto !important;
+  transform: translateY(-50%) !important;
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 7px !important;
+  border: none !important;
+  background: transparent !important;
+  color: hsl(var(--muted-foreground)) !important;
+  opacity: 0.75;
+}
+
+[data-sonner-toast].adam-toast:has([data-description]) [data-close-button],
+[data-sonner-toast].adam-toast:has([data-button]) [data-close-button] {
+  top: 10px !important;
+  transform: none !important;
+}
+
+[data-sonner-toast].adam-toast[data-expanded='false'][data-front='false'] [data-close-button] {
+  opacity: 0 !important;
+  pointer-events: none;
+}
+
+[data-sonner-toast].adam-toast [data-close-button]:hover {
+  opacity: 1;
+  background: hsl(var(--muted)) !important;
+  color: hsl(var(--foreground)) !important;
+}
