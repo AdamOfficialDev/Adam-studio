@@ -10,6 +10,8 @@ export interface StreamChatPayload {
   }>;
   githubProject?: GitHubProjectContext;
   githubToken?: string;
+  daytonaApiKey?: string;
+  daytonaApiUrl?: string;
   builderMode?: BuilderMode;
   workspace?: VirtualWorkspace;
   systemInstruction: string;
@@ -44,6 +46,7 @@ export interface StreamHandlers {
   onToolResult?: (item: ToolTraceItem) => void;
   onWorkspacePlan?: (plan: EmergentPlan) => void;
   onWorkspaceFile?: (evt: { action: 'write' | 'delete'; path: string; content?: string; language?: string }) => void;
+  onWorkspaceSandbox?: (evt: { sandboxId?: string; previewUrl?: string; previewToken?: string }) => void;
   onStatus?: (message: string) => void;
   onInfo?: (message: string) => void;
   onDone: (meta: { model: string; finishReason?: string; isDemo?: boolean }) => void;
@@ -144,6 +147,7 @@ function buildSafeChatPayloadJson(payload: StreamChatPayload): { json: string; b
           files: payload.workspace.files,
           plan: payload.workspace.plan,
           entryPath: payload.workspace.entryPath,
+          daytonaSandboxId: payload.workspace.daytonaSandboxId,
         }
       : undefined;
 
@@ -220,6 +224,12 @@ export async function streamChatCompletion(
 
   if (payload.githubToken?.trim()) {
     headers['x-github-token'] = payload.githubToken.trim();
+  }
+  if (payload.daytonaApiKey?.trim()) {
+    headers['x-daytona-api-key'] = payload.daytonaApiKey.trim();
+  }
+  if (payload.daytonaApiUrl?.trim()) {
+    headers['x-daytona-api-url'] = payload.daytonaApiUrl.trim();
   }
 
   const { json: safeBody, bytes: payloadBytes } = buildSafeChatPayloadJson(payload);
@@ -298,6 +308,8 @@ export async function streamChatCompletion(
       handlers.onWorkspacePlan?.(parsed.plan as unknown as EmergentPlan);
     } else if (eventName === 'workspace_file' && typeof parsed.path === 'string') {
       handlers.onWorkspaceFile?.(parsed as unknown as { action: 'write' | 'delete'; path: string; content?: string; language?: string });
+    } else if (eventName === 'workspace_sandbox') {
+      handlers.onWorkspaceSandbox?.(parsed as unknown as { sandboxId?: string; previewUrl?: string; previewToken?: string });
     } else if (eventName === 'grounding' && parsed.grounding) {
       handlers.onGrounding?.(parsed.grounding as unknown as GroundingMetadataInfo);
     } else if (eventName === 'usage') {

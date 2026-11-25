@@ -3,8 +3,10 @@ import {
   AlertTriangle,
   Archive,
   Check,
+  Cloud,
   Code2,
   Copy,
+  ExternalLink,
   Eye,
   FileCode2,
   FolderTree,
@@ -12,11 +14,13 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
+  Play,
   Plus,
   RefreshCw,
   Rocket,
   Smartphone,
   Sparkles,
+  Square,
   Tablet,
   Terminal,
   Trash2,
@@ -26,7 +30,11 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { EmergentPlanCard } from '@/components/EmergentPlanCard';
-import { buildProjectZipBlob, compileWorkspaceToHtml } from '@/lib/workspace';
+import {
+  buildProjectZipBlob,
+  compileWorkspaceToHtml,
+  scaffoldRunnableProjectFiles,
+} from '@/lib/workspace';
 import { cn, copyToClipboard } from '@/lib/utils';
 import type { VirtualWorkspace } from '@/types/chat';
 
@@ -34,6 +42,13 @@ const LazyCodeMirrorEditor = lazy(() => import('@/components/CodeMirrorEditor'))
 
 interface WorkspacePanelProps {
   workspace: VirtualWorkspace;
+  daytonaApiKey?: string;
+  daytonaApiUrl?: string;
+  onUpdateSandbox?: (info: {
+    sandboxId?: string;
+    previewUrl?: string;
+    previewToken?: string;
+  }) => void;
   onChangeActiveFile: (path: string) => void;
   onEditFile: (path: string, content: string) => void;
   onCreateFile: (path: string) => void;
@@ -43,10 +58,14 @@ interface WorkspacePanelProps {
 }
 
 type ViewportSize = 'desktop' | 'tablet' | 'mobile';
-type WorkspaceTab = 'preview' | 'code' | 'plan';
+type WorkspaceTab = 'preview' | 'code' | 'terminal' | 'plan';
+type PreviewEngine = 'browser' | 'daytona';
 
 export const WorkspacePanel = memo(function WorkspacePanel({
   workspace,
+  daytonaApiKey,
+  daytonaApiUrl,
+  onUpdateSandbox,
   onChangeActiveFile,
   onEditFile,
   onCreateFile,
@@ -55,6 +74,9 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   onClose,
 }: WorkspacePanelProps) {
   const [tab, setTab] = useState<WorkspaceTab>('preview');
+  const [engine, setEngine] = useState<PreviewEngine>(() =>
+    workspace.daytonaPreviewUrl ? 'daytona' : 'browser'
+  );
   const [viewport, setViewport] = useState<ViewportSize>('desktop');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [panelWidthPct, setPanelWidthPct] = useState(50);
@@ -64,6 +86,17 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   const [copied, setCopied] = useState(false);
   const [creatingFile, setCreatingFile] = useState(false);
   const [newFileName, setNewFileName] = useState('');
+
+  // Daytona state
+  const [deployingDaytona, setDeployingDaytona] = useState(false);
+  const [runningCmd, setRunningCmd] = useState(false);
+  const [terminalCmd, setTerminalCmd] = useState('');
+  const [terminalLog, setTerminalLog] = useState<string>(
+    'Daytona Cloud Terminal siap. Gunakan tombol "Run in Daytona" atau ketik perintah (misal: npm install recharts).'
+  );
+  const [terminalError, setTerminalError] = useState<{ command: string; output: string } | null>(null);
+  const [autoHealEnabled, setAutoHealEnabled] = useState(true);
+
   const asideRef = useRef<HTMLElement>(null);
 
   const filePaths = useMemo(() => Object.keys(workspace.files).sort(), [workspace.files]);
@@ -74,6 +107,12 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   const activeFile = activePath ? workspace.files[activePath] : null;
 
   const compiled = useMemo(() => compileWorkspaceToHtml(workspace), [workspace]);
+
+  useEffect(() => {
+    if (workspace.daytonaPreviewUrl) {
+      setEngine('daytona');
+    }
+  }, [workspace.daytonaPreviewUrl]);
 
   useEffect(() => {
     setRuntimeError(null);
@@ -91,6 +130,154 @@ export const WorkspacePanel = memo(function WorkspacePanel({
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, []);
+
+  const sandboxHeaders = () => {
+    const h: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (daytonaApiKey?.trim()) h['x-daytona-api-key'] = daytonaApiKey.trim();
+    if (daytonaApiUrl?.trim()) h['x-daytona-api-url'] = daytonaApiUrl.trim();
+    return h;
+  };
+
+  const appendLog = (text: string) => {
+    setTerminalLog((prev) => (prev ? prev + "\n\n" + text : text));
+  };
+
+  const triggerTerminalAutoFix = (commandLabel: string, errorOutput: string) => {
+    const cleanLog = errorOutput.trim().slice(-4500);
+    toast.info('Mengirim error terminal ke Emergent Agent untuk Auto-Fix...');
+    onAutoFixError(
+      'Terminal / Build Daytona gagal saat menjalankan "' + commandLabel + '".\n' +
+        'Analisis error di bawah, perbaiki file yang bermasalah (package.json, src/*, atau config) di workspace, lalu verifikasi / jalankan ulang di Daytona:\n\n' +
+        '\x60\x60\x60\n' + cleanLog + '\n\x60\x60\x60'
+    );
+  };
+
+  const handleDeployDaytona = async () => {
+    if (filePaths.length === 0) {
+      toast.error('Workspace masih kosong.');
+      return;
+    }
+    setDeployingDaytona(true);
+    setTerminalError(null);
+    setEngine('daytona');
+    appendLog('$ [Daytona] Menyiapkan VM, sync file, npm install, & start Vite...');
+    try {
+      const scaffolded = scaffoldRunnableProjectFiles(workspace.files, workspace.plan?.title);
+      const res = await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: sandboxHeaders(),
+        body: JSON.stringify({
+          action: 'deploy-preview',
+          sandboxId: workspace.daytonaSandboxId,
+          files: scaffolded,
+          port: 5173,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        sandboxId?: string;
+        previewUrl?: string;
+        previewToken?: string;
+        installOutput?: string;
+        devLogs?: string;
+        output?: string;
+        message?: string;
+      };
+      if (data.installOutput) appendLog(data.installOutput);
+      if (data.devLogs) appendLog(data.devLogs);
+      if (data.output) appendLog(data.output);
+
+      if (!res.ok || !data.ok) {
+        const errLog = [data.message, data.output, data.installOutput, data.devLogs]
+          .filter(Boolean)
+          .join('\n');
+        setTerminalError({ command: 'Run in Daytona (npm install & Vite)', output: errLog });
+        toast.error(data.message || 'Gagal menjalankan proyek di Daytona');
+        if (data.sandboxId) onUpdateSandbox?.({ sandboxId: data.sandboxId });
+        if (autoHealEnabled) {
+          triggerTerminalAutoFix('Run in Daytona (npm install & Vite)', errLog);
+        } else {
+          setTab('terminal');
+        }
+        return;
+      }
+
+      onUpdateSandbox?.({
+        sandboxId: data.sandboxId,
+        previewUrl: data.previewUrl,
+        previewToken: data.previewToken,
+      });
+      setRefreshNonce((n) => n + 1);
+      toast.success('Daytona Live Server aktif!');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal menghubungi /api/sandbox';
+      appendLog('Error: ' + msg);
+      toast.error(msg);
+    } finally {
+      setDeployingDaytona(false);
+    }
+  };
+
+  const handleExecCommand = async (cmdToRun?: string) => {
+    const cmd = (cmdToRun ?? terminalCmd).trim();
+    if (!cmd || runningCmd) return;
+    if (!cmdToRun) setTerminalCmd('');
+    setRunningCmd(true);
+    setTerminalError(null);
+    appendLog('$ ' + cmd);
+    try {
+      const res = await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: sandboxHeaders(),
+        body: JSON.stringify({
+          action: 'exec',
+          sandboxId: workspace.daytonaSandboxId,
+          command: cmd,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        sandboxId?: string;
+        exitCode?: number;
+        output?: string;
+        message?: string;
+      };
+      if (data.sandboxId && data.sandboxId !== workspace.daytonaSandboxId) {
+        onUpdateSandbox?.({ sandboxId: data.sandboxId });
+      }
+      appendLog(data.output || data.message || `(exit ${data.exitCode ?? 0})`);
+      if (!res.ok || !data.ok) {
+        const errOut = data.output || data.message || `Exit code ${data.exitCode}`;
+        setTerminalError({ command: cmd, output: errOut });
+        toast.error(data.message || `Perintah gagal (exit ${data.exitCode})`);
+        if (autoHealEnabled && (cmd.includes('npm') || cmd.includes('tsc') || cmd.includes('vite') || cmd.includes('build'))) {
+          triggerTerminalAutoFix(cmd, errOut);
+        }
+      }
+    } catch (err) {
+      appendLog('Error: ' + (err instanceof Error ? err.message : 'Network error'));
+    } finally {
+      setRunningCmd(false);
+    }
+  };
+
+  const handleStopSandbox = async () => {
+    if (!workspace.daytonaSandboxId) return;
+    try {
+      const res = await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: sandboxHeaders(),
+        body: JSON.stringify({ action: 'stop', sandboxId: workspace.daytonaSandboxId }),
+      });
+      if (res.ok) {
+        toast.success('Daytona VM dihentikan (hemat kredit)');
+        onUpdateSandbox?.({ sandboxId: workspace.daytonaSandboxId, previewUrl: undefined });
+        setEngine('browser');
+      }
+    } catch {
+      toast.error('Gagal menghentikan Daytona VM');
+    }
+  };
 
   const handlePointerResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -187,7 +374,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
               </span>
             </div>
             <div className="truncate font-mono text-[10px] text-muted-foreground">
-              {compiled.mode === 'react-tsx' ? 'React + TSX + Tailwind' : 'HTML / CSS / JS'}
+              {engine === 'daytona' ? 'Daytona Cloud VM' : compiled.mode === 'react-tsx' ? 'React + TSX + Tailwind' : 'HTML / CSS / JS'}
             </div>
           </div>
         </div>
@@ -222,6 +409,19 @@ export const WorkspacePanel = memo(function WorkspacePanel({
             </button>
             <button
               type="button"
+              onClick={() => setTab('terminal')}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium transition-colors sm:px-2.5',
+                tab === 'terminal'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <Terminal className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Terminal</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setTab('plan')}
               className={cn(
                 'inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium transition-colors sm:px-2.5',
@@ -230,7 +430,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
                   : 'text-muted-foreground hover:text-foreground'
               )}
             >
-              <Terminal className="h-3.5 w-3.5" />
+              <Rocket className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Plan</span>
             </button>
           </div>
@@ -252,7 +452,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
             variant="ghost"
             size="icon"
             onClick={() => setIsFullscreen((f) => !f)}
-            title={isFullscreen ? "Keluar Fullscreen" : "Fullscreen"}
+            title={isFullscreen ? 'Keluar Fullscreen' : 'Fullscreen'}
             className="hidden h-8 w-8 rounded-xl md:inline-flex"
           >
             {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
@@ -271,32 +471,63 @@ export const WorkspacePanel = memo(function WorkspacePanel({
       </div>
 
       {tab === 'preview' && (
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/60 bg-background/50 px-3.5 py-1.5">
-          <div className="flex items-center gap-1">
-            {(
-              [
-                ['desktop', Laptop],
-                ['tablet', Tablet],
-                ['mobile', Smartphone],
-              ] as const
-            ).map(([key, Icon]) => (
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-background/50 px-3.5 py-1.5">
+          <div className="flex items-center gap-1.5">
+            <div className="inline-flex rounded-lg border border-border/70 bg-card/80 p-0.5 text-[10px] font-medium">
               <button
-                key={key}
                 type="button"
-                onClick={() => setViewport(key)}
+                onClick={() => setEngine('browser')}
                 className={cn(
-                  'rounded-lg p-1.5 transition-colors',
-                  viewport === key
-                    ? 'bg-primary/15 text-primary'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  'rounded-md px-2 py-0.5 transition-colors',
+                  engine === 'browser'
+                    ? 'bg-primary/20 text-primary'
+                    : 'text-muted-foreground hover:text-foreground'
                 )}
-                title={key}
               >
-                <Icon className="h-3.5 w-3.5" />
+                Browser
               </button>
-            ))}
+              <button
+                type="button"
+                onClick={() => setEngine('daytona')}
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-md px-2 py-0.5 transition-colors',
+                  engine === 'daytona'
+                    ? 'bg-emerald-500/20 text-emerald-400'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <Cloud className="h-3 w-3" />
+                Daytona
+              </button>
+            </div>
+
+            <div className="hidden items-center gap-0.5 sm:flex">
+              {(
+                [
+                  ['desktop', Laptop],
+                  ['tablet', Tablet],
+                  ['mobile', Smartphone],
+                ] as const
+              ).map(([key, Icon]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setViewport(key)}
+                  className={cn(
+                    'rounded-lg p-1.5 transition-colors',
+                    viewport === key
+                      ? 'bg-primary/15 text-primary'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  )}
+                  title={key}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                </button>
+              ))}
+            </div>
+
             {!isFullscreen && (
-              <div className="ml-2 hidden items-center gap-1 border-l border-border/60 pl-2 font-mono text-[10px] text-muted-foreground lg:flex">
+              <div className="hidden items-center gap-1 border-l border-border/60 pl-2 font-mono text-[10px] text-muted-foreground lg:flex">
                 <button
                   type="button"
                   onClick={() => setPanelWidthPct(38)}
@@ -332,6 +563,36 @@ export const WorkspacePanel = memo(function WorkspacePanel({
           </div>
 
           <div className="flex items-center gap-1.5">
+            {engine === 'daytona' && (
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={deployingDaytona || filePaths.length === 0}
+                  onClick={() => void handleDeployDaytona()}
+                  className="h-7 gap-1 rounded-lg px-2.5 text-[11px]"
+                >
+                  {deployingDaytona ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Play className="h-3 w-3" />
+                  )}
+                  <span>{workspace.daytonaPreviewUrl ? 'Sync & Restart' : 'Run in Daytona'}</span>
+                </Button>
+                {workspace.daytonaPreviewUrl && (
+                  <a
+                    href={workspace.daytonaPreviewUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex h-7 items-center gap-1 rounded-lg border border-border/75 bg-card px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                    title="Buka URL Preview Daytona di Tab Baru"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+              </>
+            )}
+
             {runtimeError && (
               <Button
                 type="button"
@@ -352,7 +613,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
               className="h-7 gap-1 rounded-lg px-2 text-[11px] text-muted-foreground"
             >
               <RefreshCw className="h-3 w-3" />
-              <span>Reload</span>
+              <span className="hidden sm:inline">Reload</span>
             </Button>
           </div>
         </div>
@@ -361,7 +622,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
       <div className="min-h-0 flex-1 overflow-hidden bg-background/60">
         {tab === 'preview' && (
           <div className="flex h-full w-full flex-col items-center overflow-hidden p-2 sm:p-3">
-            {runtimeError && (
+            {runtimeError && engine === 'browser' && (
               <div className="mb-2 flex w-full items-center justify-between gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                 <div className="flex min-w-0 items-center gap-2">
                   <AlertTriangle className="h-4 w-4 shrink-0" />
@@ -379,20 +640,69 @@ export const WorkspacePanel = memo(function WorkspacePanel({
                 </Button>
               </div>
             )}
-            <div
-              className={cn(
-                'min-h-[360px] flex-1 overflow-hidden rounded-2xl border border-border/80 bg-zinc-950 shadow-lg transition-[width] duration-200',
-                viewportWidthClass
-              )}
-            >
-              <iframe
-                key={workspace.updatedAt + '-' + refreshNonce}
-                title="Emergent Live Preview"
-                srcDoc={compiled.html}
-                sandbox="allow-scripts allow-modals allow-forms"
-                className={cn('h-full w-full border-0 bg-zinc-950', isResizing && 'pointer-events-none')}
-              />
-            </div>
+
+            {engine === 'daytona' ? (
+              <div
+                className={cn(
+                  'relative min-h-[360px] flex-1 overflow-hidden rounded-2xl border border-border/80 bg-zinc-950 shadow-lg transition-[width] duration-200',
+                  viewportWidthClass
+                )}
+              >
+                {deployingDaytona ? (
+                  <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+                    <Loader2 className="h-7 w-7 animate-spin text-primary" />
+                    <div className="text-sm font-semibold">Menjalankan di Daytona Cloud Sandbox...</div>
+                    <p className="max-w-sm text-xs text-muted-foreground">
+                      Menyiapkan container Linux, menyinkronkan {filePaths.length} file, menjalankan{' '}
+                      <code className="font-mono">npm install</code>, dan menyalakan Vite server.
+                    </p>
+                  </div>
+                ) : workspace.daytonaPreviewUrl ? (
+                  <iframe
+                    key={workspace.daytonaPreviewUrl + '-' + refreshNonce}
+                    title="Daytona Live Preview"
+                    src={workspace.daytonaPreviewUrl}
+                    className={cn('h-full w-full border-0 bg-zinc-950', isResizing && 'pointer-events-none')}
+                  />
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30">
+                      <Cloud className="h-6 w-6" />
+                    </div>
+                    <div className="text-sm font-semibold">Daytona Cloud Sandbox Siap</div>
+                    <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+                      Jalankan proyek dengan <code className="font-mono">npm install</code> & Vite dev
+                      server nyata di Linux VM Daytona (cocok untuk library npm apa pun).
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={filePaths.length === 0}
+                      onClick={() => void handleDeployDaytona()}
+                      className="gap-1.5 rounded-xl px-4"
+                    >
+                      <Play className="h-3.5 w-3.5" />
+                      <span>Run in Daytona</span>
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div
+                className={cn(
+                  'min-h-[360px] flex-1 overflow-hidden rounded-2xl border border-border/80 bg-zinc-950 shadow-lg transition-[width] duration-200',
+                  viewportWidthClass
+                )}
+              >
+                <iframe
+                  key={workspace.updatedAt + '-' + refreshNonce}
+                  title="Emergent Live Preview"
+                  srcDoc={compiled.html}
+                  sandbox="allow-scripts allow-modals allow-forms"
+                  className={cn('h-full w-full border-0 bg-zinc-950', isResizing && 'pointer-events-none')}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -526,6 +836,117 @@ export const WorkspacePanel = memo(function WorkspacePanel({
                   Pilih file dari daftar untuk melihat atau mengedit kode.
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {tab === 'terminal' && (
+          <div className="flex h-full flex-col">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-card/70 px-3.5 py-2">
+              <div className="flex items-center gap-2 text-xs">
+                <Cloud className="h-3.5 w-3.5 text-emerald-400" />
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  {workspace.daytonaSandboxId ? 'VM: ' + workspace.daytonaSandboxId.slice(0, 12) : 'Belum ada VM aktif'}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setAutoHealEnabled((v) => !v)}
+                  className={cn(
+                    'inline-flex h-7 items-center gap-1 rounded-lg border px-2 text-[10px] font-semibold transition-colors',
+                    autoHealEnabled
+                      ? 'border-primary/40 bg-primary/15 text-primary'
+                      : 'border-border/70 bg-background/60 text-muted-foreground'
+                  )}
+                  title="Otomatis kirim error npm/build ke Emergent Agent untuk diperbaiki"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  <span>Auto-Heal {autoHealEnabled ? 'ON' : 'OFF'}</span>
+                </button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={runningCmd}
+                  onClick={() => void handleExecCommand('npm install')}
+                  className="h-7 rounded-lg px-2.5 font-mono text-[10px]"
+                >
+                  npm install
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={runningCmd}
+                  onClick={() => void handleExecCommand('npm run build')}
+                  className="h-7 rounded-lg px-2.5 font-mono text-[10px]"
+                >
+                  npm run build
+                </Button>
+                {workspace.daytonaSandboxId && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void handleStopSandbox()}
+                    className="h-7 gap-1 rounded-lg px-2 text-[10px] text-destructive hover:bg-destructive/10"
+                  >
+                    <Square className="h-3 w-3" />
+                    <span>Stop VM</span>
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {terminalError && (
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-destructive/40 bg-destructive/10 px-3.5 py-2 text-xs text-destructive">
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <span className="truncate font-mono text-[11px]">
+                    Gagal: {terminalError.command}
+                  </span>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  onClick={() =>
+                    triggerTerminalAutoFix(terminalError.command, terminalError.output)
+                  }
+                  className="h-7 shrink-0 gap-1 rounded-lg px-2.5 text-[11px]"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  <span>Auto-Fix dengan Emergent</span>
+                </Button>
+              </div>
+            )}
+
+            <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words bg-zinc-950 p-3.5 font-mono text-[11px] leading-relaxed text-zinc-200">
+              {terminalLog}
+            </pre>
+
+            <div className="flex shrink-0 items-center gap-2 border-t border-border/75 bg-card p-2.5">
+              <span className="font-mono text-xs font-bold text-emerald-400">$</span>
+              <Input
+                value={terminalCmd}
+                onChange={(e) => setTerminalCmd(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handleExecCommand();
+                }}
+                placeholder="npm install framer-motion recharts"
+                disabled={runningCmd}
+                className="h-8 rounded-xl bg-background/80 font-mono text-xs"
+              />
+              <Button
+                type="button"
+                size="sm"
+                disabled={runningCmd || !terminalCmd.trim()}
+                onClick={() => void handleExecCommand()}
+                className="h-8 shrink-0 rounded-xl px-3 text-xs"
+              >
+                {runningCmd ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Run'}
+              </Button>
             </div>
           </div>
         )}

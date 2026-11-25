@@ -7,6 +7,8 @@ const SETTINGS_KEY = 'hydrogen-chat-settings-v3';
 export const DEFAULT_SETTINGS: AppSettings = {
   apiKey: '',
   githubToken: '',
+  daytonaApiKey: '',
+  daytonaApiUrl: 'https://app.daytona.io/api',
   systemInstruction: PERSONA_PRESETS[0].systemInstruction,
   maxOutputTokens: 8192,
   includeThoughts: true,

@@ -28,6 +28,7 @@ import {
   StudioModalHeader,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -127,6 +128,8 @@ export const SettingsDialog = memo(function SettingsDialog({
   const [keyPoolSource, setKeyPoolSource] = useState<'browser' | 'server' | 'none'>('none');
   const [keyPoolStore, setKeyPoolStore] = useState<'upstash-redis' | 'memory'>('memory');
   const [checkingKeyPool, setCheckingKeyPool] = useState(false);
+  const [showDaytonaKey, setShowDaytonaKey] = useState(false);
+  const [testingDaytona, setTestingDaytona] = useState(false);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
   const latestApiKeyRef = useRef(draft.apiKey);
   latestApiKeyRef.current = draft.apiKey;
@@ -224,6 +227,30 @@ export const SettingsDialog = memo(function SettingsDialog({
       toast.success(`Berhasil restore ${merged.length} sesi percakapan!`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Gagal restore backup');
+    }
+  };
+
+  const handleTestDaytona = async () => {
+    setTestingDaytona(true);
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (draft.daytonaApiKey?.trim()) headers['x-daytona-api-key'] = draft.daytonaApiKey.trim();
+      if (draft.daytonaApiUrl?.trim()) headers['x-daytona-api-url'] = draft.daytonaApiUrl.trim();
+      const res = await fetch('/api/sandbox', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ action: 'status' }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        toast.success(`Daytona Terhubung (${data.sandboxCount ?? 0} sandbox)`);
+      } else {
+        toast.error(data.message || 'Gagal terhubung ke Daytona');
+      }
+    } catch {
+      toast.error('Gagal menghubungi endpoint /api/sandbox');
+    } finally {
+      setTestingDaytona(false);
     }
   };
 
@@ -548,6 +575,55 @@ export const SettingsDialog = memo(function SettingsDialog({
                       onCheckedChange={(checked) => setDraft({ ...draft, demoMode: checked })}
                     />
                   </div>
+              <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-semibold text-foreground">
+                      Daytona Cloud Sandbox (Real npm & Vite)
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      Opsional: jalankan <code className="font-mono">npm install</code> & dev server nyata di cloud VM.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={testingDaytona}
+                    onClick={() => void handleTestDaytona()}
+                    className="h-7 rounded-lg px-2.5 text-[10px]"
+                  >
+                    {testingDaytona ? 'Menguji...' : 'Tes Koneksi'}
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="relative">
+                    <Input
+                      type={showDaytonaKey ? 'text' : 'password'}
+                      value={draft.daytonaApiKey || ''}
+                      onChange={(e) => setDraft({ ...draft, daytonaApiKey: e.target.value })}
+                      placeholder="dtn_... (atau set DAYTONA_API_KEY di Vercel Env)"
+                      className="h-9 rounded-xl pr-16 font-mono text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowDaytonaKey((s) => !s)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                    >
+                      {showDaytonaKey ? 'Sembunyi' : 'Lihat'}
+                    </button>
+                  </div>
+                  <Input
+                    type="url"
+                    value={draft.daytonaApiUrl || ''}
+                    onChange={(e) => setDraft({ ...draft, daytonaApiUrl: e.target.value })}
+                    placeholder="https://app.daytona.io/api"
+                    className="h-8 rounded-xl font-mono text-[11px]"
+                  />
+                </div>
+              </div>
+
                 </TabsContent>
 
                 <TabsContent value="persona" className="mt-0 space-y-5">

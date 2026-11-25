@@ -84,6 +84,9 @@ export interface VirtualWorkspace {
   entryPath: string;
   plan?: EmergentPlan;
   lastBuildError?: string | null;
+  daytonaSandboxId?: string;
+  daytonaPreviewUrl?: string;
+  daytonaPreviewToken?: string;
   updatedAt: number;
 }
 
@@ -170,6 +173,8 @@ export interface Conversation {
 }
 
 export interface AppSettings {
+  daytonaApiKey?: string;
+  daytonaApiUrl?: string;
   apiKey: string;
   githubToken: string;
   systemInstruction: string;

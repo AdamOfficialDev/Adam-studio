@@ -852,6 +852,8 @@ export default function App() {
             })),
             githubProject: activeGithubProject,
             githubToken: settings.githubToken,
+            daytonaApiKey: settings.daytonaApiKey,
+            daytonaApiUrl: settings.daytonaApiUrl,
             builderMode: builderMode || 'chat',
             workspace,
             systemInstruction: effectiveSystemInstruction,
@@ -880,6 +882,26 @@ export default function App() {
                       }
                 )
               );
+            },
+            onWorkspaceSandbox: (evt) => {
+              setConversations((prev) =>
+                prev.map((conv) => {
+                  if (conv.id !== convId) return conv;
+                  const baseWs = conv.workspace || createEmptyWorkspace();
+                  return {
+                    ...conv,
+                    workspace: {
+                      ...baseWs,
+                      daytonaSandboxId: evt.sandboxId || baseWs.daytonaSandboxId,
+                      daytonaPreviewUrl: evt.previewUrl ?? baseWs.daytonaPreviewUrl,
+                      daytonaPreviewToken: evt.previewToken ?? baseWs.daytonaPreviewToken,
+                      updatedAt: Date.now(),
+                    },
+                    updatedAt: Date.now(),
+                  };
+                })
+              );
+              setWorkspaceOpen(true);
             },
             onWorkspaceFile: (evt) => {
               setConversations((prev) =>
@@ -2276,6 +2298,29 @@ export default function App() {
             {workspaceOpen && activeConversation && (
         <WorkspacePanel
           workspace={activeConversation.workspace || createEmptyWorkspace()}
+          daytonaApiKey={settings.daytonaApiKey}
+          daytonaApiUrl={settings.daytonaApiUrl}
+          onUpdateSandbox={(info) =>
+            setConversations((prev) =>
+              prev.map((c) => {
+                if (c.id !== activeConversation.id) return c;
+                const baseWs = c.workspace || createEmptyWorkspace();
+                return {
+                  ...c,
+                  workspace: {
+                    ...baseWs,
+                    daytonaSandboxId: info.sandboxId ?? baseWs.daytonaSandboxId,
+                    daytonaPreviewUrl:
+                      info.previewUrl !== undefined ? info.previewUrl : baseWs.daytonaPreviewUrl,
+                    daytonaPreviewToken:
+                      info.previewToken !== undefined
+                        ? info.previewToken
+                        : baseWs.daytonaPreviewToken,
+                  },
+                };
+              })
+            )
+          }
           onChangeActiveFile={(filePath) =>
             setConversations((prev) =>
               prev.map((c) =>
@@ -2325,8 +2370,18 @@ export default function App() {
             )
           }
           onAutoFixError={(errorMsg) => {
+            const forceEmergentFix = activeConversation.builderMode !== 'emergent';
+            if (forceEmergentFix) {
+              setConversations((prev) =>
+                prev.map((c) =>
+                  c.id === activeConversation.id
+                    ? { ...c, builderMode: 'emergent', updatedAt: Date.now() }
+                    : c
+                )
+              );
+            }
             handleSend(
-              `Live Preview mengalami error runtime/build berikut. Periksa file workspace terkait, perbaiki bug-nya, lalu jalankan workspace_verify_project:\n\n\`\`\`\n${errorMsg}\n\`\`\``,
+              `Live Preview / Terminal mengalami error berikut. Periksa file workspace terkait, perbaiki bug atau package.json-nya, jalankan workspace_verify_project, dan bila Daytona aktif nyalakan ulang via sandbox_start_preview:\n\n\`\`\`\n${errorMsg}\n\`\`\``,
               []
             );
           }}

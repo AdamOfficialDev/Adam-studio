@@ -4,6 +4,7 @@ import {
   executeGitHubTool,
 } from './_github.js';
 import { hydrateKeyCooldowns, recordKeyCooldown } from './_cooldown.js';
+import { ensureDaytonaSandbox, execDaytonaCommand, deployAndPreviewDaytona, syncFilesToDaytona } from './_daytona.js';
 // ============================================================================
 // EMERGENT E1 AUTONOMOUS BUILDER SKILL & VIRTUAL WORKSPACE TOOLS
 // ============================================================================
@@ -21,6 +22,123 @@ const EMERGENT_AGENT_SKILL = [
   '5. SELF-VERIFICATION: Sebelum menyusun balasan akhir, WAJIB panggil workspace_verify_project untuk mengecek entry point, import lokal, dan bebas placeholder.',
   '6. FINAL REPORT: Jangan tulis ulang semua isi kode ke chat karena sudah ada di IDE Workspace. Berikan ringkasan elegan fitur, arsitektur file, dan hasil verifikasi.',
 ].join('\n');
+
+
+const DAYTONA_TOOL_DECLARATIONS = [
+  {
+    name: 'sandbox_run_command',
+    description: 'Menjalankan perintah shell nyata (seperti npm install framer-motion, npx tsc --noEmit, npm run build) di Daytona Cloud Linux VM.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        command: { type: 'STRING', description: 'Perintah bash yang akan dijalankan di folder project' },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'sandbox_start_preview',
+    description: 'Mengunggah seluruh file workspace ke Daytona Cloud Sandbox, menjalankan npm install & vite dev server, lalu mengembalikan Live Preview URL nyata.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        port: { type: 'NUMBER', description: 'Port dev server (default 5173)' },
+      },
+    },
+  },
+];
+
+async function executeDaytonaAgentTool({ name, args, workspaceState, daytonaConfig, sendEvent, signal }) {
+  try {
+    if (!daytonaConfig?.apiKey) {
+      return { ok: false, summary: 'DAYTONA_API_KEY belum diset', response: { error: 'DAYTONA_API_KEY missing' } };
+    }
+    const fileEntries = Object.values(workspaceState.files || {}).map((f) => ({ path: f.path, content: f.content }));
+
+    if (name === 'sandbox_run_command') {
+      const command = String(args?.command || '').trim();
+      if (!command) return { ok: false, summary: 'Command kosong', response: { error: 'Command wajib diisi' } };
+      const sb = await ensureDaytonaSandbox({
+        sandboxId: workspaceState.daytonaSandboxId,
+        apiKey: daytonaConfig.apiKey,
+        apiUrl: daytonaConfig.apiUrl,
+        signal,
+      });
+      workspaceState.daytonaSandboxId = sb.id;
+      if (fileEntries.length > 0) {
+        await syncFilesToDaytona({
+          sandboxId: sb.id,
+          files: fileEntries,
+          apiKey: daytonaConfig.apiKey,
+          apiUrl: daytonaConfig.apiUrl,
+          signal,
+        });
+      }
+      const res = await execDaytonaCommand({
+        sandboxId: sb.id,
+        command,
+        cwd: '$HOME/adam-app',
+        timeoutSec: 150,
+        apiKey: daytonaConfig.apiKey,
+        apiUrl: daytonaConfig.apiUrl,
+        signal,
+      });
+      sendEvent('workspace_sandbox', { sandboxId: sb.id });
+      return {
+        ok: res.exitCode === 0,
+        summary: (res.exitCode === 0 ? 'Sukses: ' : 'Exit ' + res.exitCode + ': ') + command.slice(0, 48),
+        response: {
+          exitCode: res.exitCode,
+          output: res.output.slice(-7000),
+          ...(res.exitCode !== 0
+            ? {
+                selfHealInstruction:
+                  'Perintah gagal. Analisis error log di atas, perbaiki package.json atau file kode yang bermasalah di workspace, lalu jalankan ulang command untuk memverifikasi perbaikan.',
+              }
+            : {}),
+        },
+      };
+    }
+
+    if (name === 'sandbox_start_preview') {
+      const port = Number(args?.port) || 5173;
+      const out = await deployAndPreviewDaytona({
+        sandboxId: workspaceState.daytonaSandboxId,
+        files: fileEntries,
+        port,
+        apiKey: daytonaConfig.apiKey,
+        apiUrl: daytonaConfig.apiUrl,
+        signal,
+      });
+      if (out.sandboxId) workspaceState.daytonaSandboxId = out.sandboxId;
+      if (out.ok && out.previewUrl) {
+        sendEvent('workspace_sandbox', {
+          sandboxId: out.sandboxId,
+          previewUrl: out.previewUrl,
+          previewToken: out.previewToken,
+        });
+      }
+      return {
+        ok: Boolean(out.ok),
+        summary: out.ok ? 'Daytona Preview aktif: ' + out.previewUrl : out.message || 'Gagal start preview',
+        response: {
+          ...out,
+          ...(!out.ok
+            ? {
+                selfHealInstruction:
+                  'Deploy/preview Daytona gagal. Periksa installOutput/devLogs/output, perbaiki file workspace (misal package.json atau TypeScript error), lalu jalankan ulang sandbox_start_preview.',
+              }
+            : {}),
+        },
+      };
+    }
+
+    return { ok: false, summary: 'Unknown sandbox tool', response: { error: 'Unknown sandbox tool' } };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, summary: msg, response: { error: msg } };
+  }
+}
 
 const WORKSPACE_TOOL_DECLARATIONS = [
   {
@@ -1008,6 +1126,8 @@ export async function runResilientGeminiChat({
   messages,
   githubProject,
   githubToken,
+  daytonaApiKey = '',
+  daytonaApiUrl = '',
   builderMode = 'chat',
   workspaceSnapshot = null,
   systemInstruction,
@@ -1023,17 +1143,30 @@ export async function runResilientGeminiChat({
   sendEvent,
 }) {
   const isEmergentMode = builderMode === 'emergent';
+  const daytonaConfig = daytonaApiKey
+    ? { apiKey: String(daytonaApiKey).trim(), apiUrl: String(daytonaApiUrl || 'https://app.daytona.io/api').trim().replace(/\/+$/, '') }
+    : null;
   const workspaceState = {
     files:
       workspaceSnapshot && workspaceSnapshot.files && typeof workspaceSnapshot.files === 'object'
         ? { ...workspaceSnapshot.files }
         : {},
     plan: workspaceSnapshot && workspaceSnapshot.plan ? workspaceSnapshot.plan : null,
+    daytonaSandboxId: workspaceSnapshot?.daytonaSandboxId || undefined,
   };
   const projectSection = buildProjectSystemSection(githubProject);
+  const daytonaSkillHint = isEmergentMode && daytonaConfig
+    ? [
+        '[DAYTONA CLOUD SANDBOX & SELF-HEALING LOOP AKTIF]',
+        '- Tool sandbox_run_command dan sandbox_start_preview tersedia untuk VM Linux nyata.',
+        '- Kamu boleh menulis package.json lengkap dengan library npm apa pun (framer-motion, recharts, zustand, zod, three, dll) dan versi semver yang valid (hindari versi spesifik yang tidak ada, gunakan ^ atau latest jika ragu).',
+        '- WAJIB SELF-HEAL: Jika sandbox_run_command (misal npm install / npx tsc --noEmit / npm run build) atau sandbox_start_preview mengembalikan error/exitCode != 0, JANGAN langsung menyerah ke user! Baca log error, perbaiki file terkait via workspace_write_file / workspace_patch_file, lalu jalankan ulang perintah hingga 100% sukses sebelum menulis ringkasan akhir.',
+      ].join('\n')
+    : '';
   const mergedSystemInstruction = [
     UNIVERSAL_MASTER_SKILL,
     isEmergentMode ? EMERGENT_AGENT_SKILL : '',
+    daytonaSkillHint,
     systemInstruction,
     projectSection,
   ]
@@ -1046,6 +1179,7 @@ export async function runResilientGeminiChat({
   const activeDeclarations = [
     ...(hasGitHubTools ? GITHUB_TOOL_DECLARATIONS : []),
     ...(isEmergentMode ? WORKSPACE_TOOL_DECLARATIONS : []),
+    ...(isEmergentMode && daytonaConfig ? DAYTONA_TOOL_DECLARATIONS : []),
   ];
 
   const workingContents = buildGeminiContents(messages);
@@ -1112,7 +1246,7 @@ export async function runResilientGeminiChat({
   let totalAnswerText = '';
   let toolsHaveBeenUsed = false;
 
-  const MAX_TOOL_ROUNDS = isEmergentMode ? 14 : hasGitHubTools ? 6 : 1;
+  const MAX_TOOL_ROUNDS = isEmergentMode ? 16 : hasGitHubTools ? 6 : 1;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const allowToolsThisRound = hasAnyTools && round < MAX_TOOL_ROUNDS - 1;
@@ -1371,8 +1505,11 @@ export async function runResilientGeminiChat({
         const isWorkspaceTool =
           typeof fc.name === 'string' &&
           (fc.name.startsWith('emergent_') || fc.name.startsWith('workspace_'));
+        const isSandboxTool = typeof fc.name === 'string' && fc.name.startsWith('sandbox_');
 
-        const argsSummary = isWorkspaceTool
+        const argsSummary = isSandboxTool
+          ? String(fc.args?.command || (fc.name === 'sandbox_start_preview' ? 'port ' + (fc.args?.port || 5173) : 'sandbox'))
+          : isWorkspaceTool
           ? String(
               fc.args?.path ||
                 fc.args?.taskId ||
@@ -1392,7 +1529,7 @@ export async function runResilientGeminiChat({
             ? `#${fc.args?.startLine ?? 1}-${fc.args?.endLine ?? 'end'}`
             : '';
         const sig = `${fc.name}::${argsSummary}${rangeTag}`;
-        const shouldSkipCached = !isWorkspaceTool && completedToolSignatureSet.has(sig);
+        const shouldSkipCached = !isWorkspaceTool && !isSandboxTool && completedToolSignatureSet.has(sig);
         const toolOutcome = shouldSkipCached
           ? {
               ok: true,
@@ -1402,13 +1539,22 @@ export async function runResilientGeminiChat({
                 note: `Tool ${fc.name}(${argsSummary}) sudah dijalankan pada state sebelum Continue. Jangan panggil ulang; gunakan konteks yang sudah ada atau langsung tulis jawaban akhir.`,
               },
             }
-          : isWorkspaceTool
-            ? executeWorkspaceTool({
+          : isSandboxTool
+            ? await executeDaytonaAgentTool({
                 name: fc.name,
                 args: fc.args || {},
                 workspaceState,
+                daytonaConfig,
                 sendEvent,
+                signal,
               })
+            : isWorkspaceTool
+              ? executeWorkspaceTool({
+                  name: fc.name,
+                  args: fc.args || {},
+                  workspaceState,
+                  sendEvent,
+                })
             : await executeGitHubTool({
                 name: fc.name,
                 args: fc.args,

@@ -459,7 +459,7 @@ export function compileWorkspaceToHtml(workspace: VirtualWorkspace): {
 
   return { html, mode: 'react-tsx' };
 }
-function scaffoldRunnableProjectFiles(
+export function scaffoldRunnableProjectFiles(
   rawFiles: Record<string, WorkspaceFile>,
   projectTitle?: string
 ): Array<{ path: string; content: string }> {
@@ -480,7 +480,7 @@ function scaffoldRunnableProjectFiles(
     const detectedDeps: Record<string, string> = {
       react: '^18.3.1',
       'react-dom': '^18.3.1',
-      'lucide-react': '^0.468.0',
+      'lucide-react': 'latest',
     };
     const pkgRegex = /(?:import|from)\s+['"]([^.'"@][^'"]*?)(?:\/[^'"]*)?['"]/g;
     for (const f of Object.values(rawFiles)) {
@@ -506,14 +506,14 @@ function scaffoldRunnableProjectFiles(
         },
         dependencies: detectedDeps,
         devDependencies: {
-          '@types/react': '^18.3.12',
-          '@types/react-dom': '^18.3.11',
-          '@vitejs/plugin-react': '^4.3.4',
-          autoprefixer: '^10.4.20',
-          postcss: '^8.4.49',
-          tailwindcss: '^3.4.16',
-          typescript: '^5.6.3',
-          vite: '^5.4.11',
+          '@types/react': '^18.3.0',
+          '@types/react-dom': '^18.3.0',
+          '@vitejs/plugin-react': '^4.3.0',
+          autoprefixer: '^10.4.0',
+          postcss: '^8.4.0',
+          tailwindcss: '^3.4.0',
+          typescript: '^5.4.0',
+          vite: '^5.4.0',
         },
       }, null, 2) + "\n");
     }
@@ -576,6 +576,8 @@ function scaffoldRunnableProjectFiles(
         'export default defineConfig({',
         '  plugins: [react()],',
         "  resolve: { alias: { '@': path.resolve(__dirname, './src') } },",
+        "  server: { host: '0.0.0.0', port: 5173, strictPort: true, allowedHosts: true },",
+        "  preview: { host: '0.0.0.0', port: 5173, strictPort: true, allowedHosts: true },",
         '});',
       ].join("\n") + "\n");
     }

@@ -44,6 +44,10 @@ export default async function handler(request) {
   const apiKeys = headerKeys.length > 0 ? headerKeys : envKeys;
   const githubToken =
     request.headers.get('x-github-token')?.trim() || process.env.GITHUB_TOKEN?.trim() || '';
+  const daytonaApiKey =
+    request.headers.get('x-daytona-api-key')?.trim() || process.env.DAYTONA_API_KEY?.trim() || '';
+  const daytonaApiUrl =
+    request.headers.get('x-daytona-api-url')?.trim() || process.env.DAYTONA_API_URL?.trim() || '';
 
   const useDemo = Boolean(demoMode) || (process.env.DEMO_MODE === 'true' && apiKeys.length === 0);
   const encoder = new TextEncoder();
@@ -129,6 +133,8 @@ export default async function handler(request) {
           messages,
           githubProject,
           githubToken,
+          daytonaApiKey,
+          daytonaApiUrl,
           builderMode,
           workspaceSnapshot,
           systemInstruction,

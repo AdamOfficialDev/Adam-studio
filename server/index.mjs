@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { handleGitHubAction } from '../api/_github.js';
+import { handleDaytonaAction } from '../api/_daytona.js';
 import { getKeyPoolStatusAsync, runResilientGeminiChat } from '../api/_gemini.js';
 import {
   hydrateKeyCooldowns,
@@ -48,6 +49,27 @@ function maskKeyLabel(key, idx) {
 }
 
 app.use(express.json({ limit: '50mb' }));
+
+app.post('/api/sandbox', async (req, res) => {
+  const apiKey = typeof req.headers['x-daytona-api-key'] === 'string' ? req.headers['x-daytona-api-key'].trim() : '';
+  const apiUrl = typeof req.headers['x-daytona-api-url'] === 'string' ? req.headers['x-daytona-api-url'].trim() : '';
+  const ac = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) ac.abort();
+  });
+  try {
+    const result = await handleDaytonaAction({
+      action: req.body?.action,
+      body: req.body || {},
+      apiKey,
+      apiUrl,
+      signal: ac.signal,
+    });
+    res.status(result.status).json(result.payload);
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'Daytona Sandbox error' });
+  }
+});
 
 app.post('/api/github', async (req, res) => {
   const token =
@@ -651,6 +673,14 @@ app.post('/api/chat', async (req, res) => {
     (typeof req.headers['x-github-token'] === 'string' ? req.headers['x-github-token'].trim() : '') ||
     process.env.GITHUB_TOKEN?.trim() ||
     '';
+  const daytonaApiKey =
+    (typeof req.headers['x-daytona-api-key'] === 'string' ? req.headers['x-daytona-api-key'].trim() : '') ||
+    process.env.DAYTONA_API_KEY?.trim() ||
+    '';
+  const daytonaApiUrl =
+    (typeof req.headers['x-daytona-api-url'] === 'string' ? req.headers['x-daytona-api-url'].trim() : '') ||
+    process.env.DAYTONA_API_URL?.trim() ||
+    '';
 
   const useDemo = Boolean(demoMode) || (process.env.DEMO_MODE === 'true' && apiKeys.length === 0);
 
@@ -705,6 +735,8 @@ app.post('/api/chat', async (req, res) => {
       messages,
       githubProject,
       githubToken,
+      daytonaApiKey,
+      daytonaApiUrl,
       builderMode,
       workspaceSnapshot,
       systemInstruction,
