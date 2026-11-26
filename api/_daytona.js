@@ -296,172 +296,188 @@ export async function startDaytonaDevServer({
   toolboxBaseUrl,
   appDir = '$HOME/adam-app',
   port = 5173,
+  skipInstall = false,
+  customStartCmd = '',
   apiKey,
   apiUrl,
   signal,
 }) {
   const targetPort = Number(port) || 5173;
+  let lastToolbox = toolboxBaseUrl;
+  let installOutput = '';
 
-  const installCmd = [
-    `cd ${appDir}`,
-    `if [ -f package.json ]; then`,
-    `  PKG_HASH=$(node -e "const fs=require('fs'),c=require('crypto');console.log(c.createHash('sha1').update(fs.readFileSync('package.json','utf8')).digest('hex'))")`,
-    `  PREV_HASH=$(cat .adam-pkg-hash 2>/dev/null || echo "")`,
-    `  if [ ! -d node_modules ] || [ "$PREV_HASH" != "$PKG_HASH" ]; then`,
-    `    if [ -f pnpm-lock.yaml ] && command -v pnpm >/dev/null 2>&1; then`,
-    `      pnpm install --no-frozen-lockfile && printf '%s' "$PKG_HASH" > .adam-pkg-hash`,
-    `    elif [ -f yarn.lock ] && command -v yarn >/dev/null 2>&1; then`,
-    `      yarn install && printf '%s' "$PKG_HASH" > .adam-pkg-hash`,
-    `    else`,
-    `      npm install --no-audit --no-fund && printf '%s' "$PKG_HASH" > .adam-pkg-hash`,
-    `    fi`,
-    `  else`,
-    `    echo "Dependencies sudah up-to-date (skip install)."`,
-    `  fi`,
-    `fi`,
-  ].join('\n');
+  if (!skipInstall) {
+    const installCmd = [
+      `cd ${appDir}`,
+      `if [ -f package.json ]; then`,
+      `  PKG_HASH=$(node -e "const fs=require('fs'),c=require('crypto');console.log(c.createHash('sha1').update(fs.readFileSync('package.json','utf8')).digest('hex'))")`,
+      `  PREV_HASH=$(cat .adam-pkg-hash 2>/dev/null || echo "")`,
+      `  if [ ! -d node_modules ] || [ "$PREV_HASH" != "$PKG_HASH" ]; then`,
+      `    if [ -f pnpm-lock.yaml ] && command -v pnpm >/dev/null 2>&1; then`,
+      `      pnpm install --no-frozen-lockfile && printf '%s' "$PKG_HASH" > .adam-pkg-hash`,
+      `    elif [ -f yarn.lock ] && command -v yarn >/dev/null 2>&1; then`,
+      `      yarn install && printf '%s' "$PKG_HASH" > .adam-pkg-hash`,
+      `    else`,
+      `      npm install --no-audit --no-fund && printf '%s' "$PKG_HASH" > .adam-pkg-hash`,
+      `    fi`,
+      `  else`,
+      `    echo "Dependencies sudah up-to-date (skip install)."`,
+      `  fi`,
+      `fi`,
+    ].join('\n');
 
-  const installRes = await execDaytonaCommand({
-    sandboxId,
-    toolboxBaseUrl,
-    command: installCmd,
-    timeoutSec: 210,
-    apiKey,
-    apiUrl,
-    signal,
-  });
-
-  if (installRes.exitCode !== 0) {
-    return {
-      ok: false,
+    const installRes = await execDaytonaCommand({
       sandboxId,
-      message: 'Install dependencies gagal di Daytona Sandbox.',
-      output: installRes.output,
-    };
-  }
-
-  const patchViteCmd = [
-    `cd ${appDir}`,
-    `node -e "const fs=require('fs');for(const f of ['vite.config.ts','vite.config.js','vite.config.mjs']){if(fs.existsSync(f)){let s=fs.readFileSync(f,'utf8');if(!s.includes('allowedHosts')){if(s.includes('server:')){s=s.replace(/server\s*:\s*\{/, 'server: { allowedHosts: true, ');}else{s=s.replace(/defineConfig\s*\(\s*\{/, 'defineConfig({\\n  server: { host: \"0.0.0.0\", port: ${targetPort}, strictPort: true, allowedHosts: true },');}fs.writeFileSync(f,s);}}}"`,
-  ].join('\n');
-
-  await execDaytonaCommand({
-    sandboxId,
-    toolboxBaseUrl: installRes.toolboxBaseUrl,
-    command: patchViteCmd,
-    timeoutSec: 20,
-    apiKey,
-    apiUrl,
-    signal,
-  });
-
-  const detectCmd = [
-    `cd ${appDir}`,
-    `node -e "const fs=require('fs');let cmd='npx serve -s . -l ${targetPort}';if(fs.existsSync('package.json')){const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));const sc=pkg.scripts||{};const deps={...(pkg.dependencies||{}),...(pkg.devDependencies||{})};if(deps.vite||String(sc.dev||'').includes('vite')||fs.existsSync('vite.config.ts')||fs.existsSync('vite.config.js')||fs.existsSync('vite.config.mjs')){cmd='npx vite --host 0.0.0.0 --port ${targetPort}';}else if(deps.next||String(sc.dev||'').includes('next')){cmd='npx next dev -H 0.0.0.0 -p ${targetPort}';}else if(sc.dev){cmd='PORT=${targetPort} HOST=0.0.0.0 npm run dev';}else if(sc.start){cmd='PORT=${targetPort} HOST=0.0.0.0 npm start';}}console.log(cmd);"`,
-  ].join('\n');
-
-  const detectRes = await execDaytonaCommand({
-    sandboxId,
-    toolboxBaseUrl: installRes.toolboxBaseUrl,
-    command: detectCmd,
-    timeoutSec: 15,
-    apiKey,
-    apiUrl,
-    signal,
-  });
-  const startCmd = (detectRes.output || `npx vite --host 0.0.0.0 --port ${targetPort}`)
-    .trim()
-    .split('\n')
-    .pop()
-    .trim();
-
-  await execDaytonaCommand({
-    sandboxId,
-    toolboxBaseUrl: installRes.toolboxBaseUrl,
-    command: `pkill -f "vite" >/dev/null 2>&1 || true; pkill -f "next dev" >/dev/null 2>&1 || true; pkill -f "npm run dev" >/dev/null 2>&1 || true`,
-    timeoutSec: 15,
-    apiKey,
-    apiUrl,
-    signal,
-  });
-
-  let startedViaSession = false;
-  try {
-    const tb = installRes.toolboxBaseUrl || (await resolveToolboxBaseUrl({ sandboxId, apiKey, apiUrl, signal }));
-    const sessionId = 'adam-vite-' + targetPort;
-    try {
-      await daytonaFetch(`${tb}/process/session`, {
-        method: 'POST',
-        apiKey,
-        signal,
-        body: { sessionId },
-      });
-    } catch {
-      // Session sudah ada
-    }
-    await daytonaFetch(`${tb}/process/session/${encodeURIComponent(sessionId)}/exec`, {
-      method: 'POST',
-      apiKey,
-      signal,
-      body: {
-        command: `cd ${appDir} && ${startCmd} > /tmp/adam-dev.log 2>&1`,
-        runAsync: true,
-      },
-    });
-    startedViaSession = true;
-  } catch {
-    startedViaSession = false;
-  }
-
-  if (!startedViaSession) {
-    await execDaytonaCommand({
-      sandboxId,
-      toolboxBaseUrl: installRes.toolboxBaseUrl,
-      command: `cd ${appDir} && setsid -f bash -lc ${shellQuote(startCmd)} > /tmp/adam-dev.log 2>&1 < /dev/null`,
-      timeoutSec: 20,
+      toolboxBaseUrl: lastToolbox,
+      command: installCmd,
+      timeoutSec: 180,
       apiKey,
       apiUrl,
       signal,
     });
+    lastToolbox = installRes.toolboxBaseUrl;
+    installOutput = installRes.output;
+
+    if (installRes.exitCode !== 0) {
+      return {
+        ok: false,
+        sandboxId,
+        message: 'Install dependencies gagal di Daytona Sandbox.',
+        output: installRes.output,
+      };
+    }
   }
 
+  // Patch vite.config.* via base64 agar bebas error kutip & wajib bind 0.0.0.0 + allowedHosts: true
+  const vitePatchScript = `
+const fs = require('fs');
+for (const f of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
+  if (!fs.existsSync(f)) continue;
+  let s = fs.readFileSync(f, 'utf8');
+  let changed = false;
+  if (/server\\s*:\\s*\\{/.test(s)) {
+    if (!s.includes('allowedHosts')) {
+      s = s.replace(/server\\s*:\\s*\\{/, 'server: { allowedHosts: true, ');
+      changed = true;
+    }
+    if (!/host\\s*:/.test(s)) {
+      s = s.replace(/server\\s*:\\s*\\{/, 'server: { host: "0.0.0.0", ');
+      changed = true;
+    }
+  } else if (/defineConfig\\s*\\(\\s*\\{/.test(s)) {
+    s = s.replace(/defineConfig\\s*\\(\\s*\\{/, 'defineConfig({\\n  server: { host: "0.0.0.0", port: ${targetPort}, strictPort: false, allowedHosts: true },');
+    changed = true;
+  }
+  if (changed) fs.writeFileSync(f, s);
+}
+`.trim();
+
+  await execDaytonaCommand({
+    sandboxId,
+    toolboxBaseUrl: lastToolbox,
+    command: `cd ${appDir} && printf '%s' '${utf8ToBase64(vitePatchScript)}' | base64 -d | node`,
+    timeoutSec: 15,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+
+  let startCmd = String(customStartCmd || '').trim();
+  if (!startCmd) {
+    const detectScript = `
+const fs = require('fs');
+let cmd = 'npx --yes serve -s . -l ${targetPort}';
+if (fs.existsSync('package.json')) {
+  const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  const sc = pkg.scripts || {};
+  const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+  if (
+    deps.vite ||
+    String(sc.dev || '').includes('vite') ||
+    fs.existsSync('vite.config.ts') ||
+    fs.existsSync('vite.config.js') ||
+    fs.existsSync('vite.config.mjs')
+  ) {
+    cmd = '[ -x ./node_modules/.bin/vite ] && ./node_modules/.bin/vite --host 0.0.0.0 --port ${targetPort} || npx --yes vite --host 0.0.0.0 --port ${targetPort}';
+  } else if (deps.next || String(sc.dev || '').includes('next')) {
+    cmd = '[ -x ./node_modules/.bin/next ] && ./node_modules/.bin/next dev -H 0.0.0.0 -p ${targetPort} || npx --yes next dev -H 0.0.0.0 -p ${targetPort}';
+  } else if (sc.dev) {
+    cmd = 'PORT=${targetPort} HOST=0.0.0.0 npm run dev';
+  } else if (sc.start) {
+    cmd = 'PORT=${targetPort} HOST=0.0.0.0 npm start';
+  }
+}
+console.log(cmd);
+`.trim();
+
+    const detectRes = await execDaytonaCommand({
+      sandboxId,
+      toolboxBaseUrl: lastToolbox,
+      command: `cd ${appDir} && printf '%s' '${utf8ToBase64(detectScript)}' | base64 -d | node`,
+      timeoutSec: 15,
+      apiKey,
+      apiUrl,
+      signal,
+    });
+    startCmd = (detectRes.output || `npx --yes vite --host 0.0.0.0 --port ${targetPort}`)
+      .trim()
+      .split('\n')
+      .pop()
+      .trim();
+  }
+
+  // Hentikan proses lama dengan bracket-regex [v]ite agar pkill tidak membunuh dirinya sendiri
+  await execDaytonaCommand({
+    sandboxId,
+    toolboxBaseUrl: lastToolbox,
+    command: `pkill -f "[v]ite" >/dev/null 2>&1 || true; pkill -f "[n]ext dev" >/dev/null 2>&1 || true; fuser -k ${targetPort}/tcp >/dev/null 2>&1 || true`,
+    timeoutSec: 15,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+
+  // Jalankan server di background memakai setsid + nohup
+  await execDaytonaCommand({
+    sandboxId,
+    toolboxBaseUrl: lastToolbox,
+    command: `cd ${appDir} && setsid -f bash -lc ${shellQuote(`cd ${appDir} && ${startCmd}`)} > /tmp/adam-dev.log 2>&1 < /dev/null`,
+    timeoutSec: 15,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+
+  // Verifikasi port memakai Node http.get (pasti tersedia walaupun tanpa curl/wget)
+  const checkPortNode = `node -e "const h=require('http');const req=h.get('http://127.0.0.1:${targetPort}',r=>process.exit(0));req.on('error',()=>process.exit(1));req.setTimeout(800,()=>{req.destroy();process.exit(1);});"`;
   const verifyRes = await execDaytonaCommand({
     sandboxId,
-    toolboxBaseUrl: installRes.toolboxBaseUrl,
+    toolboxBaseUrl: lastToolbox,
     command: [
       `for i in $(seq 1 28); do`,
-      `  if curl -sf http://127.0.0.1:${targetPort} >/dev/null 2>&1 || wget -qO- http://127.0.0.1:${targetPort} >/dev/null 2>&1; then`,
+      `  if ${checkPortNode} >/dev/null 2>&1; then`,
       `    echo "SERVER_READY_ON_PORT_${targetPort}"`,
       `    break`,
       `  fi`,
       `  sleep 0.5`,
       `done`,
-      `tail -n 35 /tmp/adam-dev.log 2>/dev/null || true`,
+      `tail -n 45 /tmp/adam-dev.log 2>/dev/null || true`,
     ].join('\n'),
-    timeoutSec: 35,
+    timeoutSec: 30,
     apiKey,
     apiUrl,
     signal,
   });
 
   if (!verifyRes.output.includes('SERVER_READY_ON_PORT_')) {
-    const buildRes = await execDaytonaCommand({
+    return {
+      ok: false,
       sandboxId,
-      toolboxBaseUrl: installRes.toolboxBaseUrl,
-      command: `cd ${appDir} && if grep -q "\"build\"" package.json 2>/dev/null; then npm run build; else true; fi`,
-      timeoutSec: 90,
-      apiKey,
-      apiUrl,
-      signal,
-    });
-    if (buildRes.exitCode !== 0) {
-      return {
-        ok: false,
-        sandboxId,
-        message: 'Build gagal di Daytona Sandbox (lihat error log untuk Auto-Fix).',
-        output: buildRes.output + '\n' + verifyRes.output,
-      };
-    }
+      message: `Dev server gagal listening di port ${targetPort} (penyebab 502 proxy upstream error). Cek log server:`,
+      output: verifyRes.output || 'Tidak ada output di /tmp/adam-dev.log',
+      devLogs: verifyRes.output,
+      installOutput,
+    };
   }
 
   const link = await getDaytonaPreviewUrl({
@@ -477,7 +493,7 @@ export async function startDaytonaDevServer({
     sandboxId,
     previewUrl: link.previewUrl,
     previewToken: link.previewToken,
-    installOutput: installRes.output,
+    installOutput,
     devLogs: verifyRes.output,
   };
 }
@@ -718,17 +734,52 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
   }
 
   if (action === 'exec') {
+    const rawCmd = String(body?.command || '').trim();
     const sb = await ensureDaytonaSandbox({
       sandboxId: body?.sandboxId,
       apiKey: cfg.apiKey,
       apiUrl: cfg.apiUrl,
       signal,
     });
+
+    const isDevServerCmd =
+      /^(npm\s+run\s+dev|pnpm(\s+run)?\s+dev|yarn\s+dev|bun\s+run\s+dev|npx\s+vite|vite|npx\s+next\s+dev|next\s+dev)(\s|$)/i.test(
+        rawCmd
+      );
+
+    if (isDevServerCmd) {
+      const started = await startDaytonaDevServer({
+        sandboxId: sb.id,
+        appDir: '$HOME/adam-app',
+        port: body?.port || 5173,
+        skipInstall: true,
+        apiKey: cfg.apiKey,
+        apiUrl: cfg.apiUrl,
+        signal,
+      });
+      return {
+        status: started.ok ? 200 : 200,
+        payload: {
+          ok: Boolean(started.ok),
+          sandboxId: sb.id,
+          exitCode: started.ok ? 0 : 1,
+          output:
+            started.devLogs ||
+            started.output ||
+            started.message ||
+            'Dev server dijalankan di background.',
+          previewUrl: started.previewUrl,
+          previewToken: started.previewToken,
+          message: started.message,
+        },
+      };
+    }
+
     const out = await execDaytonaCommand({
       sandboxId: sb.id,
-      command: String(body?.command || ''),
+      command: rawCmd,
       cwd: '$HOME/adam-app',
-      timeoutSec: body?.timeoutSec || 120,
+      timeoutSec: Math.min(45, Number(body?.timeoutSec) || 45),
       apiKey: cfg.apiKey,
       apiUrl: cfg.apiUrl,
       signal,

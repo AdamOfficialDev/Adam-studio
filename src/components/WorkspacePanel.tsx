@@ -78,6 +78,25 @@ function formatClockTime(ts: number): string {
   }
 }
 
+async function safeParseSandboxJson<T>(res: Response): Promise<T & { ok?: boolean; message?: string }> {
+  const rawText = await res.text();
+  if (!rawText) {
+    return { ok: res.ok, message: res.ok ? undefined : `HTTP ${res.status}` } as T & {
+      ok?: boolean;
+      message?: string;
+    };
+  }
+  try {
+    return JSON.parse(rawText) as T & { ok?: boolean; message?: string };
+  } catch {
+    const preview = rawText.replace(/\s+/g, ' ').trim().slice(0, 220);
+    return {
+      ok: false,
+      message: `Server mengembalikan respons non-JSON (HTTP ${res.status}): ${preview}`,
+    } as T & { ok?: boolean; message?: string };
+  }
+}
+
 function formatDurationMs(ms?: number): string {
   if (typeof ms !== 'number' || Number.isNaN(ms)) return '';
   if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`;
@@ -413,7 +432,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
           port: 5173,
         }),
       });
-      const data = (await res.json()) as {
+      const data = await safeParseSandboxJson<{
         ok?: boolean;
         sandboxId?: string;
         previewUrl?: string;
@@ -422,7 +441,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         devLogs?: string;
         output?: string;
         message?: string;
-      };
+      }>(res);
       if (data.installOutput) appendLog(data.installOutput);
       if (data.devLogs) appendLog(data.devLogs);
       if (data.output) appendLog(data.output);
@@ -484,7 +503,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
           maxWorkspaceFiles: 120,
         }),
       });
-      const data = (await res.json()) as {
+      const data = await safeParseSandboxJson<{
         ok?: boolean;
         sandboxId?: string;
         previewUrl?: string;
@@ -496,7 +515,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         devLogs?: string;
         output?: string;
         message?: string;
-      };
+      }>(res);
       if (data.cloneOutput) appendLog(data.cloneOutput);
       if (data.installOutput) appendLog(data.installOutput);
       if (data.devLogs) appendLog(data.devLogs);
@@ -572,16 +591,23 @@ export const WorkspacePanel = memo(function WorkspacePanel({
           command: cmd,
         }),
       });
-      const data = (await res.json()) as {
+      const data = await safeParseSandboxJson<{
         ok?: boolean;
         sandboxId?: string;
         exitCode?: number;
         output?: string;
+        previewUrl?: string;
+        previewToken?: string;
         message?: string;
-      };
+      }>(res);
       const durationMs = performance.now() - startedAt;
-      if (data.sandboxId && data.sandboxId !== workspace.daytonaSandboxId) {
-        onUpdateSandbox?.({ sandboxId: data.sandboxId });
+      if (data.previewUrl || (data.sandboxId && data.sandboxId !== workspace.daytonaSandboxId)) {
+        onUpdateSandbox?.({
+          sandboxId: data.sandboxId ?? workspace.daytonaSandboxId,
+          ...(data.previewUrl ? { previewUrl: data.previewUrl } : {}),
+          ...(data.previewToken ? { previewToken: data.previewToken } : {}),
+        });
+        if (data.previewUrl) setRefreshNonce((n) => n + 1);
       }
       const exitCode = typeof data.exitCode === 'number' ? data.exitCode : res.ok && data.ok ? 0 : 1;
       const outText = data.output || data.message || `(selesai dengan exit ${exitCode})`;

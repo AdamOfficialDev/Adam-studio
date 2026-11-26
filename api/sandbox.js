@@ -1,23 +1,42 @@
 import { handleDaytonaAction } from './_daytona.js';
 
 export const config = {
-  runtime: 'edge',
+  maxDuration: 60,
 };
 
-export default async function handler(request) {
-  if (request.method !== 'POST') {
-    return new Response('Method Not Allowed', { status: 405 });
-  }
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return Response.json({ ok: false, message: 'Invalid JSON' }, { status: 400 });
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    res.status(405).send('Method Not Allowed');
+    return;
   }
 
-  const apiKey = request.headers.get('x-daytona-api-key')?.trim() || '';
-  const apiUrl = request.headers.get('x-daytona-api-url')?.trim() || '';
-  const githubToken = request.headers.get('x-github-token')?.trim() || process.env.GITHUB_TOKEN?.trim() || '';
+  let body = req.body;
+  if (typeof body === 'string') {
+    try {
+      body = JSON.parse(body);
+    } catch {
+      res.status(400).json({ ok: false, message: 'Invalid JSON' });
+      return;
+    }
+  }
+  if (!body || typeof body !== 'object') {
+    res.status(400).json({ ok: false, message: 'Invalid JSON' });
+    return;
+  }
+
+  const readHeader = (name) => {
+    const val = req.headers?.[name];
+    return Array.isArray(val) ? String(val[0] || '').trim() : String(val || '').trim();
+  };
+
+  const apiKey = readHeader('x-daytona-api-key');
+  const apiUrl = readHeader('x-daytona-api-url');
+  const githubToken = readHeader('x-github-token') || process.env.GITHUB_TOKEN?.trim() || '';
+
+  const ac = new AbortController();
+  res.on?.('close', () => {
+    if (!res.writableEnded) ac.abort();
+  });
 
   try {
     const result = await handleDaytonaAction({
@@ -26,13 +45,13 @@ export default async function handler(request) {
       apiKey,
       apiUrl,
       githubToken,
-      signal: request.signal,
+      signal: ac.signal,
     });
-    return Response.json(result.payload, { status: result.status });
+    res.status(result.status).json(result.payload);
   } catch (err) {
-    return Response.json(
-      { ok: false, message: err instanceof Error ? err.message : 'Daytona Sandbox error' },
-      { status: 500 }
-    );
+    res.status(500).json({
+      ok: false,
+      message: err instanceof Error ? err.message : 'Daytona Sandbox error',
+    });
   }
 }
