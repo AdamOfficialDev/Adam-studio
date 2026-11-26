@@ -17,6 +17,7 @@ export default async function handler(request) {
 
   const apiKey = request.headers.get('x-daytona-api-key')?.trim() || '';
   const apiUrl = request.headers.get('x-daytona-api-url')?.trim() || '';
+  const githubToken = request.headers.get('x-github-token')?.trim() || process.env.GITHUB_TOKEN?.trim() || '';
 
   try {
     const result = await handleDaytonaAction({
@@ -24,6 +25,7 @@ export default async function handler(request) {
       body,
       apiKey,
       apiUrl,
+      githubToken,
       signal: request.signal,
     });
     return Response.json(result.payload, { status: result.status });

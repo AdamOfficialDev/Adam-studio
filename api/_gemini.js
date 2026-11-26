@@ -4,7 +4,7 @@ import {
   executeGitHubTool,
 } from './_github.js';
 import { hydrateKeyCooldowns, recordKeyCooldown } from './_cooldown.js';
-import { ensureDaytonaSandbox, execDaytonaCommand, deployAndPreviewDaytona, syncFilesToDaytona } from './_daytona.js';
+import { ensureDaytonaSandbox, execDaytonaCommand, deployAndPreviewDaytona, syncFilesToDaytona, cloneGitHubIntoDaytona } from './_daytona.js';
 // ============================================================================
 // EMERGENT E1 AUTONOMOUS BUILDER SKILL & VIRTUAL WORKSPACE TOOLS
 // ============================================================================
@@ -13,7 +13,7 @@ const EMERGENT_AGENT_SKILL = [
   'Kamu bekerja di dalam Multi-File Virtual Workspace yang terhubung ke Code Editor & Live Preview di sebelah kanan layar pengguna.',
   'IKUTI SIKLUS EMERGENT SECARA BERURUTAN:',
   '1. PLANNING: Di awal tugas pembuatan/perubahan aplikasi, WAJIB panggil emergent_set_plan dengan judul proyek, ringkasan arsitektur, stack, dan 3-6 task konkret.',
-  '2. INSPECT: Jika workspace sudah memiliki file (atau GitHub repo terhubung), panggil workspace_list_files / workspace_read_file sebelum mengubah.',
+  '2. INSPECT: Jika workspace sudah memiliki file (atau GitHub repo terhubung), panggil workspace_list_files / workspace_read_file sebelum mengubah. Jika GitHub repo terhubung dan Daytona aktif, kamu bisa memanggil sandbox_clone_github untuk meng-clone seluruh repo langsung ke Daytona VM & Workspace.',
   '3. BUILD MODULAR: Buat & edit file lewat workspace_write_file atau workspace_patch_file.',
   '   - Untuk app React interaktif: gunakan entry src/App.tsx + pecah komponen ke src/components/... + CSS di src/styles.css.',
   '   - Agar langsung berjalan mulus di Live Preview browser, gunakan hanya React (react, react-dom), Tailwind CSS classes, dan ikon dari lucide-react.',
@@ -46,15 +46,80 @@ const DAYTONA_TOOL_DECLARATIONS = [
       },
     },
   },
+
+  {
+    name: 'sandbox_clone_github',
+    description: 'Meng-clone repository GitHub langsung ke Daytona Cloud Linux VM ($HOME/adam-app) dan menyinkronkan file sumbernya ke Emergent Virtual Workspace. Gunakan saat pengguna ingin membuka, mengedit, atau menjalankan proyek GitHub yang sudah ada di Emergent & Daytona.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        owner: { type: 'STRING', description: 'Owner GitHub (opsional jika repo sudah terhubung di sesi)' },
+        repo: { type: 'STRING', description: 'Nama repo GitHub (opsional jika repo sudah terhubung di sesi)' },
+        branch: { type: 'STRING', description: 'Branch target (opsional)' },
+        autoStart: { type: 'BOOLEAN', description: 'Jika true, langsung install dependencies & jalankan dev server preview (default false)' },
+      },
+    },
+  },
 ];
 
-async function executeDaytonaAgentTool({ name, args, workspaceState, daytonaConfig, sendEvent, signal }) {
+async function executeDaytonaAgentTool({ name, args, workspaceState, daytonaConfig, githubProject, githubToken, sendEvent, signal }) {
   try {
     if (!daytonaConfig?.apiKey) {
       return { ok: false, summary: 'DAYTONA_API_KEY belum diset', response: { error: 'DAYTONA_API_KEY missing' } };
     }
     const fileEntries = Object.values(workspaceState.files || {}).map((f) => ({ path: f.path, content: f.content }));
 
+    if (name === 'sandbox_clone_github') {
+      const owner = String(args?.owner || githubProject?.owner || '').trim();
+      const repo = String(args?.repo || githubProject?.repo || '').trim();
+      const branch = String(args?.branch || githubProject?.branch || 'main').trim();
+      if (!owner || !repo) {
+        return { ok: false, summary: 'Repo belum ditentukan', response: { error: 'Hubungkan GitHub repo terlebih dahulu atau berikan owner & repo.' } };
+      }
+      const out = await cloneGitHubIntoDaytona({
+        sandboxId: workspaceState.daytonaSandboxId,
+        owner,
+        repo,
+        branch,
+        githubToken: githubToken || '',
+        autoStart: Boolean(args?.autoStart),
+        apiKey: daytonaConfig.apiKey,
+        apiUrl: daytonaConfig.apiUrl,
+        signal,
+      });
+      if (out.sandboxId) workspaceState.daytonaSandboxId = out.sandboxId;
+      const clonedFiles = Array.isArray(out.files) ? out.files : [];
+      for (const f of clonedFiles) {
+        const p = normWsPath(f.path);
+        if (!p) continue;
+        const lang = detectWsLang(p);
+        workspaceState.files[p] = { path: p, content: f.content, language: lang, updatedAt: Date.now() };
+        sendEvent('workspace_file', { action: 'write', path: p, content: f.content, language: lang });
+      }
+      if (out.sandboxId) {
+        sendEvent('workspace_sandbox', {
+          sandboxId: out.sandboxId,
+          ...(out.previewUrl ? { previewUrl: out.previewUrl } : {}),
+          ...(out.previewToken ? { previewToken: out.previewToken } : {}),
+        });
+      }
+      return {
+        ok: Boolean(out.ok),
+        summary: out.ok ? `Cloned ${owner}/${repo} (${clonedFiles.length} file ke workspace)` : out.message || 'Gagal clone repo',
+        response: {
+          ok: Boolean(out.ok),
+          sandboxId: out.sandboxId,
+          owner,
+          repo,
+          branch,
+          totalFiles: out.totalFiles,
+          importedToWorkspace: clonedFiles.length,
+          previewUrl: out.previewUrl,
+          message: out.message,
+          output: out.output || out.cloneOutput,
+        },
+      };
+    }
     if (name === 'sandbox_run_command') {
       const command = String(args?.command || '').trim();
       if (!command) return { ok: false, summary: 'Command kosong', response: { error: 'Command wajib diisi' } };
@@ -1540,7 +1605,7 @@ export async function runResilientGeminiChat({
               },
             }
           : isSandboxTool
-            ? await executeDaytonaAgentTool({
+            ? await executeDaytonaAgentTool({ githubProject, githubToken, 
                 name: fc.name,
                 args: fc.args || {},
                 workspaceState,

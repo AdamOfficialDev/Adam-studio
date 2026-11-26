@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Search,
   Sparkles,
+  Rocket,
   Wrench,
   X,
 } from 'lucide-react';
@@ -51,6 +52,10 @@ interface GitHubConnectorDialogProps {
   onUpdateGithubToken: (token: string) => void;
   currentProject?: GitHubProjectContext;
   onAttachProject: (project: GitHubProjectContext) => void;
+  onCloneToWorkspace?: (
+    project: GitHubProjectContext,
+    files: Array<{ path: string; content: string }>
+  ) => void;
   onDetachProject?: () => void;
 }
 
@@ -61,6 +66,7 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
   onUpdateGithubToken,
   currentProject,
   onAttachProject,
+  onCloneToWorkspace,
   onDetachProject,
 }: GitHubConnectorDialogProps) {
   const [tokenDraft, setTokenDraft] = useState(githubToken);
@@ -79,6 +85,7 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [agenticToolsEnabled, setAgenticToolsEnabled] = useState(true);
   const [applying, setApplying] = useState(false);
+  const [cloningWorkspace, setCloningWorkspace] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -314,6 +321,74 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
     }
   };
 
+  const handleCloneToWorkspace = async () => {
+    if (!loadedProject || !onCloneToWorkspace) return;
+    setCloningWorkspace(true);
+    setErrorMsg(null);
+    try {
+      const existingMap = new Map(loadedProject.pinnedFiles.map((f) => [f.path, f]));
+      const pathsToFetch = selectedPaths.filter((p) => !existingMap.has(p));
+      if (pathsToFetch.length > 0) {
+        const res = await fetch('/api/github', {
+          method: 'POST',
+          headers: makeHeaders(tokenDraft.trim()),
+          body: JSON.stringify({
+            action: 'read-files',
+            owner: loadedProject.owner,
+            repo: loadedProject.repo,
+            branch: loadedProject.branch,
+            paths: pathsToFetch,
+          }),
+        });
+        const data = (await res.json()) as { ok?: boolean; files?: GitHubProjectFile[] };
+        if (data.ok && Array.isArray(data.files)) {
+          for (const f of data.files) existingMap.set(f.path, f);
+        }
+      }
+
+      const cloneRes = await fetch('/api/github', {
+        method: 'POST',
+        headers: makeHeaders(tokenDraft.trim()),
+        body: JSON.stringify({
+          action: 'clone-to-workspace',
+          owner: loadedProject.owner,
+          repo: loadedProject.repo,
+          branch: loadedProject.branch,
+          maxFiles: 120,
+        }),
+      });
+      const cloneData = (await cloneRes.json()) as {
+        ok?: boolean;
+        message?: string;
+        commitSha?: string;
+        files?: Array<{ path: string; content: string }>;
+      };
+      if (!cloneRes.ok || !cloneData.ok || !Array.isArray(cloneData.files)) {
+        setErrorMsg(cloneData.message || 'Gagal meng-clone file repo ke Emergent Workspace.');
+        return;
+      }
+
+      const finalPinned = selectedPaths
+        .map((p) => existingMap.get(p))
+        .filter((f): f is GitHubProjectFile => Boolean(f));
+      const now = Date.now();
+      const attached: GitHubProjectContext = {
+        ...loadedProject,
+        commitSha: cloneData.commitSha ?? loadedProject.commitSha,
+        pinnedFiles: finalPinned,
+        agenticToolsEnabled,
+        attachedAt: now,
+        lastSyncedAt: loadedProject.lastSyncedAt ?? now,
+      };
+
+      onCloneToWorkspace(attached, cloneData.files);
+      onOpenChange(false);
+    } catch {
+      setErrorMsg('Gagal meng-clone repository ke Emergent Workspace.');
+    } finally {
+      setCloningWorkspace(false);
+    }
+  };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
@@ -598,22 +673,40 @@ export const GitHubConnectorDialog = memo(function GitHubConnectorDialog({
                 <span className="hidden sm:block" />
               )}
 
-              <div className="flex w-full items-center gap-2 sm:w-auto sm:justify-end">
+              <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   onClick={() => onOpenChange(false)}
-                  className="h-9 flex-1 rounded-xl px-4 sm:flex-initial"
+                  className="h-9 rounded-xl px-3.5"
                 >
                   Batal
                 </Button>
+                {onCloneToWorkspace && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    disabled={!loadedProject || applying || cloningWorkspace}
+                    onClick={() => void handleCloneToWorkspace()}
+                    className="h-9 gap-1.5 rounded-xl border border-emerald-500/35 bg-emerald-500/15 px-3.5 text-emerald-300 hover:bg-emerald-500/25"
+                    title="Import file source repo langsung ke Emergent Workspace & Daytona"
+                  >
+                    {cloningWorkspace ? (
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                    ) : (
+                      <Rocket className="h-3.5 w-3.5 shrink-0" />
+                    )}
+                    <span className="truncate">Clone ke Emergent</span>
+                  </Button>
+                )}
                 <Button
                   type="button"
                   size="sm"
-                  disabled={!loadedProject || applying}
+                  disabled={!loadedProject || applying || cloningWorkspace}
                   onClick={() => void handleAttachToSession()}
-                  className="h-9 flex-[2] gap-1.5 rounded-xl px-3.5 sm:flex-initial sm:px-4"
+                  className="h-9 flex-1 gap-1.5 rounded-xl px-3.5 sm:flex-initial sm:px-4"
                 >
                   {applying ? (
                     <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />

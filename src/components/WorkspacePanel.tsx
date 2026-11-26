@@ -2,13 +2,19 @@ import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'reac
 import {
   AlertTriangle,
   Archive,
+  ArrowDown,
   Check,
+  CheckCircle2,
+  ChevronRight,
+  Clock,
   Cloud,
   Code2,
   Copy,
+  Eraser,
   ExternalLink,
   Eye,
   FileCode2,
+  FolderGit2,
   FolderTree,
   Laptop,
   Loader2,
@@ -18,13 +24,17 @@ import {
   Plus,
   RefreshCw,
   Rocket,
+  RotateCcw,
+  Search,
   Smartphone,
   Sparkles,
   Square,
   Tablet,
   Terminal,
   Trash2,
+  WrapText,
   X,
+  XCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -36,12 +46,112 @@ import {
   scaffoldRunnableProjectFiles,
 } from '@/lib/workspace';
 import { cn, copyToClipboard } from '@/lib/utils';
-import type { VirtualWorkspace } from '@/types/chat';
+import type { GitHubProjectContext, VirtualWorkspace } from '@/types/chat';
 
+interface TerminalEntry {
+  id: string;
+  kind: 'system' | 'command' | 'success' | 'error' | 'info';
+  command?: string;
+  output: string;
+  timestamp: number;
+  durationMs?: number;
+  exitCode?: number;
+}
+
+function stripAnsiCodes(input: string): string {
+  return input
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\u001b\][^\u0007]*\u0007/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+}
+
+function formatClockTime(ts: number): string {
+  try {
+    return new Date(ts).toLocaleTimeString('id-ID', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return '';
+  }
+}
+
+function formatDurationMs(ms?: number): string {
+  if (typeof ms !== 'number' || Number.isNaN(ms)) return '';
+  if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
+function classifyTerminalLine(line: string): string {
+  const lower = line.toLowerCase();
+  if (
+    /\b(err!|error|failed|fatal|exception|enoent|syntaxerror|typeerror|cannot find)\b/i.test(line) ||
+    line.trim().startsWith('✗') ||
+    line.trim().startsWith('×')
+  ) {
+    return 'text-rose-400';
+  }
+  if (/\b(warn|warning|deprecated)\b/i.test(line) || line.trim().startsWith('⚠')) {
+    return 'text-amber-300';
+  }
+  if (
+    /\b(ready in|built in|server_ready|added \d+ package|up to date|success|completed)\b/i.test(lower) ||
+    line.trim().startsWith('✓') ||
+    line.includes('Local:') ||
+    line.includes('Network:')
+  ) {
+    return 'text-emerald-400';
+  }
+  if (/^\s*(at\s+|\||>\s*\d+\s*\|)/.test(line)) {
+    return 'text-zinc-400';
+  }
+  return 'text-zinc-200';
+}
+
+function renderHighlightedText(text: string, query: string) {
+  const q = query.trim();
+  const urlRegex = /(https?:\/\/[^\s)'"`>]+)/g;
+  const parts = text.split(urlRegex);
+  return parts.map((part, idx) => {
+    if (/^https?:\/\//.test(part)) {
+      return (
+        <a
+          key={idx}
+          href={part}
+          target="_blank"
+          rel="noreferrer"
+          className="text-sky-400 underline decoration-sky-400/50 underline-offset-2 hover:text-sky-300"
+        >
+          {part}
+        </a>
+      );
+    }
+    if (!q) return <span key={idx}>{part}</span>;
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const splitRegex = new RegExp(`(${escaped})`, 'gi');
+    const subParts = part.split(splitRegex);
+    return subParts.map((sub, subIdx) =>
+      sub.toLowerCase() === q.toLowerCase() ? (
+        <mark
+          key={`${idx}-${subIdx}`}
+          className="rounded bg-amber-400/30 px-0.5 text-amber-100"
+        >
+          {sub}
+        </mark>
+      ) : (
+        <span key={`${idx}-${subIdx}`}>{sub}</span>
+      )
+    );
+  });
+}
 const LazyCodeMirrorEditor = lazy(() => import('@/components/CodeMirrorEditor'));
 
 interface WorkspacePanelProps {
   workspace: VirtualWorkspace;
+  githubProject?: GitHubProjectContext;
+  githubToken?: string;
   daytonaApiKey?: string;
   daytonaApiUrl?: string;
   onUpdateSandbox?: (info: {
@@ -49,6 +159,11 @@ interface WorkspacePanelProps {
     previewUrl?: string;
     previewToken?: string;
   }) => void;
+  onImportFiles?: (
+    files: Array<{ path: string; content: string }>,
+    sandboxInfo?: { sandboxId?: string; previewUrl?: string; previewToken?: string }
+  ) => void;
+  onOpenGitHubConnector?: () => void;
   onChangeActiveFile: (path: string) => void;
   onEditFile: (path: string, content: string) => void;
   onCreateFile: (path: string) => void;
@@ -63,9 +178,13 @@ type PreviewEngine = 'browser' | 'daytona';
 
 export const WorkspacePanel = memo(function WorkspacePanel({
   workspace,
+  githubProject,
+  githubToken,
   daytonaApiKey,
   daytonaApiUrl,
   onUpdateSandbox,
+  onImportFiles,
+  onOpenGitHubConnector,
   onChangeActiveFile,
   onEditFile,
   onCreateFile,
@@ -89,13 +208,32 @@ export const WorkspacePanel = memo(function WorkspacePanel({
 
   // Daytona state
   const [deployingDaytona, setDeployingDaytona] = useState(false);
+  const [cloningRepo, setCloningRepo] = useState(false);
   const [runningCmd, setRunningCmd] = useState(false);
+  const [runningCmdLabel, setRunningCmdLabel] = useState<string>('');
+  const [cmdStartedAt, setCmdStartedAt] = useState<number | null>(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
   const [terminalCmd, setTerminalCmd] = useState('');
-  const [terminalLog, setTerminalLog] = useState<string>(
-    'Daytona Cloud Terminal siap. Gunakan tombol "Run in Daytona" atau ketik perintah (misal: npm install recharts).'
-  );
+  const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>(() => [
+    {
+      id: 'init-welcome',
+      kind: 'system',
+      output: 'Daytona Cloud Terminal siap. Klik "Run in Daytona", pilih Quick Command, atau ketik perintah bash di bawah.',
+      timestamp: Date.now(),
+    },
+  ]);
+  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
+  const [historyIdx, setHistoryIdx] = useState<number>(-1);
+  const [terminalSearch, setTerminalSearch] = useState('');
+  const [showTerminalSearch, setShowTerminalSearch] = useState(false);
+  const [terminalWrap, setTerminalWrap] = useState(true);
+  const [copiedEntryId, setCopiedEntryId] = useState<string | null>(null);
+  const [copiedSandboxId, setCopiedSandboxId] = useState(false);
+  const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
   const [terminalError, setTerminalError] = useState<{ command: string; output: string } | null>(null);
   const [autoHealEnabled, setAutoHealEnabled] = useState(true);
+  const terminalViewportRef = useRef<HTMLDivElement>(null);
+  const terminalInputRef = useRef<HTMLInputElement>(null);
 
   const asideRef = useRef<HTMLElement>(null);
 
@@ -131,15 +269,114 @@ export const WorkspacePanel = memo(function WorkspacePanel({
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
+  useEffect(() => {
+    if (!runningCmd && !deployingDaytona) {
+      setCmdStartedAt(null);
+      setElapsedMs(0);
+      return;
+    }
+    const start = cmdStartedAt ?? Date.now();
+    if (!cmdStartedAt) setCmdStartedAt(start);
+    const id = window.setInterval(() => {
+      setElapsedMs(Date.now() - start);
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [runningCmd, deployingDaytona, cmdStartedAt]);
+
+  useEffect(() => {
+    if (tab !== 'terminal') return;
+    const el = terminalViewportRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    setShowScrollBottomBtn(false);
+  }, [terminalEntries, tab, runningCmd]);
   const sandboxHeaders = () => {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
     if (daytonaApiKey?.trim()) h['x-daytona-api-key'] = daytonaApiKey.trim();
     if (daytonaApiUrl?.trim()) h['x-daytona-api-url'] = daytonaApiUrl.trim();
+    if (githubToken?.trim()) h['x-github-token'] = githubToken.trim();
     return h;
   };
 
-  const appendLog = (text: string) => {
-    setTerminalLog((prev) => (prev ? prev + "\n\n" + text : text));
+  const appendLog = (
+    text: string,
+    meta?: {
+      kind?: TerminalEntry['kind'];
+      command?: string;
+      durationMs?: number;
+      exitCode?: number;
+    }
+  ) => {
+    const cleaned = stripAnsiCodes(String(text || '')).trimEnd();
+    if (!cleaned && !meta?.command) return;
+    const now = Date.now();
+    let inferredKind: TerminalEntry['kind'] = meta?.kind ?? 'info';
+    let inferredCmd = meta?.command;
+    if (!meta?.kind && cleaned.startsWith('$ ')) {
+      inferredKind = 'info';
+      inferredCmd = cleaned.slice(2).trim();
+    } else if (!meta?.kind && /^error:/i.test(cleaned)) {
+      inferredKind = 'error';
+    }
+    setTerminalEntries((prev) => {
+      const next = [
+        ...prev,
+        {
+          id: `${now}-${Math.random().toString(36).slice(2, 7)}`,
+          kind: inferredKind,
+          command: inferredCmd,
+          output: inferredCmd && !meta?.kind ? '' : cleaned,
+          timestamp: now,
+          durationMs: meta?.durationMs,
+          exitCode: meta?.exitCode,
+        },
+      ];
+      return next.length > 120 ? next.slice(-120) : next;
+    });
+  };
+
+  const handleClearTerminal = () => {
+    setTerminalEntries([
+      {
+        id: `clear-${Date.now()}`,
+        kind: 'system',
+        output: 'Terminal dibersihkan. Siap menerima perintah berikutnya.',
+        timestamp: Date.now(),
+      },
+    ]);
+    setTerminalError(null);
+  };
+
+  const handleCopyAllTerminal = async () => {
+    const fullText = terminalEntries
+      .map((e) => {
+        const head = e.command ? `$ ${e.command}` : '';
+        return [head, e.output].filter(Boolean).join('\n');
+      })
+      .filter(Boolean)
+      .join('\n\n');
+    const ok = await copyToClipboard(fullText);
+    if (ok) toast.success('Seluruh log terminal disalin');
+    else toast.error('Gagal menyalin log terminal');
+  };
+
+  const handleCopyEntry = async (entry: TerminalEntry) => {
+    const text = [entry.command ? `$ ${entry.command}` : '', entry.output].filter(Boolean).join('\n');
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      setCopiedEntryId(entry.id);
+      setTimeout(() => setCopiedEntryId((id) => (id === entry.id ? null : id)), 1500);
+    }
+  };
+
+  const handleCopySandboxId = async () => {
+    if (!workspace.daytonaSandboxId) return;
+    const ok = await copyToClipboard(workspace.daytonaSandboxId);
+    if (ok) {
+      setCopiedSandboxId(true);
+      toast.success('Sandbox ID disalin');
+      setTimeout(() => setCopiedSandboxId(false), 1500);
+    }
   };
 
   const triggerTerminalAutoFix = (commandLabel: string, errorOutput: string) => {
@@ -162,7 +399,10 @@ export const WorkspacePanel = memo(function WorkspacePanel({
     setEngine('daytona');
     appendLog('$ [Daytona] Menyiapkan VM, sync file, npm install, & start Vite...');
     try {
-      const scaffolded = scaffoldRunnableProjectFiles(workspace.files, workspace.plan?.title);
+      const hasExistingPkg = Boolean(workspace.files['package.json']);
+      const scaffolded = hasExistingPkg
+        ? Object.values(workspace.files).map((f) => ({ path: f.path, content: f.content }))
+        : scaffoldRunnableProjectFiles(workspace.files, workspace.plan?.title);
       const res = await fetch('/api/sandbox', {
         method: 'POST',
         headers: sandboxHeaders(),
@@ -218,13 +458,110 @@ export const WorkspacePanel = memo(function WorkspacePanel({
     }
   };
 
+  const handleCloneRepoToDaytona = async (autoStart = true) => {
+    if (!githubProject) {
+      onOpenGitHubConnector?.();
+      return;
+    }
+    setCloningRepo(true);
+    setTerminalError(null);
+    if (autoStart) setEngine('daytona');
+    appendLog(
+      `$ [Daytona] git clone ${githubProject.owner}/${githubProject.repo} (branch ${githubProject.branch})...`
+    );
+    try {
+      const res = await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: sandboxHeaders(),
+        body: JSON.stringify({
+          action: 'clone-github',
+          sandboxId: workspace.daytonaSandboxId,
+          owner: githubProject.owner,
+          repo: githubProject.repo,
+          branch: githubProject.branch,
+          autoStart,
+          port: 5173,
+          maxWorkspaceFiles: 120,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        sandboxId?: string;
+        previewUrl?: string;
+        previewToken?: string;
+        files?: Array<{ path: string; content: string }>;
+        totalFiles?: number;
+        cloneOutput?: string;
+        installOutput?: string;
+        devLogs?: string;
+        output?: string;
+        message?: string;
+      };
+      if (data.cloneOutput) appendLog(data.cloneOutput);
+      if (data.installOutput) appendLog(data.installOutput);
+      if (data.devLogs) appendLog(data.devLogs);
+      if (data.output) appendLog(data.output);
+
+      if (Array.isArray(data.files) && data.files.length > 0) {
+        onImportFiles?.(data.files, {
+          sandboxId: data.sandboxId,
+          previewUrl: data.previewUrl,
+          previewToken: data.previewToken,
+        });
+      } else if (data.sandboxId) {
+        onUpdateSandbox?.({
+          sandboxId: data.sandboxId,
+          previewUrl: data.previewUrl,
+          previewToken: data.previewToken,
+        });
+      }
+
+      if (!res.ok || !data.ok) {
+        const errLog = [data.message, data.output, data.cloneOutput, data.installOutput, data.devLogs]
+          .filter(Boolean)
+          .join('\n');
+        setTerminalError({
+          command: `git clone & run ${githubProject.owner}/${githubProject.repo}`,
+          output: errLog,
+        });
+        toast.error(data.message || 'Gagal clone / menjalankan repo di Daytona');
+        if (autoHealEnabled && errLog) {
+          triggerTerminalAutoFix(`git clone & run ${githubProject.owner}/${githubProject.repo}`, errLog);
+        } else {
+          setTab('terminal');
+        }
+        return;
+      }
+
+      setRefreshNonce((n) => n + 1);
+      toast.success(
+        `${githubProject.owner}/${githubProject.repo} masuk ke Emergent (${data.files?.length || 0} file)!`
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal clone repo ke Daytona';
+      appendLog('Error: ' + msg);
+      toast.error(msg);
+    } finally {
+      setCloningRepo(false);
+    }
+  };
   const handleExecCommand = async (cmdToRun?: string) => {
     const cmd = (cmdToRun ?? terminalCmd).trim();
     if (!cmd || runningCmd) return;
     if (!cmdToRun) setTerminalCmd('');
+    setCmdHistory((prev) => (prev[0] === cmd ? prev : [cmd, ...prev].slice(0, 40)));
+    setHistoryIdx(-1);
+
+    if (cmd === 'clear' || cmd === 'cls') {
+      handleClearTerminal();
+      return;
+    }
+
     setRunningCmd(true);
+    setRunningCmdLabel(cmd);
+    setCmdStartedAt(Date.now());
     setTerminalError(null);
-    appendLog('$ ' + cmd);
+    const startedAt = performance.now();
     try {
       const res = await fetch('/api/sandbox', {
         method: 'POST',
@@ -242,25 +579,44 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         output?: string;
         message?: string;
       };
+      const durationMs = performance.now() - startedAt;
       if (data.sandboxId && data.sandboxId !== workspace.daytonaSandboxId) {
         onUpdateSandbox?.({ sandboxId: data.sandboxId });
       }
-      appendLog(data.output || data.message || `(exit ${data.exitCode ?? 0})`);
-      if (!res.ok || !data.ok) {
-        const errOut = data.output || data.message || `Exit code ${data.exitCode}`;
+      const exitCode = typeof data.exitCode === 'number' ? data.exitCode : res.ok && data.ok ? 0 : 1;
+      const outText = data.output || data.message || `(selesai dengan exit ${exitCode})`;
+      const isOk = Boolean(res.ok && data.ok);
+      appendLog(outText, {
+        kind: isOk ? 'success' : 'error',
+        command: cmd,
+        durationMs,
+        exitCode,
+      });
+      if (!isOk) {
+        const errOut = data.output || data.message || `Exit code ${exitCode}`;
         setTerminalError({ command: cmd, output: errOut });
-        toast.error(data.message || `Perintah gagal (exit ${data.exitCode})`);
-        if (autoHealEnabled && (cmd.includes('npm') || cmd.includes('tsc') || cmd.includes('vite') || cmd.includes('build'))) {
+        toast.error(data.message || `Perintah gagal (exit ${exitCode})`);
+        if (
+          autoHealEnabled &&
+          (cmd.includes('npm') || cmd.includes('tsc') || cmd.includes('vite') || cmd.includes('build'))
+        ) {
           triggerTerminalAutoFix(cmd, errOut);
         }
       }
     } catch (err) {
-      appendLog('Error: ' + (err instanceof Error ? err.message : 'Network error'));
+      const durationMs = performance.now() - startedAt;
+      const msg = err instanceof Error ? err.message : 'Network error';
+      appendLog(`Error: ${msg}`, {
+        kind: 'error',
+        command: cmd,
+        durationMs,
+        exitCode: 1,
+      });
     } finally {
       setRunningCmd(false);
+      setRunningCmdLabel('');
     }
   };
-
   const handleStopSandbox = async () => {
     if (!workspace.daytonaSandboxId) return;
     try {
@@ -419,6 +775,11 @@ export const WorkspacePanel = memo(function WorkspacePanel({
             >
               <Terminal className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Terminal</span>
+              {(runningCmd || deployingDaytona) ? (
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+              ) : terminalError ? (
+                <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
+              ) : null}
             </button>
             <button
               type="button"
@@ -563,6 +924,36 @@ export const WorkspacePanel = memo(function WorkspacePanel({
           </div>
 
           <div className="flex items-center gap-1.5">
+            {githubProject ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={cloningRepo || deployingDaytona}
+                onClick={() => void handleCloneRepoToDaytona(engine === 'daytona')}
+                className="h-7 gap-1 rounded-lg border-emerald-500/35 bg-emerald-500/10 px-2 text-[11px] text-emerald-300 hover:bg-emerald-500/20"
+                title={`Clone ${githubProject.owner}/${githubProject.repo} ke Daytona & Workspace`}
+              >
+                {cloningRepo ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <FolderGit2 className="h-3 w-3" />
+                )}
+                <span className="hidden sm:inline">Clone Repo</span>
+              </Button>
+            ) : onOpenGitHubConnector ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onOpenGitHubConnector}
+                className="h-7 gap-1 rounded-lg px-2 text-[11px]"
+                title="Import repository GitHub ke Emergent Workspace"
+              >
+                <FolderGit2 className="h-3 w-3" />
+                <span className="hidden sm:inline">Import GitHub</span>
+              </Button>
+            ) : null}
             {engine === 'daytona' && (
               <>
                 <Button
@@ -674,16 +1065,35 @@ export const WorkspacePanel = memo(function WorkspacePanel({
                       Jalankan proyek dengan <code className="font-mono">npm install</code> & Vite dev
                       server nyata di Linux VM Daytona (cocok untuk library npm apa pun).
                     </p>
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={filePaths.length === 0}
-                      onClick={() => void handleDeployDaytona()}
-                      className="gap-1.5 rounded-xl px-4"
-                    >
-                      <Play className="h-3.5 w-3.5" />
-                      <span>Run in Daytona</span>
-                    </Button>
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={filePaths.length === 0 || deployingDaytona}
+                        onClick={() => void handleDeployDaytona()}
+                        className="gap-1.5 rounded-xl px-4"
+                      >
+                        <Play className="h-3.5 w-3.5" />
+                        <span>Run in Daytona</span>
+                      </Button>
+                      {githubProject && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={cloningRepo}
+                          onClick={() => void handleCloneRepoToDaytona(true)}
+                          className="gap-1.5 rounded-xl border-emerald-500/35 bg-emerald-500/10 px-4 text-emerald-300 hover:bg-emerald-500/20"
+                        >
+                          {cloningRepo ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <FolderGit2 className="h-3.5 w-3.5" />
+                          )}
+                          <span>Git Clone & Run Repo</span>
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -841,15 +1251,63 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         )}
 
         {tab === 'terminal' && (
-          <div className="flex h-full flex-col">
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-card/70 px-3.5 py-2">
-              <div className="flex items-center gap-2 text-xs">
-                <Cloud className="h-3.5 w-3.5 text-emerald-400" />
-                <span className="font-mono text-[11px] text-muted-foreground">
-                  {workspace.daytonaSandboxId ? 'VM: ' + workspace.daytonaSandboxId.slice(0, 12) : 'Belum ada VM aktif'}
-                </span>
+          <div className="flex h-full min-h-0 flex-col bg-[#09090b]">
+            {/* Top Status & Controls Header */}
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/70 bg-card/90 px-3 py-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <div
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold tracking-wide',
+                    runningCmd || deployingDaytona
+                      ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
+                      : workspace.daytonaSandboxId
+                        ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300'
+                        : 'border-border/70 bg-muted/60 text-muted-foreground'
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'h-1.5 w-1.5 rounded-full',
+                      runningCmd || deployingDaytona
+                        ? 'animate-ping bg-amber-400'
+                        : workspace.daytonaSandboxId
+                          ? 'bg-emerald-400'
+                          : 'bg-zinc-500'
+                    )}
+                  />
+                  <span>
+                    {runningCmd || deployingDaytona
+                      ? `RUNNING ${formatDurationMs(elapsedMs)}`
+                      : workspace.daytonaSandboxId
+                        ? 'DAYTONA LIVE'
+                        : 'STANDBY'}
+                  </span>
+                </div>
+
+                {workspace.daytonaSandboxId && (
+                  <button
+                    type="button"
+                    onClick={() => void handleCopySandboxId()}
+                    title="Salin Sandbox ID"
+                    className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background/60 px-2 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                  >
+                    <Cloud className="h-3 w-3 text-emerald-400" />
+                    <span>{workspace.daytonaSandboxId.slice(0, 10)}</span>
+                    {copiedSandboxId ? (
+                      <Check className="h-2.5 w-2.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="h-2.5 w-2.5 opacity-70" />
+                    )}
+                  </button>
+                )}
+                {githubProject && (
+                  <span className="hidden items-center gap-1 rounded-md border border-border/60 bg-background/50 px-2 py-0.5 font-mono text-[10px] text-muted-foreground lg:inline-flex">
+                    {githubProject.owner}/{githubProject.repo}@{githubProject.branch}
+                  </span>
+                )}
               </div>
-              <div className="flex flex-wrap items-center gap-1.5">
+
+              <div className="flex flex-wrap items-center gap-1">
                 <button
                   type="button"
                   onClick={() => setAutoHealEnabled((v) => !v)}
@@ -857,52 +1315,144 @@ export const WorkspacePanel = memo(function WorkspacePanel({
                     'inline-flex h-7 items-center gap-1 rounded-lg border px-2 text-[10px] font-semibold transition-colors',
                     autoHealEnabled
                       ? 'border-primary/40 bg-primary/15 text-primary'
-                      : 'border-border/70 bg-background/60 text-muted-foreground'
+                      : 'border-border/70 bg-background/60 text-muted-foreground hover:text-foreground'
                   )}
                   title="Otomatis kirim error npm/build ke Emergent Agent untuk diperbaiki"
                 >
                   <Sparkles className="h-3 w-3" />
                   <span>Auto-Heal {autoHealEnabled ? 'ON' : 'OFF'}</span>
                 </button>
-                <Button
+
+                <button
                   type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={runningCmd}
-                  onClick={() => void handleExecCommand('npm install')}
-                  className="h-7 rounded-lg px-2.5 font-mono text-[10px]"
+                  onClick={() => {
+                    setShowTerminalSearch((s) => !s);
+                    if (showTerminalSearch) setTerminalSearch('');
+                  }}
+                  className={cn(
+                    'inline-flex h-7 w-7 items-center justify-center rounded-lg border transition-colors',
+                    showTerminalSearch
+                      ? 'border-primary/40 bg-primary/15 text-primary'
+                      : 'border-border/70 bg-background/60 text-muted-foreground hover:text-foreground'
+                  )}
+                  title="Cari / Filter Log"
                 >
-                  npm install
-                </Button>
-                <Button
+                  <Search className="h-3.5 w-3.5" />
+                </button>
+
+                <button
                   type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={runningCmd}
-                  onClick={() => void handleExecCommand('npm run build')}
-                  className="h-7 rounded-lg px-2.5 font-mono text-[10px]"
+                  onClick={() => setTerminalWrap((w) => !w)}
+                  className={cn(
+                    'inline-flex h-7 w-7 items-center justify-center rounded-lg border transition-colors',
+                    terminalWrap
+                      ? 'border-primary/40 bg-primary/15 text-primary'
+                      : 'border-border/70 bg-background/60 text-muted-foreground hover:text-foreground'
+                  )}
+                  title={terminalWrap ? 'Line Wrap: ON' : 'Line Wrap: OFF'}
                 >
-                  npm run build
-                </Button>
+                  <WrapText className="h-3.5 w-3.5" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => void handleCopyAllTerminal()}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-border/70 bg-background/60 text-muted-foreground transition-colors hover:text-foreground"
+                  title="Salin Semua Log"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleClearTerminal}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-border/70 bg-background/60 text-muted-foreground transition-colors hover:text-foreground"
+                  title="Bersihkan Terminal (Ctrl+L)"
+                >
+                  <Eraser className="h-3.5 w-3.5" />
+                </button>
+
                 {workspace.daytonaSandboxId && (
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
                     onClick={() => void handleStopSandbox()}
-                    className="h-7 gap-1 rounded-lg px-2 text-[10px] text-destructive hover:bg-destructive/10"
+                    className="h-7 gap-1 rounded-lg border border-destructive/30 bg-destructive/10 px-2 text-[10px] text-destructive hover:bg-destructive/20"
+                    title="Hentikan Daytona VM untuk menghemat kredit"
                   >
                     <Square className="h-3 w-3" />
-                    <span>Stop VM</span>
+                    <span className="hidden sm:inline">Stop VM</span>
                   </Button>
                 )}
               </div>
             </div>
 
+            {/* Quick Commands Bar */}
+            <div className="flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border/50 bg-card/50 px-3 py-1.5">
+              <span className="shrink-0 font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+                Quick
+              </span>
+              {(
+                [
+                ['npm install', 'npm install'],
+                ['npm run build', 'npm run build'],
+                ['tsc --noEmit', 'npx tsc --noEmit'],
+                ['git status', 'git status -sb'],
+                ['git pull', 'git pull'],
+                ['ls -la', 'ls -la'],
+                ['dev logs', 'tail -n 40 /tmp/adam-dev.log'],
+                ['node -v', 'node -v && npm -v'],
+                ] as const
+              ).map(([label, cmd]) => (
+                <button
+                  key={label}
+                  type="button"
+                  disabled={runningCmd}
+                  onClick={(e) => {
+                    if (e.shiftKey) {
+                      setTerminalCmd(cmd);
+                      terminalInputRef.current?.focus();
+                    } else {
+                      void handleExecCommand(cmd);
+                    }
+                  }}
+                  title={`Klik untuk jalankan "${cmd}" • Shift+Klik untuk edit`}
+                  className="shrink-0 rounded-md border border-border/70 bg-background/70 px-2 py-0.5 font-mono text-[10px] text-zinc-300 transition-colors hover:border-primary/50 hover:bg-primary/10 hover:text-primary disabled:opacity-40"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Search Filter Input */}
+            {showTerminalSearch && (
+              <div className="flex shrink-0 items-center gap-2 border-b border-border/60 bg-card/70 px-3 py-1.5">
+                <Search className="h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  value={terminalSearch}
+                  onChange={(e) => setTerminalSearch(e.target.value)}
+                  placeholder="Filter atau cari kata di log terminal..."
+                  className="h-7 flex-1 rounded-lg bg-background/80 font-mono text-[11px]"
+                  autoFocus
+                />
+                {terminalSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setTerminalSearch('')}
+                    className="rounded p-1 text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Error Auto-Fix Banner */}
             {terminalError && (
-              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-destructive/40 bg-destructive/10 px-3.5 py-2 text-xs text-destructive">
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-rose-500/35 bg-rose-500/10 px-3.5 py-2 text-xs text-rose-300">
                 <div className="flex min-w-0 flex-1 items-center gap-2">
-                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400" />
                   <span className="truncate font-mono text-[11px]">
                     Gagal: {terminalError.command}
                   </span>
@@ -922,31 +1472,268 @@ export const WorkspacePanel = memo(function WorkspacePanel({
               </div>
             )}
 
-            <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words bg-zinc-950 p-3.5 font-mono text-[11px] leading-relaxed text-zinc-200">
-              {terminalLog}
-            </pre>
-
-            <div className="flex shrink-0 items-center gap-2 border-t border-border/75 bg-card p-2.5">
-              <span className="font-mono text-xs font-bold text-emerald-400">$</span>
-              <Input
-                value={terminalCmd}
-                onChange={(e) => setTerminalCmd(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void handleExecCommand();
+            {/* Structured Terminal Stream */}
+            <div className="relative min-h-0 flex-1">
+              <div
+                ref={terminalViewportRef}
+                onScroll={(e) => {
+                  const el = e.currentTarget;
+                  const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+                  setShowScrollBottomBtn(distanceFromBottom > 90);
                 }}
-                placeholder="npm install framer-motion recharts"
-                disabled={runningCmd}
-                className="h-8 rounded-xl bg-background/80 font-mono text-xs"
-              />
-              <Button
-                type="button"
-                size="sm"
-                disabled={runningCmd || !terminalCmd.trim()}
-                onClick={() => void handleExecCommand()}
-                className="h-8 shrink-0 rounded-xl px-3 text-xs"
+                className="h-full space-y-2.5 overflow-y-auto p-3 font-mono text-[11.5px] leading-relaxed"
               >
-                {runningCmd ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Run'}
-              </Button>
+                {terminalEntries
+                  .filter((entry) => {
+                    const q = terminalSearch.trim().toLowerCase();
+                    if (!q) return true;
+                    return (
+                      (entry.command || '').toLowerCase().includes(q) ||
+                      entry.output.toLowerCase().includes(q)
+                    );
+                  })
+                  .map((entry) => {
+                    const isError = entry.kind === 'error' || (typeof entry.exitCode === 'number' && entry.exitCode !== 0);
+                    const isSuccess = entry.kind === 'success' && (entry.exitCode === undefined || entry.exitCode === 0);
+                    const lines = entry.output ? entry.output.split('\n') : [];
+                    return (
+                      <div
+                        key={entry.id}
+                        className={cn(
+                          'group rounded-xl border transition-colors',
+                          isError
+                            ? 'border-rose-500/30 bg-rose-950/20'
+                            : entry.command
+                              ? 'border-zinc-800/90 bg-zinc-900/55 hover:border-zinc-700/80'
+                              : 'border-zinc-800/50 bg-zinc-900/25'
+                        )}
+                      >
+                        {entry.command && (
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 px-3 py-1.5">
+                            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                              {isError ? (
+                                <XCircle className="h-3.5 w-3.5 shrink-0 text-rose-400" />
+                              ) : isSuccess ? (
+                                <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                              ) : (
+                                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-sky-400" />
+                              )}
+                              <span className="truncate font-semibold text-zinc-100">
+                                {renderHighlightedText(entry.command, terminalSearch)}
+                              </span>
+                            </div>
+
+                            <div className="flex shrink-0 items-center gap-1.5 text-[10px]">
+                              {typeof entry.durationMs === 'number' && (
+                                <span className="inline-flex items-center gap-1 rounded bg-zinc-800/80 px-1.5 py-0.5 text-zinc-400">
+                                  <Clock className="h-2.5 w-2.5" />
+                                  {formatDurationMs(entry.durationMs)}
+                                </span>
+                              )}
+                              {typeof entry.exitCode === 'number' && (
+                                <span
+                                  className={cn(
+                                    'rounded px-1.5 py-0.5 font-semibold',
+                                    entry.exitCode === 0
+                                      ? 'bg-emerald-500/15 text-emerald-300'
+                                      : 'bg-rose-500/20 text-rose-300'
+                                  )}
+                                >
+                                  exit {entry.exitCode}
+                                </span>
+                              )}
+                              <span className="hidden text-zinc-500 sm:inline">
+                                {formatClockTime(entry.timestamp)}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={runningCmd}
+                                onClick={() => void handleExecCommand(entry.command)}
+                                title="Jalankan ulang perintah ini"
+                                className="rounded p-1 text-zinc-400 opacity-70 transition hover:bg-zinc-800 hover:text-zinc-100 group-hover:opacity-100 disabled:opacity-30"
+                              >
+                                <RotateCcw className="h-3 w-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleCopyEntry(entry)}
+                                title="Salin blok ini"
+                                className="rounded p-1 text-zinc-400 opacity-70 transition hover:bg-zinc-800 hover:text-zinc-100 group-hover:opacity-100"
+                              >
+                                {copiedEntryId === entry.id ? (
+                                  <Check className="h-3 w-3 text-emerald-400" />
+                                ) : (
+                                  <Copy className="h-3 w-3" />
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {lines.length > 0 && (
+                          <div
+                            className={cn(
+                              'px-3 py-2',
+                              terminalWrap ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto whitespace-pre'
+                            )}
+                          >
+                            {lines.map((line, i) => (
+                              <div key={i} className={classifyTerminalLine(line)}>
+                                {line ? renderHighlightedText(line, terminalSearch) : '\u00A0'}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {!entry.command && (
+                          <div className="flex items-center justify-between border-t border-zinc-800/40 px-3 py-1 text-[10px] text-zinc-500">
+                            <span>{formatClockTime(entry.timestamp)}</span>
+                            <button
+                              type="button"
+                              onClick={() => void handleCopyEntry(entry)}
+                              className="inline-flex items-center gap-1 hover:text-zinc-300"
+                            >
+                              {copiedEntryId === entry.id ? (
+                                <Check className="h-2.5 w-2.5 text-emerald-400" />
+                              ) : (
+                                <Copy className="h-2.5 w-2.5" />
+                              )}
+                              <span>Copy</span>
+                            </button>
+                          </div>
+                        )}
+
+                        {isError && entry.command && (
+                          <div className="flex items-center justify-end border-t border-rose-500/20 px-3 py-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                triggerTerminalAutoFix(entry.command || 'command', entry.output)
+                              }
+                              className="inline-flex items-center gap-1 rounded-md border border-rose-500/35 bg-rose-500/15 px-2 py-0.5 text-[10px] font-medium text-rose-200 hover:bg-rose-500/25"
+                            >
+                              <Sparkles className="h-3 w-3" />
+                              <span>Tanya Emergent AI Fix Error Ini</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                {(runningCmd || deployingDaytona) && (
+                  <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-200">
+                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-amber-400" />
+                    <span className="truncate">
+                      {deployingDaytona
+                        ? 'Menjalankan deploy & Vite dev server di Daytona VM...'
+                        : `Menjalankan: ${runningCmdLabel || 'command'}...`}
+                    </span>
+                    <span className="ml-auto shrink-0 text-[10px] text-amber-300/80">
+                      {formatDurationMs(elapsedMs)}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {showScrollBottomBtn && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    terminalViewportRef.current?.scrollTo({
+                      top: terminalViewportRef.current.scrollHeight,
+                      behavior: 'smooth',
+                    });
+                    setShowScrollBottomBtn(false);
+                  }}
+                  className="absolute bottom-3 right-4 inline-flex items-center gap-1 rounded-full border border-border/80 bg-card/95 px-2.5 py-1 text-[10px] font-medium text-foreground shadow-lg backdrop-blur hover:border-primary/50 hover:text-primary"
+                >
+                  <ArrowDown className="h-3 w-3" />
+                  <span>Ke bawah</span>
+                </button>
+              )}
+            </div>
+
+            {/* Interactive Prompt Input Bar */}
+            <div className="flex shrink-0 flex-col gap-1 border-t border-border/80 bg-card/95 px-3 py-2">
+              <div className="flex items-center gap-2">
+                <div className="hidden items-center gap-1 font-mono text-[11px] sm:flex">
+                  <span className="font-semibold text-emerald-400">adam@daytona</span>
+                  <span className="text-zinc-500">:</span>
+                  <span className="text-sky-400">~/adam-app</span>
+                  <span className="font-bold text-zinc-300">$</span>
+                </div>
+                <span className="font-mono text-xs font-bold text-emerald-400 sm:hidden">$</span>
+
+                <div className="relative flex-1">
+                  <Input
+                    ref={terminalInputRef}
+                    value={terminalCmd}
+                    onChange={(e) => {
+                      setTerminalCmd(e.target.value);
+                      setHistoryIdx(-1);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleExecCommand();
+                      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
+                        e.preventDefault();
+                        handleClearTerminal();
+                      } else if (e.key === 'Escape') {
+                        setTerminalCmd('');
+                        setHistoryIdx(-1);
+                      } else if (e.key === 'ArrowUp') {
+                        if (cmdHistory.length === 0) return;
+                        e.preventDefault();
+                        const nextIdx = Math.min(cmdHistory.length - 1, historyIdx + 1);
+                        setHistoryIdx(nextIdx);
+                        setTerminalCmd(cmdHistory[nextIdx]);
+                      } else if (e.key === 'ArrowDown') {
+                        if (historyIdx <= 0) {
+                          setHistoryIdx(-1);
+                          setTerminalCmd('');
+                          return;
+                        }
+                        e.preventDefault();
+                        const nextIdx = historyIdx - 1;
+                        setHistoryIdx(nextIdx);
+                        setTerminalCmd(cmdHistory[nextIdx]);
+                      }
+                    }}
+                    placeholder="Ketik perintah bash (↑↓ history, Ctrl+L clear)..."
+                    disabled={runningCmd}
+                    className="h-8 rounded-xl bg-background/80 pr-7 font-mono text-xs"
+                  />
+                  {terminalCmd && !runningCmd && (
+                    <button
+                      type="button"
+                      onClick={() => setTerminalCmd('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      title="Kosongkan input"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={runningCmd || !terminalCmd.trim()}
+                  onClick={() => void handleExecCommand()}
+                  className="h-8 shrink-0 gap-1.5 rounded-xl px-3 text-xs"
+                >
+                  {runningCmd ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span className="hidden sm:inline">{formatDurationMs(elapsedMs)}</span>
+                    </>
+                  ) : (
+                    <span>Run</span>
+                  )}
+                </Button>
+              </div>
             </div>
           </div>
         )}

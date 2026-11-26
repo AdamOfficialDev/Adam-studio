@@ -62,7 +62,7 @@ export function parseRepoSlug(input) {
   return null;
 }
 
-export async function fetchGitHubRawFile(owner, repo, branch, filePath, token, signal) {
+export async function fetchGitHubRawFile(owner, repo, branch, filePath, token, signal, maxChars = 45000) {
   const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
   const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
     repo
@@ -81,7 +81,7 @@ export async function fetchGitHubRawFile(owner, repo, branch, filePath, token, s
     });
     if (!res.ok) return null;
     const text = await res.text();
-    return text.slice(0, 45000);
+    return text.slice(0, maxChars);
   } catch {
     return null;
   } finally {
@@ -121,6 +121,84 @@ export async function fetchLatestCommitSha(owner, repo, branch, token, signal) {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onParentAbort);
   }
+}
+
+
+const PRIORITY_CLONE_REGEX =
+  /^(package\.json|tsconfig.*\.json|vite\.config\..*|next\.config\..*|tailwind\.config\..*|postcss\.config\..*|index\.html|src\/|app\/|pages\/|components\/|lib\/|api\/|server\/)/i;
+
+export async function cloneGitHubRepoFiles({
+  owner,
+  repo,
+  branch = 'main',
+  token,
+  maxFiles = 120,
+  maxChars = 120000,
+  prefix = '',
+  signal,
+}) {
+  const treeRes = await fetch(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo
+    )}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+    { headers: buildGitHubHeaders(token), signal }
+  );
+  if (!treeRes.ok) {
+    const err = await treeRes.json().catch(() => ({}));
+    throw new Error(err.message || `Gagal membaca tree branch ${branch}`);
+  }
+
+  const [treeJson, commitSha] = await Promise.all([
+    treeRes.json(),
+    fetchLatestCommitSha(owner, repo, branch, token, signal),
+  ]);
+
+  const cleanPrefix = String(prefix || '').trim().replace(/^\/+/, '').toLowerCase();
+  const allBlobs = (Array.isArray(treeJson.tree) ? treeJson.tree : [])
+    .filter((item) => {
+      if (item.type !== 'blob' || !item.path || IGNORED_PATH_REGEX.test(item.path)) return false;
+      if (typeof item.size === 'number' && item.size > 160_000) return false;
+      if (cleanPrefix && !item.path.toLowerCase().startsWith(cleanPrefix)) return false;
+      return true;
+    })
+    .map((item) => ({ path: item.path, size: item.size || 0 }));
+
+  const sorted = [...allBlobs].sort((a, b) => {
+    const pa = PRIORITY_CLONE_REGEX.test(a.path) ? 0 : 1;
+    const pb = PRIORITY_CLONE_REGEX.test(b.path) ? 0 : 1;
+    if (pa !== pb) return pa - pb;
+    return a.path.localeCompare(b.path);
+  });
+
+  const limit = Math.min(Math.max(1, Number(maxFiles) || 120), 200);
+  const targets = sorted.slice(0, limit);
+  const files = [];
+  const concurrency = 10;
+
+  for (let i = 0; i < targets.length; i += concurrency) {
+    const batch = targets.slice(i, i + concurrency);
+    const results = await Promise.all(
+      batch.map(async (item) => {
+        const raw = await fetchGitHubRawFile(owner, repo, branch, item.path, token, signal, maxChars);
+        if (raw === null) return null;
+        return { path: item.path, content: raw };
+      })
+    );
+    for (const r of results) {
+      if (r) files.push(r);
+    }
+  }
+
+  return {
+    owner,
+    repo,
+    branch,
+    commitSha: commitSha || undefined,
+    totalFiles: allBlobs.length,
+    importedCount: files.length,
+    skippedCount: Math.max(0, allBlobs.length - files.length),
+    files,
+  };
 }
 
 export async function handleGitHubAction({ action, body, token }) {
@@ -259,6 +337,47 @@ export async function handleGitHubAction({ action, body, token }) {
     };
   }
 
+  if (action === 'clone-to-workspace') {
+    let owner = String(body?.owner || '').trim();
+    let repo = String(body?.repo || '').trim();
+    let branch = String(body?.branch || '').trim();
+
+    if ((!owner || !repo) && body?.repoInput) {
+      const parsed = parseRepoSlug(body.repoInput);
+      if (!parsed) {
+        return { status: 400, payload: { ok: false, message: 'Format repo tidak valid.' } };
+      }
+      owner = parsed.owner;
+      repo = parsed.repo;
+    }
+
+    if (!owner || !repo) {
+      return { status: 400, payload: { ok: false, message: 'Parameter owner/repo wajib diisi.' } };
+    }
+
+    if (!branch) {
+      const metaRes = await fetch(
+        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+        { headers: buildGitHubHeaders(token) }
+      );
+      if (metaRes.ok) {
+        const meta = await metaRes.json();
+        branch = meta.default_branch || 'main';
+      } else {
+        branch = 'main';
+      }
+    }
+
+    const cloned = await cloneGitHubRepoFiles({
+      owner,
+      repo,
+      branch,
+      token,
+      maxFiles: body?.maxFiles || 120,
+      prefix: body?.prefix || '',
+    });
+    return { status: 200, payload: { ok: true, ...cloned } };
+  }
   if (action === 'read-files') {
     const { owner, repo, branch = 'main', paths = [] } = body || {};
     if (!owner || !repo || !Array.isArray(paths) || paths.length === 0) {

@@ -528,6 +528,89 @@ export default function App() {
     }
   }, []);
 
+  const handleImportFilesToWorkspace = useCallback(
+    (
+      files: Array<{ path: string; content: string }>,
+      sandboxInfo?: { sandboxId?: string; previewUrl?: string; previewToken?: string },
+      projectOverride?: GitHubProjectContext
+    ) => {
+      const now = Date.now();
+      const buildWorkspace = (base?: VirtualWorkspace): VirtualWorkspace => {
+        let nextWs: VirtualWorkspace = base
+          ? { ...base, files: { ...base.files } }
+          : createEmptyWorkspace();
+        for (const f of files) {
+          nextWs = upsertWorkspaceFile(nextWs, f.path, f.content);
+        }
+        if (sandboxInfo?.sandboxId) nextWs.daytonaSandboxId = sandboxInfo.sandboxId;
+        if (sandboxInfo?.previewUrl !== undefined) nextWs.daytonaPreviewUrl = sandboxInfo.previewUrl;
+        if (sandboxInfo?.previewToken !== undefined) nextWs.daytonaPreviewToken = sandboxInfo.previewToken;
+        if (projectOverride && !nextWs.plan) {
+          nextWs.plan = {
+            title: `${projectOverride.owner}/${projectOverride.repo}`,
+            summary: `Repository ${projectOverride.owner}/${projectOverride.repo} (${projectOverride.branch}) di-clone ke Emergent Workspace.`,
+            stack: ['GitHub Repo', 'Emergent Workspace', 'Daytona Sandbox'],
+            status: 'ready',
+            tasks: [
+              {
+                id: 'clone-repo',
+                title: `Clone ${files.length} file dari ${projectOverride.owner}/${projectOverride.repo}`,
+                status: 'completed',
+              },
+            ],
+            updatedAt: now,
+          };
+        }
+        nextWs.updatedAt = now;
+        return nextWs;
+      };
+
+      if (!activeConversation) {
+        const newId = generateId();
+        const newConv: Conversation = {
+          id: newId,
+          title: projectOverride
+            ? `${projectOverride.owner}/${projectOverride.repo}`
+            : 'Imported Workspace',
+          model: currentModelId,
+          builderMode: 'emergent',
+          githubProject: projectOverride,
+          workspace: buildWorkspace(),
+          messages: [],
+          createdAt: now,
+          updatedAt: now,
+        };
+        setConversations((prev) => [newConv, ...prev]);
+        setActiveId(newId);
+      } else {
+        setConversations((prev) =>
+          prev.map((conv) =>
+            conv.id !== activeConversation.id
+              ? conv
+              : {
+                  ...conv,
+                  builderMode: 'emergent',
+                  githubProject: projectOverride ?? conv.githubProject,
+                  workspace: buildWorkspace(conv.workspace),
+                  updatedAt: now,
+                }
+          )
+        );
+      }
+      setDraftBuilderMode('emergent');
+      setActiveArtifact(null);
+      setWorkspaceOpen(true);
+    },
+    [activeConversation, currentModelId]
+  );
+
+  const handleCloneGitHubToWorkspace = useCallback(
+    (project: GitHubProjectContext, files: Array<{ path: string; content: string }>) => {
+      handleImportFilesToWorkspace(files, undefined, project);
+      toast.success(`${project.owner}/${project.repo} di-clone ke Emergent (${files.length} file)`);
+    },
+    [handleImportFilesToWorkspace]
+  );
   const handleNewChat = useCallback(() => {
     if (isStreamingActive) handleStopStream();
     setActiveId(null);
@@ -2297,6 +2380,10 @@ export default function App() {
           <AnimatePresence>
             {workspaceOpen && activeConversation && (
         <WorkspacePanel
+          githubProject={activeConversation?.githubProject}
+          githubToken={settings.githubToken}
+          onImportFiles={handleImportFilesToWorkspace}
+          onOpenGitHubConnector={() => setGithubDialogOpen(true)}
           workspace={activeConversation.workspace || createEmptyWorkspace()}
           daytonaApiKey={settings.daytonaApiKey}
           daytonaApiUrl={settings.daytonaApiUrl}
@@ -2467,6 +2554,7 @@ export default function App() {
           />
 
           <GitHubConnectorDialog
+        onCloneToWorkspace={handleCloneGitHubToWorkspace}
             open={githubDialogOpen}
             onOpenChange={setGithubDialogOpen}
             githubToken={settings.githubToken}

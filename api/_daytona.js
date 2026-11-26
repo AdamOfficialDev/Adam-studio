@@ -208,6 +208,7 @@ export async function syncFilesToDaytona({
   toolboxBaseUrl,
   files,
   appDir = '$HOME/adam-app',
+  cleanSrc = false,
   apiKey,
   apiUrl,
   signal,
@@ -220,8 +221,8 @@ export async function syncFilesToDaytona({
     throw new Error('Tidak ada file untuk disinkronkan ke Daytona.');
   }
 
-  // Bersihkan file lama di src/ lalu tulis batch via base64 chunks agar kebal batas shell & multipart
-  const cmds = [`mkdir -p ${appDir} && rm -rf ${appDir}/src`];
+  // Buat folder target; bersihkan src/ hanya jika diminta (aman untuk repo hasil git clone)
+  const cmds = [cleanSrc ? `mkdir -p ${appDir} && rm -rf ${appDir}/src` : `mkdir -p ${appDir}`];
   for (const entry of entries) {
     const cleanPath = String(entry.path || '')
       .replace(/\\/g, '/')
@@ -284,6 +285,330 @@ export async function getDaytonaPreviewUrl({ sandboxId, port = 5173, apiKey, api
   };
 }
 
+function sanitizeTokenOutput(text, token) {
+  const raw = String(text || '');
+  if (!token) return raw;
+  return raw.split(token).join('***');
+}
+
+export async function startDaytonaDevServer({
+  sandboxId,
+  toolboxBaseUrl,
+  appDir = '$HOME/adam-app',
+  port = 5173,
+  apiKey,
+  apiUrl,
+  signal,
+}) {
+  const targetPort = Number(port) || 5173;
+
+  const installCmd = [
+    `cd ${appDir}`,
+    `if [ -f package.json ]; then`,
+    `  PKG_HASH=$(node -e "const fs=require('fs'),c=require('crypto');console.log(c.createHash('sha1').update(fs.readFileSync('package.json','utf8')).digest('hex'))")`,
+    `  PREV_HASH=$(cat .adam-pkg-hash 2>/dev/null || echo "")`,
+    `  if [ ! -d node_modules ] || [ "$PREV_HASH" != "$PKG_HASH" ]; then`,
+    `    if [ -f pnpm-lock.yaml ] && command -v pnpm >/dev/null 2>&1; then`,
+    `      pnpm install --no-frozen-lockfile && printf '%s' "$PKG_HASH" > .adam-pkg-hash`,
+    `    elif [ -f yarn.lock ] && command -v yarn >/dev/null 2>&1; then`,
+    `      yarn install && printf '%s' "$PKG_HASH" > .adam-pkg-hash`,
+    `    else`,
+    `      npm install --no-audit --no-fund && printf '%s' "$PKG_HASH" > .adam-pkg-hash`,
+    `    fi`,
+    `  else`,
+    `    echo "Dependencies sudah up-to-date (skip install)."`,
+    `  fi`,
+    `fi`,
+  ].join('\n');
+
+  const installRes = await execDaytonaCommand({
+    sandboxId,
+    toolboxBaseUrl,
+    command: installCmd,
+    timeoutSec: 210,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+
+  if (installRes.exitCode !== 0) {
+    return {
+      ok: false,
+      sandboxId,
+      message: 'Install dependencies gagal di Daytona Sandbox.',
+      output: installRes.output,
+    };
+  }
+
+  const patchViteCmd = [
+    `cd ${appDir}`,
+    `node -e "const fs=require('fs');for(const f of ['vite.config.ts','vite.config.js','vite.config.mjs']){if(fs.existsSync(f)){let s=fs.readFileSync(f,'utf8');if(!s.includes('allowedHosts')){if(s.includes('server:')){s=s.replace(/server\s*:\s*\{/, 'server: { allowedHosts: true, ');}else{s=s.replace(/defineConfig\s*\(\s*\{/, 'defineConfig({\\n  server: { host: \"0.0.0.0\", port: ${targetPort}, strictPort: true, allowedHosts: true },');}fs.writeFileSync(f,s);}}}"`,
+  ].join('\n');
+
+  await execDaytonaCommand({
+    sandboxId,
+    toolboxBaseUrl: installRes.toolboxBaseUrl,
+    command: patchViteCmd,
+    timeoutSec: 20,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+
+  const detectCmd = [
+    `cd ${appDir}`,
+    `node -e "const fs=require('fs');let cmd='npx serve -s . -l ${targetPort}';if(fs.existsSync('package.json')){const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));const sc=pkg.scripts||{};const deps={...(pkg.dependencies||{}),...(pkg.devDependencies||{})};if(deps.vite||String(sc.dev||'').includes('vite')||fs.existsSync('vite.config.ts')||fs.existsSync('vite.config.js')||fs.existsSync('vite.config.mjs')){cmd='npx vite --host 0.0.0.0 --port ${targetPort}';}else if(deps.next||String(sc.dev||'').includes('next')){cmd='npx next dev -H 0.0.0.0 -p ${targetPort}';}else if(sc.dev){cmd='PORT=${targetPort} HOST=0.0.0.0 npm run dev';}else if(sc.start){cmd='PORT=${targetPort} HOST=0.0.0.0 npm start';}}console.log(cmd);"`,
+  ].join('\n');
+
+  const detectRes = await execDaytonaCommand({
+    sandboxId,
+    toolboxBaseUrl: installRes.toolboxBaseUrl,
+    command: detectCmd,
+    timeoutSec: 15,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+  const startCmd = (detectRes.output || `npx vite --host 0.0.0.0 --port ${targetPort}`)
+    .trim()
+    .split('\n')
+    .pop()
+    .trim();
+
+  await execDaytonaCommand({
+    sandboxId,
+    toolboxBaseUrl: installRes.toolboxBaseUrl,
+    command: `pkill -f "vite" >/dev/null 2>&1 || true; pkill -f "next dev" >/dev/null 2>&1 || true; pkill -f "npm run dev" >/dev/null 2>&1 || true`,
+    timeoutSec: 15,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+
+  let startedViaSession = false;
+  try {
+    const tb = installRes.toolboxBaseUrl || (await resolveToolboxBaseUrl({ sandboxId, apiKey, apiUrl, signal }));
+    const sessionId = 'adam-vite-' + targetPort;
+    try {
+      await daytonaFetch(`${tb}/process/session`, {
+        method: 'POST',
+        apiKey,
+        signal,
+        body: { sessionId },
+      });
+    } catch {
+      // Session sudah ada
+    }
+    await daytonaFetch(`${tb}/process/session/${encodeURIComponent(sessionId)}/exec`, {
+      method: 'POST',
+      apiKey,
+      signal,
+      body: {
+        command: `cd ${appDir} && ${startCmd} > /tmp/adam-dev.log 2>&1`,
+        runAsync: true,
+      },
+    });
+    startedViaSession = true;
+  } catch {
+    startedViaSession = false;
+  }
+
+  if (!startedViaSession) {
+    await execDaytonaCommand({
+      sandboxId,
+      toolboxBaseUrl: installRes.toolboxBaseUrl,
+      command: `cd ${appDir} && setsid -f bash -lc ${shellQuote(startCmd)} > /tmp/adam-dev.log 2>&1 < /dev/null`,
+      timeoutSec: 20,
+      apiKey,
+      apiUrl,
+      signal,
+    });
+  }
+
+  const verifyRes = await execDaytonaCommand({
+    sandboxId,
+    toolboxBaseUrl: installRes.toolboxBaseUrl,
+    command: [
+      `for i in $(seq 1 28); do`,
+      `  if curl -sf http://127.0.0.1:${targetPort} >/dev/null 2>&1 || wget -qO- http://127.0.0.1:${targetPort} >/dev/null 2>&1; then`,
+      `    echo "SERVER_READY_ON_PORT_${targetPort}"`,
+      `    break`,
+      `  fi`,
+      `  sleep 0.5`,
+      `done`,
+      `tail -n 35 /tmp/adam-dev.log 2>/dev/null || true`,
+    ].join('\n'),
+    timeoutSec: 35,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+
+  if (!verifyRes.output.includes('SERVER_READY_ON_PORT_')) {
+    const buildRes = await execDaytonaCommand({
+      sandboxId,
+      toolboxBaseUrl: installRes.toolboxBaseUrl,
+      command: `cd ${appDir} && if grep -q "\"build\"" package.json 2>/dev/null; then npm run build; else true; fi`,
+      timeoutSec: 90,
+      apiKey,
+      apiUrl,
+      signal,
+    });
+    if (buildRes.exitCode !== 0) {
+      return {
+        ok: false,
+        sandboxId,
+        message: 'Build gagal di Daytona Sandbox (lihat error log untuk Auto-Fix).',
+        output: buildRes.output + '\n' + verifyRes.output,
+      };
+    }
+  }
+
+  const link = await getDaytonaPreviewUrl({
+    sandboxId,
+    port: targetPort,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+
+  return {
+    ok: Boolean(link.previewUrl),
+    sandboxId,
+    previewUrl: link.previewUrl,
+    previewToken: link.previewToken,
+    installOutput: installRes.output,
+    devLogs: verifyRes.output,
+  };
+}
+
+export async function cloneGitHubIntoDaytona({
+  sandboxId,
+  owner,
+  repo,
+  branch = 'main',
+  githubToken = '',
+  autoStart = false,
+  port = 5173,
+  maxWorkspaceFiles = 120,
+  apiKey,
+  apiUrl,
+  signal,
+}) {
+  const cleanOwner = String(owner || '').trim();
+  const cleanRepo = String(repo || '').trim().replace(/\.git$/i, '');
+  const cleanBranch = String(branch || 'main').trim();
+  if (!cleanOwner || !cleanRepo) {
+    throw new Error('Owner dan nama repo GitHub wajib diisi.');
+  }
+
+  const sb = await ensureDaytonaSandbox({ sandboxId, apiKey, apiUrl, signal });
+  const appDir = '$HOME/adam-app';
+  const safeToken = String(githubToken || '').trim();
+  const repoUrl = safeToken
+    ? `https://x-access-token:${safeToken}@github.com/${cleanOwner}/${cleanRepo}.git`
+    : `https://github.com/${cleanOwner}/${cleanRepo}.git`;
+
+  const cloneCmd = [
+    `rm -rf ${appDir} && mkdir -p ${appDir}`,
+    `if ! git clone --depth 1 --branch ${shellQuote(cleanBranch)} ${shellQuote(repoUrl)} ${appDir} 2>&1; then`,
+    `  rm -rf ${appDir} && git clone --depth 1 ${shellQuote(repoUrl)} ${appDir} 2>&1`,
+    `fi`,
+  ].join('\n');
+
+  const cloneRes = await execDaytonaCommand({
+    sandboxId: sb.id,
+    command: cloneCmd,
+    timeoutSec: 120,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+
+  const safeCloneOut = sanitizeTokenOutput(cloneRes.output, safeToken);
+  if (cloneRes.exitCode !== 0) {
+    return {
+      ok: false,
+      sandboxId: sb.id,
+      message: `Gagal git clone ${cleanOwner}/${cleanRepo} di Daytona VM.`,
+      output: safeCloneOut,
+      files: [],
+    };
+  }
+
+  const extractScript = [
+    "const fs=require('fs'),path=require('path');",
+    "const root=process.cwd();",
+    "const ignoreDir=new Set(['node_modules','.git','dist','build','.next','.vercel','coverage']);",
+    "const ignoreExt=/\\.(png|jpe?g|gif|webp|ico|woff2?|ttf|eot|pdf|zip|gz|tar|mp4|webm|mp3|wav|exe|dll|so|dylib|lock)$/i;",
+    "const ignoreFile=new Set(['package-lock.json','pnpm-lock.yaml','yarn.lock','bun.lockb']);",
+    "const found=[];",
+    "function walk(dir){for(const ent of fs.readdirSync(dir,{withFileTypes:true})){if(ent.isDirectory()){if(!ignoreDir.has(ent.name))walk(path.join(dir,ent.name));}else if(ent.isFile()){if(ignoreFile.has(ent.name)||ignoreExt.test(ent.name))continue;const fp=path.join(dir,ent.name);const st=fs.statSync(fp);if(st.size<=120000){found.push(path.relative(root,fp).replace(/\\\\/g,'/'));}}}}",
+    "walk(root);",
+    "const prio=/^(package\\.json|tsconfig|vite\\.config|next\\.config|index\\.html|src\\/|app\\/|api\\/|server\\/)/i;",
+    "found.sort((a,b)=>((prio.test(a)?0:1)-(prio.test(b)?0:1))||a.localeCompare(b));",
+    `const out=found.slice(0,${Math.min(180, Math.max(1, Number(maxWorkspaceFiles) || 120))}).map(p=>({path:p,content:fs.readFileSync(path.join(root,p),'utf8')}));`,
+    "console.log(JSON.stringify({totalFiles:found.length,files:out}));",
+  ].join('');
+
+  const extractRes = await execDaytonaCommand({
+    sandboxId: sb.id,
+    toolboxBaseUrl: cloneRes.toolboxBaseUrl,
+    command: `cd ${appDir} && node -e ${shellQuote(extractScript)}`,
+    timeoutSec: 45,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+
+  let extractedFiles = [];
+  let totalFiles = 0;
+  try {
+    const lastLine = extractRes.output.trim().split('\n').pop() || '{}';
+    const parsed = JSON.parse(lastLine);
+    if (Array.isArray(parsed.files)) extractedFiles = parsed.files;
+    if (typeof parsed.totalFiles === 'number') totalFiles = parsed.totalFiles;
+  } catch {
+    extractedFiles = [];
+  }
+
+  let previewResult = null;
+  if (autoStart) {
+    previewResult = await startDaytonaDevServer({
+      sandboxId: sb.id,
+      toolboxBaseUrl: cloneRes.toolboxBaseUrl,
+      appDir,
+      port,
+      apiKey,
+      apiUrl,
+      signal,
+    });
+    if (!previewResult.ok) {
+      return {
+        ...previewResult,
+        files: extractedFiles,
+        totalFiles,
+        cloneOutput: safeCloneOut,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    sandboxId: sb.id,
+    owner: cleanOwner,
+    repo: cleanRepo,
+    branch: cleanBranch,
+    totalFiles,
+    files: extractedFiles,
+    cloneOutput: safeCloneOut,
+    previewUrl: previewResult?.previewUrl,
+    previewToken: previewResult?.previewToken,
+    installOutput: previewResult?.installOutput,
+    devLogs: previewResult?.devLogs,
+  };
+}
+
 export async function deployAndPreviewDaytona({
   sandboxId,
   files,
@@ -298,185 +623,23 @@ export async function deployAndPreviewDaytona({
     sandboxId: sb.id,
     files,
     appDir,
+    cleanSrc: false,
     apiKey,
     apiUrl,
     signal,
   });
-
-  // Cek apakah package.json berubah; jalankan npm install hanya jika perlu
-  const pkgEntry = (Array.isArray(files) ? files : Object.values(files || {})).find(
-    (f) => f.path === 'package.json'
-  );
-  const pkgHash = pkgEntry ? utf8ToBase64(pkgEntry.content).slice(0, 48) : 'none';
-
-  const installCmd = [
-    `cd ${appDir}`,
-    `PREV_HASH=$(cat .adam-pkg-hash 2>/dev/null || echo "")`,
-    `if [ ! -d node_modules ] || [ "$PREV_HASH" != "${pkgHash}" ]; then`,
-    `  npm install --no-audit --no-fund && printf '%s' '${pkgHash}' > .adam-pkg-hash`,
-    `else`,
-    `  echo "Dependencies sudah up-to-date (skip npm install)."`,
-    `fi`,
-  ].join('\n');
-
-  const installRes = await execDaytonaCommand({
+  return startDaytonaDevServer({
     sandboxId: sb.id,
     toolboxBaseUrl: syncRes.toolboxBaseUrl,
-    command: installCmd,
-    timeoutSec: 180,
-    apiKey,
-    apiUrl,
-    signal,
-  });
-
-  if (installRes.exitCode !== 0) {
-    return {
-      ok: false,
-      sandboxId: sb.id,
-      message: 'npm install gagal di Daytona Sandbox.',
-      output: installRes.output,
-    };
-  }
-
-  // Pastikan vite.config.ts / server host tidak memblokir host proxy Daytona
-  const patchViteCmd = [
-    `cd ${appDir}`,
-    `if [ -f vite.config.ts ] && ! grep -q "allowedHosts" vite.config.ts; then`,
-    `  node -e "const fs=require('fs');let s=fs.readFileSync('vite.config.ts','utf8');s=s.replace('plugins: [react()],','plugins: [react()],\\n  server: { host: \x270.0.0.0\x27, port: ${Number(port)}, strictPort: true, allowedHosts: true },');fs.writeFileSync('vite.config.ts',s);"`,
-    `fi`,
-  ].join('\n');
-
-  await execDaytonaCommand({
-    sandboxId: sb.id,
-    toolboxBaseUrl: syncRes.toolboxBaseUrl,
-    command: patchViteCmd,
-    timeoutSec: 20,
-    apiKey,
-    apiUrl,
-    signal,
-  });
-
-  // Hentikan server lama
-  await execDaytonaCommand({
-    sandboxId: sb.id,
-    toolboxBaseUrl: syncRes.toolboxBaseUrl,
-    command: `pkill -f "vite" >/dev/null 2>&1 || true; pkill -f "npm run dev" >/dev/null 2>&1 || true`,
-    timeoutSec: 15,
-    apiKey,
-    apiUrl,
-    signal,
-  });
-
-  // 1) Coba jalankan via Daytona Toolbox Session API (proses hidup persisten lintas request)
-  let startedViaSession = false;
-  try {
-    const tb = syncRes.toolboxBaseUrl || (await resolveToolboxBaseUrl({ sandboxId: sb.id, apiKey, apiUrl, signal }));
-    const sessionId = 'adam-vite-' + Number(port);
-    try {
-      await daytonaFetch(`${tb}/process/session`, {
-        method: 'POST',
-        apiKey,
-        signal,
-        body: { sessionId },
-      });
-    } catch {
-      // Abaikan jika session sudah ada
-    }
-    await daytonaFetch(`${tb}/process/session/${encodeURIComponent(sessionId)}/exec`, {
-      method: 'POST',
-      apiKey,
-      signal,
-      body: {
-        command: `cd ${appDir} && npx vite --host 0.0.0.0 --port ${Number(port)} > /tmp/adam-dev.log 2>&1`,
-        runAsync: true,
-      },
-    });
-    startedViaSession = true;
-  } catch {
-    startedViaSession = false;
-  }
-
-  // 2) Fallback: setsid + disown jika Toolbox Session API tidak tersedia
-  if (!startedViaSession) {
-    await execDaytonaCommand({
-      sandboxId: sb.id,
-      toolboxBaseUrl: syncRes.toolboxBaseUrl,
-      command: `cd ${appDir} && setsid -f npx vite --host 0.0.0.0 --port ${Number(port)} > /tmp/adam-dev.log 2>&1 < /dev/null`,
-      timeoutSec: 20,
-      apiKey,
-      apiUrl,
-      signal,
-    });
-  }
-
-  // 3) Tunggu & verifikasi server benar-benar merespons HTTP di port target (cek terpisah agar terbukti masih hidup!)
-  const verifyRes = await execDaytonaCommand({
-    sandboxId: sb.id,
-    toolboxBaseUrl: syncRes.toolboxBaseUrl,
-    command: [
-      `for i in $(seq 1 24); do`,
-      `  if curl -sf http://127.0.0.1:${Number(port)} >/dev/null 2>&1 || wget -qO- http://127.0.0.1:${Number(port)} >/dev/null 2>&1; then`,
-      `    echo "SERVER_READY_ON_PORT_${Number(port)}"`,
-      `    break`,
-      `  fi`,
-      `  sleep 0.5`,
-      `done`,
-      `tail -n 30 /tmp/adam-dev.log 2>/dev/null || true`,
-    ].join('\n'),
-    timeoutSec: 30,
-    apiKey,
-    apiUrl,
-    signal,
-  });
-
-  if (!verifyRes.output.includes('SERVER_READY_ON_PORT_')) {
-    const buildRes = await execDaytonaCommand({
-      sandboxId: sb.id,
-      toolboxBaseUrl: syncRes.toolboxBaseUrl,
-      command: `cd ${appDir} && npm run build`,
-      timeoutSec: 60,
-      apiKey,
-      apiUrl,
-      signal,
-    });
-    if (buildRes.exitCode !== 0) {
-      return {
-        ok: false,
-        sandboxId: sb.id,
-        message: 'Build gagal di Daytona Sandbox (lihat error log untuk Auto-Fix).',
-        output: buildRes.output + '\n' + verifyRes.output,
-      };
-    }
-    await execDaytonaCommand({
-      sandboxId: sb.id,
-      toolboxBaseUrl: syncRes.toolboxBaseUrl,
-      command: `cd ${appDir} && setsid -f npx vite preview --host 0.0.0.0 --port ${Number(port)} > /tmp/adam-dev.log 2>&1 < /dev/null`,
-      timeoutSec: 25,
-      apiKey,
-      apiUrl,
-      signal,
-    });
-  }
-
-  const link = await getDaytonaPreviewUrl({
-    sandboxId: sb.id,
+    appDir,
     port,
     apiKey,
     apiUrl,
     signal,
   });
-
-  return {
-    ok: Boolean(link.previewUrl),
-    sandboxId: sb.id,
-    previewUrl: link.previewUrl,
-    previewToken: link.previewToken,
-    installOutput: installRes.output,
-    devLogs: verifyRes.output,
-  };
 }
 
-export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, signal }) {
+export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, githubToken = '', signal }) {
   const cfg = resolveDaytonaConfig({
     apiKey: apiKey || body?.apiKey,
     apiUrl: apiUrl || body?.apiUrl,
@@ -526,6 +689,22 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, s
     };
   }
 
+  if (action === 'clone-github') {
+    const out = await cloneGitHubIntoDaytona({
+      sandboxId: body?.sandboxId,
+      owner: body?.owner,
+      repo: body?.repo,
+      branch: body?.branch || 'main',
+      githubToken: githubToken || body?.githubToken || '',
+      autoStart: body?.autoStart !== false,
+      port: body?.port || 5173,
+      maxWorkspaceFiles: body?.maxWorkspaceFiles || 120,
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+    return { status: out.ok ? 200 : 500, payload: out };
+  }
   if (action === 'deploy-preview') {
     const out = await deployAndPreviewDaytona({
       sandboxId: body?.sandboxId,
