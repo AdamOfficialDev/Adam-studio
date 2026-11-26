@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react';
-import { FileCode2, Globe, Link2 } from 'lucide-react';
+import { Activity, ArrowUpRight, Cpu, FileCode2, Globe, Link2 } from 'lucide-react';
 import { BrandLogoMark } from '@/components/BrandLogo';
 import { ChatMessage } from '@/components/ChatMessage';
 import { MarkdownRenderer } from '@/components/MarkdownRenderer';
@@ -143,23 +143,34 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
 
   return (
     <div className="group flex w-full min-w-0 items-start gap-2.5 sm:gap-3.5">
-      <Avatar className="mt-0.5 h-7 w-7 shrink-0 border border-primary/25 bg-primary shadow-sm sm:h-8 sm:w-8">
-        <AvatarFallback className="bg-primary text-primary-foreground">
+      <Avatar className="mt-0.5 h-7 w-7 shrink-0 border border-primary/40 bg-primary shadow-[0_0_24px_-4px_hsl(var(--primary)/0.65)] ring-2 ring-primary/35 sm:h-8 sm:w-8">
+        <AvatarFallback className="bg-gradient-to-br from-primary to-primary/80 text-primary-foreground">
           <BrandLogoMark className="h-3.5 w-3.5 animate-pulse sm:h-4 sm:w-4" />
         </AvatarFallback>
       </Avatar>
 
-      <div className="min-w-0 flex-1 space-y-2.5 overflow-hidden">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-xs font-semibold tracking-tight text-foreground">
-            {message.model || 'gemini-4-hydrogen'}
+      <div className="min-w-0 flex-1 space-y-3 overflow-hidden">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+          <span className="inline-flex max-w-full items-center gap-1.5 rounded-xl border border-border/80 bg-card/90 px-2.5 py-0.5 text-xs font-semibold tracking-tight text-foreground shadow-sm">
+            <Cpu className="h-3 w-3 shrink-0 text-primary" />
+            <span className="truncate">{message.model || 'gemini-4-hydrogen'}</span>
           </span>
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
-            <span className="h-1.5 w-1.5 animate-ping rounded-full bg-primary" />
+
+          <span className="inline-flex items-center gap-2 rounded-full border border-primary/35 bg-primary/10 px-2.5 py-0.5 text-[11px] font-medium text-primary shadow-sm">
+            <span className="flex h-3 items-end gap-[2px]">
+              <span className="chat-wave-bar h-2.5 w-[2px] rounded-full bg-primary [animation-delay:-0.3s]" />
+              <span className="chat-wave-bar h-3 w-[2px] rounded-full bg-primary [animation-delay:-0.15s]" />
+              <span className="chat-wave-bar h-2 w-[2px] rounded-full bg-primary" />
+            </span>
             {override.statusText ? 'Rotating Key' : hasAnswerStarted ? 'Streaming' : 'Thinking'}
           </span>
+
           {override.tps > 0 && (
-            <Badge variant="outline" className="font-mono text-[10px]">
+            <Badge
+              variant="outline"
+              className="gap-1 border-emerald-500/35 bg-emerald-500/10 font-mono text-[10px] tabular-nums text-emerald-700 dark:text-emerald-300"
+            >
+              <Activity className="h-2.5 w-2.5" />
               {override.tps} tok/s
             </Badge>
           )}
@@ -197,9 +208,11 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
         {override.grounding &&
           ((override.grounding.sources && override.grounding.sources.length > 0) ||
             (override.grounding.urlContexts && override.grounding.urlContexts.length > 0)) && (
-            <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-border/60 bg-card/50 px-2.5 py-2 text-[11px]">
-              <span className="inline-flex items-center gap-1 font-medium text-primary">
-                <Globe className="h-3 w-3" />
+            <div className="chat-card-surface flex flex-wrap items-center gap-1.5 rounded-2xl border border-border/80 px-3 py-2.5 text-[11px]">
+              <span className="inline-flex items-center gap-1.5 font-semibold text-primary">
+                <span className="flex h-5 w-5 items-center justify-center rounded-md border border-primary/25 bg-primary/15">
+                  <Globe className="h-3 w-3" />
+                </span>
                 Grounding:
               </span>
               {override.grounding.urlContexts?.map((u, idx) => (
@@ -208,7 +221,7 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
                   href={u.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex max-w-[200px] items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-300"
+                  className="inline-flex max-w-[200px] items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-300"
                 >
                   <Link2 className="h-2.5 w-2.5 shrink-0" />
                   <span className="truncate">{u.url}</span>
@@ -220,10 +233,13 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
                   href={src.uri}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex max-w-[180px] items-center gap-1 rounded-md border bg-background/60 px-1.5 py-0.5 text-[10px] text-foreground/85 hover:text-primary"
+                  className="group/ssrc inline-flex max-w-[200px] items-center gap-1.5 rounded-lg border border-border/75 bg-background/75 px-2 py-0.5 text-[10px] text-foreground/90 transition-colors hover:border-primary/45 hover:text-primary"
                 >
-                  <span className="font-mono text-[9px] text-primary">[{idx + 1}]</span>
+                  <span className="rounded bg-primary/15 px-1 font-mono text-[9px] font-semibold text-primary">
+                    {idx + 1}
+                  </span>
                   <span className="truncate">{src.title || src.uri}</span>
+                  <ArrowUpRight className="h-2.5 w-2.5 shrink-0 opacity-45 group-hover/ssrc:opacity-100" />
                 </a>
               ))}
             </div>
@@ -248,13 +264,20 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
             )}
 
             {split.openFenceLang !== null && (
-              <div className="my-3 w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-zinc-800/90 bg-[#0b0d12] text-zinc-100 shadow-lg">
-                <div className="flex items-center justify-between border-b border-zinc-800/80 bg-zinc-900/90 px-3 py-2 text-xs">
-                  <span className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-zinc-200">
-                    <FileCode2 className="h-3.5 w-3.5 text-primary" />
-                    {split.openFenceLang}
-                  </span>
-                  <span className="flex items-center gap-1.5 font-mono text-[10px] text-sky-400">
+              <div className="my-3 w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-zinc-800/90 bg-[#0b0d12] text-zinc-100 shadow-xl ring-1 ring-white/[0.06]">
+                <div className="flex items-center justify-between border-b border-zinc-800/80 bg-zinc-900/90 px-3.5 py-2 text-xs">
+                  <div className="flex items-center gap-2.5">
+                    <div className="hidden items-center gap-1.5 sm:flex">
+                      <span className="h-2.5 w-2.5 rounded-full bg-rose-500/75" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-amber-500/75" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-emerald-500/75" />
+                    </div>
+                    <span className="flex items-center gap-1.5 rounded-md bg-zinc-800/80 px-2 py-0.5 font-mono text-[11px] uppercase tracking-wider text-zinc-200">
+                      <FileCode2 className="h-3.5 w-3.5 text-primary" />
+                      {split.openFenceLang}
+                    </span>
+                  </div>
+                  <span className="flex items-center gap-1.5 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 font-mono text-[10px] text-sky-300">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />
                     Streaming {openLinesCount} lines...
                   </span>
@@ -272,10 +295,13 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
           </div>
         ) : (
           !thinkingEnabled && (
-            <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
-              <span className="h-2 w-2 animate-bounce rounded-full bg-primary [animation-delay:-0.3s]" />
-              <span className="h-2 w-2 animate-bounce rounded-full bg-primary [animation-delay:-0.15s]" />
-              <span className="h-2 w-2 animate-bounce rounded-full bg-primary" />
+            <div className="inline-flex items-center gap-2.5 rounded-2xl border border-border/75 bg-card/70 px-3.5 py-2 text-xs text-muted-foreground">
+              <span className="flex h-3.5 items-end gap-[2.5px]">
+                <span className="chat-wave-bar h-3 w-[2.5px] rounded-full bg-primary [animation-delay:-0.3s]" />
+                <span className="chat-wave-bar h-3.5 w-[2.5px] rounded-full bg-primary [animation-delay:-0.15s]" />
+                <span className="chat-wave-bar h-2.5 w-[2.5px] rounded-full bg-primary" />
+              </span>
+              <span>Menyusun respons...</span>
             </div>
           )
         )}

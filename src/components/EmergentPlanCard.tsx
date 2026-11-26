@@ -29,19 +29,19 @@ const STATUS_META: Record<
 > = {
   planning: {
     label: 'Planning',
-    badgeClass: 'border-sky-500/30 bg-sky-500/15 text-sky-400',
+    badgeClass: 'border-sky-500/35 bg-sky-500/15 text-sky-700 dark:text-sky-300',
   },
   building: {
     label: 'Building',
-    badgeClass: 'border-primary/35 bg-primary/15 text-primary',
+    badgeClass: 'border-primary/40 bg-primary/15 text-primary',
   },
   verifying: {
     label: 'Verifying',
-    badgeClass: 'border-amber-500/35 bg-amber-500/15 text-amber-400',
+    badgeClass: 'border-amber-500/35 bg-amber-500/15 text-amber-700 dark:text-amber-300',
   },
   ready: {
     label: 'Ready',
-    badgeClass: 'border-emerald-500/35 bg-emerald-500/15 text-emerald-400',
+    badgeClass: 'border-emerald-500/35 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
   },
   error: {
     label: 'Needs Fix',
@@ -61,14 +61,14 @@ export const EmergentPlanCard = memo(function EmergentPlanCard({
   const meta = STATUS_META[plan.status] || STATUS_META.building;
 
   return (
-    <div className="my-2 overflow-hidden rounded-2xl border border-primary/30 bg-card/85 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-2.5 border-b border-border/70 bg-primary/[0.06] px-4 py-3">
+    <div className="chat-card-surface my-2 overflow-hidden rounded-2xl border border-primary/35 ring-1 ring-primary/10">
+      <div className="flex flex-wrap items-start justify-between gap-2.5 border-b border-border/70 bg-gradient-to-r from-primary/[0.12] via-primary/[0.04] to-transparent px-4 py-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-primary/20 text-primary">
+            <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl border border-primary/30 bg-primary/15 text-primary shadow-sm">
               <Rocket className="h-3.5 w-3.5" />
             </span>
-            <span className="truncate text-xs font-semibold text-foreground sm:text-sm">
+            <span className="truncate text-xs font-semibold tracking-tight text-foreground sm:text-sm">
               {plan.title}
             </span>
             <span
@@ -81,7 +81,7 @@ export const EmergentPlanCard = memo(function EmergentPlanCard({
             </span>
           </div>
           {!compact && plan.summary && (
-            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted-foreground">
               {plan.summary}
             </p>
           )}
@@ -93,7 +93,7 @@ export const EmergentPlanCard = memo(function EmergentPlanCard({
             variant="secondary"
             size="sm"
             onClick={onOpenWorkspace}
-            className="h-7 shrink-0 gap-1.5 rounded-lg border border-primary/25 bg-primary/10 px-2.5 text-[11px] text-primary hover:bg-primary/20"
+            className="h-7 shrink-0 gap-1.5 rounded-xl border border-primary/35 bg-primary/15 px-3 text-[11px] font-semibold text-primary shadow-sm hover:bg-primary/25"
           >
             <Code2 className="h-3.5 w-3.5" />
             <span>{fileCount > 0 ? 'Buka IDE (' + fileCount + ')' : 'Buka IDE'}</span>
@@ -101,25 +101,28 @@ export const EmergentPlanCard = memo(function EmergentPlanCard({
         )}
       </div>
 
-      <div className="space-y-2.5 px-4 py-3">
+      <div className="space-y-3 px-4 py-3">
         <div className="flex flex-wrap items-center gap-1.5">
           {plan.stack.map((tech) => (
             <span
               key={tech}
-              className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
+              className="inline-flex items-center gap-1 rounded-lg border border-border/75 bg-background/80 px-2 py-0.5 font-mono text-[10px] text-muted-foreground shadow-sm"
             >
               <Sparkles className="h-2.5 w-2.5 text-primary" />
               {tech}
             </span>
           ))}
-          <span className="ml-auto font-mono text-[10px] tabular-nums text-muted-foreground">
+          <span className="ml-auto rounded-md border border-border/70 bg-background/75 px-2 py-0.5 font-mono text-[10px] font-medium tabular-nums text-muted-foreground">
             {completed}/{total} ({pct}%)
           </span>
         </div>
 
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+        <div className="h-2 w-full overflow-hidden rounded-full bg-muted/85 p-0.5">
           <div
-            className="h-full rounded-full bg-primary transition-[width] duration-300"
+            className={cn(
+              'h-full rounded-full bg-gradient-to-r from-primary/80 to-primary shadow-[0_0_12px_hsl(var(--primary)/0.45)] transition-[width] duration-300',
+              plan.status === 'building' && 'chat-shimmer-track'
+            )}
             style={{ width: pct + '%' }}
           />
         </div>
@@ -277,21 +280,21 @@ export const EmergentClarificationCard = memo(function EmergentClarificationCard
   const isLocked = Boolean(clarification.submitted);
 
   return (
-    <div className="my-2.5 overflow-hidden rounded-2xl border border-primary/35 bg-card/90 shadow-md">
-      <div className="flex flex-wrap items-start justify-between gap-2.5 border-b border-border/70 bg-gradient-to-r from-primary/12 via-primary/5 to-transparent px-4 py-3">
+    <div className="chat-card-surface my-2.5 overflow-hidden rounded-2xl border border-primary/40 ring-1 ring-primary/10">
+      <div className="flex flex-wrap items-start justify-between gap-2.5 border-b border-border/70 bg-gradient-to-r from-primary/[0.13] via-primary/[0.04] to-transparent px-4 py-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-primary/20 text-primary">
+            <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl border border-primary/30 bg-primary/15 text-primary shadow-sm">
               <Wand2 className="h-3.5 w-3.5" />
             </span>
-            <span className="text-xs font-semibold text-foreground sm:text-sm">
+            <span className="text-xs font-semibold tracking-tight text-foreground sm:text-sm">
               {clarification.title}
             </span>
             <span
               className={cn(
                 'rounded-full border px-2 py-0.5 font-mono text-[10px] font-semibold',
                 isLocked
-                  ? 'border-emerald-500/35 bg-emerald-500/15 text-emerald-400'
+                  ? 'border-emerald-500/35 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
                   : 'border-primary/35 bg-primary/15 text-primary'
               )}
             >
@@ -299,7 +302,7 @@ export const EmergentClarificationCard = memo(function EmergentClarificationCard
             </span>
           </div>
           {clarification.subtitle && (
-            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted-foreground">
               {clarification.subtitle}
             </p>
           )}
@@ -312,7 +315,7 @@ export const EmergentClarificationCard = memo(function EmergentClarificationCard
             size="sm"
             disabled={isStreaming}
             onClick={applyAllRecommended}
-            className="h-7 shrink-0 gap-1 rounded-lg border-emerald-500/35 bg-emerald-500/10 px-2.5 text-[11px] text-emerald-300 hover:bg-emerald-500/20"
+            className="h-7 shrink-0 gap-1 rounded-xl border-emerald-500/35 bg-emerald-500/10 px-2.5 text-[11px] font-medium text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300"
           >
             <Sparkles className="h-3 w-3" />
             <span>Pilih Rekomendasi</span>
@@ -321,10 +324,12 @@ export const EmergentClarificationCard = memo(function EmergentClarificationCard
       </div>
 
       {clarification.recommendation && (
-        <div className="flex items-start gap-2 border-b border-border/60 bg-emerald-500/[0.06] px-4 py-2.5 text-[11.5px] leading-relaxed text-emerald-200/95">
-          <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
+        <div className="flex items-start gap-2.5 border-b border-border/65 bg-emerald-500/[0.07] px-4 py-2.5 text-[11.5px] leading-relaxed text-emerald-900 dark:text-emerald-200/95">
+          <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
           <div>
-            <span className="font-semibold text-emerald-300">Saran Emergent E1: </span>
+            <span className="font-semibold text-emerald-700 dark:text-emerald-300">
+              Saran Emergent E1:{' '}
+            </span>
             <span>{clarification.recommendation}</span>
           </div>
         </div>
@@ -363,7 +368,7 @@ export const EmergentClarificationCard = memo(function EmergentClarificationCard
                 </div>
 
                 {q.options && q.options.length > 0 && (
-                  <div className="grid gap-1.5 sm:grid-cols-2">
+                  <div className="grid gap-2 sm:grid-cols-2">
                     {q.options.map((opt) => {
                       const active = chosen.includes(opt.id);
                       return (
@@ -373,15 +378,15 @@ export const EmergentClarificationCard = memo(function EmergentClarificationCard
                           disabled={isStreaming}
                           onClick={() => toggleOption(q.id, opt.id, q.type)}
                           className={cn(
-                            'group flex items-start gap-2 rounded-xl border px-3 py-2 text-left transition-all',
+                            'group flex items-start gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-all',
                             active
-                              ? 'border-primary/70 bg-primary/15 text-foreground shadow-sm'
-                              : 'border-border/70 bg-background/55 text-muted-foreground hover:border-primary/35 hover:bg-accent/40 hover:text-foreground'
+                              ? 'border-primary/70 bg-primary/15 text-foreground shadow-sm ring-1 ring-primary/25'
+                              : 'border-border/75 bg-background/65 text-muted-foreground hover:border-primary/40 hover:bg-accent/45 hover:text-foreground'
                           )}
                         >
                           <span
                             className={cn(
-                              'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center border text-[10px]',
+                              'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center border text-[10px] transition-colors',
                               q.type === 'single' ? 'rounded-full' : 'rounded-md',
                               active
                                 ? 'border-primary bg-primary text-primary-foreground'
@@ -396,7 +401,7 @@ export const EmergentClarificationCard = memo(function EmergentClarificationCard
                                 {opt.label}
                               </span>
                               {opt.recommended && (
-                                <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-emerald-400">
+                                <span className="rounded-md border border-emerald-500/30 bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-emerald-700 dark:text-emerald-300">
                                   Recommended
                                 </span>
                               )}

@@ -781,7 +781,7 @@ export const ChatComposer = memo(function ChatComposer({
 
   return (
     <div
-      className="relative mx-auto w-full max-w-3xl px-3 pb-3 pt-1.5 sm:px-4 sm:pb-4"
+      className="chat-composer-region relative mx-auto w-full max-w-3xl px-3 pb-3 pt-1.5 sm:px-4 sm:pb-4"
       onDragOver={(e) => {
         if (!e.dataTransfer?.types?.includes('Files')) return;
         e.preventDefault();
@@ -840,7 +840,7 @@ export const ChatComposer = memo(function ChatComposer({
       </AnimatePresence>
 
       <div
-        className={cn(
+        className={cn('chat-composer-dock', 
           'rounded-2xl border border-border/90 bg-card/95 p-2.5 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.45)] transition-all focus-within:border-primary/60 focus-within:ring-2 focus-within:ring-primary/20 sm:p-3',
           isDragging && 'border-primary ring-2 ring-primary/30'
         )}
@@ -1043,7 +1043,7 @@ export const ChatComposer = memo(function ChatComposer({
                   ? 'Deskripsikan aplikasi yang ingin dibangun Emergent Agent...'
                   : `Tanya ${model}...`
             }
-            className="min-h-[42px] w-full resize-none overflow-hidden border-0 bg-transparent px-2 py-2 text-[15px] leading-relaxed shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+            className="chat-composer-textarea min-h-[42px] w-full resize-none overflow-hidden border-0 bg-transparent px-2 py-2 text-[15px] leading-relaxed shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
           />
         </StudioScroll>
 
@@ -1427,7 +1427,7 @@ export const ChatComposer = memo(function ChatComposer({
                   whileHover={{ scale: 1.03 }}
                   whileTap={{ scale: 0.94 }}
                   transition={{ type: 'spring', stiffness: 450, damping: 28 }}
-                  className="group relative inline-flex h-9 items-center gap-2 rounded-xl border border-rose-500/45 bg-rose-500/15 px-3.5 text-xs font-semibold text-rose-400 shadow-[0_0_20px_-5px_rgba(244,63,94,0.5)] transition-colors hover:border-rose-500/80 hover:bg-rose-500/25 hover:text-rose-300"
+                  className="group relative inline-flex h-9 items-center gap-2 rounded-xl border border-rose-500/45 bg-rose-500/15 px-3.5 text-xs font-semibold text-rose-400 shadow-[0_0_20px_-5px_rgba(244,63,94,0.5)] transition-colors hover:border-rose-500/80 hover:bg-rose-500/25 hover:text-rose-700 dark:text-rose-300"
                   aria-label="Hentikan respon AI"
                 >
                   <span className="relative flex h-4 w-4 items-center justify-center">
@@ -1474,7 +1474,7 @@ export const ChatComposer = memo(function ChatComposer({
         </div>
       </div>
 
-      <div className="mt-1.5 flex items-center justify-between px-1 text-[10px] text-muted-foreground sm:text-[11px]">
+      <div className="chat-composer-toolbar mt-1.5 flex items-center justify-between px-1 text-[10px] text-muted-foreground sm:text-[11px]">
         <span className="inline-flex items-center gap-1 truncate">
           <Sparkles className="h-3 w-3 shrink-0 text-primary" />
           <span className="truncate font-mono">{model}</span>

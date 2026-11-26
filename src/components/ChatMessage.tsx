@@ -1,10 +1,14 @@
 import { memo, useEffect, useMemo, useState } from 'react';
 import {
+  Activity,
   AlertCircle,
+  ArrowUpRight,
   Check,
   ChevronDown,
   ChevronRight,
+  Clock,
   Copy,
+  Cpu,
   Crosshair,
   FileAudio,
   FileCode2,
@@ -133,7 +137,7 @@ export const ChatMessage = memo(function ChatMessage({
       : '';
 
     return (
-      <div className="group flex w-full min-w-0 justify-end gap-2.5 sm:gap-3">
+      <div className="group flex w-full min-w-0 justify-end gap-2.5 sm:gap-3.5">
         <div
           className={cn(
             'min-w-0 space-y-2',
@@ -146,16 +150,19 @@ export const ChatMessage = memo(function ChatMessage({
             <div className="flex flex-wrap justify-end gap-2">
               {message.attachments.map((att) =>
                 att.kind === 'image' && att.previewUrl ? (
-                  <div key={att.id} className="relative overflow-hidden rounded-xl border shadow-sm">
+                  <div
+                    key={att.id}
+                    className="group/img relative overflow-hidden rounded-2xl border border-border/80 bg-card shadow-md ring-1 ring-inset ring-foreground/[0.05]"
+                  >
                     <button
                       type="button"
                       onClick={() => onPreviewImage(att.previewUrl!)}
-                      className="block transition-transform hover:scale-[1.02]"
+                      className="block transition-transform duration-300 group-hover/img:scale-[1.03]"
                     >
-                      <img src={att.previewUrl} alt={att.name} className="max-h-48 object-cover" />
+                      <img src={att.previewUrl} alt={att.name} className="max-h-52 object-cover" />
                     </button>
                     {typeof att.tokenCount === 'number' && (
-                      <span className="absolute bottom-1.5 right-1.5 rounded-md bg-black/75 px-1.5 py-0.5 font-mono text-[10px] text-white backdrop-blur-sm">
+                      <span className="absolute bottom-2 right-2 rounded-lg border border-white/15 bg-black/75 px-2 py-0.5 font-mono text-[10px] text-white backdrop-blur-md">
                         {att.tokenExact ? '' : '~'}
                         {att.tokenCount.toLocaleString()} tok
                       </span>
@@ -164,22 +171,27 @@ export const ChatMessage = memo(function ChatMessage({
                 ) : (
                   <div
                     key={att.id}
-                    className="inline-flex max-w-full items-center gap-2 rounded-xl border bg-card px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm"
+                    className="chat-card-surface inline-flex max-w-full items-center gap-2 rounded-xl border border-border/80 px-3 py-1.5 text-xs text-muted-foreground"
                   >
-                    {att.kind === 'video' ? (
-                      <FileVideo className="h-3.5 w-3.5 shrink-0 text-primary" />
-                    ) : att.kind === 'audio' ? (
-                      <FileAudio className="h-3.5 w-3.5 shrink-0 text-primary" />
-                    ) : att.kind === 'pdf' ? (
-                      <FileText className="h-3.5 w-3.5 shrink-0 text-rose-400" />
-                    ) : (
-                      <FileCode2 className="h-3.5 w-3.5 shrink-0 text-primary" />
-                    )}
-                    <span className="max-w-[160px] truncate font-mono text-foreground">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background/80">
+                      {att.kind === 'video' ? (
+                        <FileVideo className="h-3.5 w-3.5 text-primary" />
+                      ) : att.kind === 'audio' ? (
+                        <FileAudio className="h-3.5 w-3.5 text-primary" />
+                      ) : att.kind === 'pdf' ? (
+                        <FileText className="h-3.5 w-3.5 text-rose-500" />
+                      ) : (
+                        <FileCode2 className="h-3.5 w-3.5 text-primary" />
+                      )}
+                    </span>
+                    <span className="max-w-[160px] truncate font-mono text-[11.5px] font-medium text-foreground">
                       {att.name}
                     </span>
                     {typeof att.tokenCount === 'number' && (
-                      <Badge variant="secondary" className="px-1.5 py-0 font-mono text-[10px]">
+                      <Badge
+                        variant="secondary"
+                        className="rounded-md px-1.5 py-0 font-mono text-[10px] tabular-nums"
+                      >
                         {att.tokenExact ? '' : '~'}
                         {att.tokenCount.toLocaleString()} tok
                       </Badge>
@@ -191,45 +203,59 @@ export const ChatMessage = memo(function ChatMessage({
           )}
 
           {isEditing ? (
-            <div className="w-full min-w-[240px] space-y-2 rounded-2xl border bg-card p-3 shadow-lg sm:min-w-[420px]">
+            <div className="chat-card-surface w-full min-w-[240px] space-y-2.5 rounded-2xl border border-primary/45 p-3.5 ring-1 ring-primary/20 sm:min-w-[440px]">
               <Textarea
                 autoFocus
                 rows={3}
                 value={editDraft}
                 onChange={(e) => setEditDraft(e.target.value)}
-                className="text-sm"
-              />
-              <div className="flex justify-end gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    handleSaveEdit();
+                  } else if (e.key === 'Escape') {
                     setIsEditing(false);
                     setEditDraft(message.content);
-                  }}
-                >
-                  Batal
-                </Button>
-                <Button type="button" size="sm" onClick={handleSaveEdit}>
-                  Simpan & Kirim Ulang
-                </Button>
+                  }
+                }}
+                className="resize-y border-border/80 bg-background/70 text-sm leading-relaxed"
+              />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="hidden font-mono text-[10px] text-muted-foreground sm:inline">
+                  ⌘/Ctrl+Enter simpan · Esc batal
+                </span>
+                <div className="ml-auto flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setIsEditing(false);
+                      setEditDraft(message.content);
+                    }}
+                  >
+                    Batal
+                  </Button>
+                  <Button type="button" size="sm" onClick={handleSaveEdit}>
+                    Simpan & Kirim Ulang
+                  </Button>
+                </div>
               </div>
             </div>
           ) : (
             <div className="relative min-w-0">
               <div
                 className={cn(
-                  'min-w-0 overflow-hidden rounded-2xl rounded-tr-sm border border-border/70 bg-secondary/90 px-4 text-[15px] leading-relaxed text-secondary-foreground shadow-sm',
-                  compact ? 'py-2.5' : 'py-3'
+                  'chat-user-surface min-w-0 overflow-hidden rounded-2xl rounded-tr-md border border-border/80 px-4 text-[15px] leading-relaxed text-foreground',
+                  compact ? 'py-2.5' : 'py-3.5'
                 )}
               >
                 {message.visualTarget && (
-                  <div className="mb-3 overflow-hidden rounded-xl border border-primary/30 bg-background/50">
+                  <div className="mb-3 overflow-hidden rounded-xl border border-primary/30 bg-background/60">
                     <button
                       type="button"
                       onClick={() => setTargetCodeOpen((o) => !o)}
-                      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/10"
+                      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
                     >
                       <span className="flex min-w-0 items-center gap-1.5">
                         <Crosshair className="h-3.5 w-3.5 shrink-0" />
@@ -267,38 +293,46 @@ export const ChatMessage = memo(function ChatMessage({
                 )}
               </div>
 
-              {onEditUserMessage && (
-                <div className="mt-1 flex justify-end gap-1 opacity-80 transition-opacity md:opacity-0 md:group-hover:opacity-100">
+              <div className="mt-1.5 flex justify-end opacity-90 transition-opacity duration-150 md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100">
+                <div className="chat-action-dock inline-flex items-center gap-0.5 rounded-xl border border-border/70 p-0.5 backdrop-blur-sm">
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
                     onClick={handleCopy}
-                    className="h-6 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                    className="h-6 gap-1 rounded-lg px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                    title="Salin pesan"
                   >
-                    <Copy className="h-3 w-3" />
+                    {copied ? (
+                      <Check className="h-3 w-3 text-emerald-500" />
+                    ) : (
+                      <Copy className="h-3 w-3" />
+                    )}
+                    <span>{copied ? 'Disalin' : 'Salin'}</span>
                   </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setEditDraft(message.content);
-                      setIsEditing(true);
-                    }}
-                    className="h-6 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-                  >
-                    <Pencil className="h-3 w-3" />
-                    Edit
-                  </Button>
+                  {onEditUserMessage && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setEditDraft(message.content);
+                        setIsEditing(true);
+                      }}
+                      className="h-6 gap-1 rounded-lg px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                    >
+                      <Pencil className="h-3 w-3" />
+                      <span>Edit</span>
+                    </Button>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           )}
         </div>
 
-        <Avatar className="mt-0.5 h-7 w-7 shrink-0 border sm:h-8 sm:w-8">
-          <AvatarFallback className="bg-primary/15 text-primary">
+        <Avatar className="mt-0.5 h-7 w-7 shrink-0 border border-primary/30 shadow-sm ring-2 ring-primary/15 sm:h-8 sm:w-8">
+          <AvatarFallback className="bg-gradient-to-br from-primary/25 via-primary/15 to-primary/5 text-primary">
             <User className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
           </AvatarFallback>
         </Avatar>
@@ -320,27 +354,60 @@ export const ChatMessage = memo(function ChatMessage({
 
   return (
     <div className="group flex w-full min-w-0 items-start gap-2.5 sm:gap-3.5">
-      <Avatar className="mt-0.5 h-7 w-7 shrink-0 border border-primary/25 bg-primary shadow-sm sm:h-8 sm:w-8">
-        <AvatarFallback className="bg-primary text-primary-foreground">
+      <Avatar
+        className={cn(
+          'mt-0.5 h-7 w-7 shrink-0 border border-primary/35 bg-primary transition-shadow sm:h-8 sm:w-8',
+          message.isStreaming
+            ? 'shadow-[0_0_24px_-4px_hsl(var(--primary)/0.65)] ring-2 ring-primary/35'
+            : 'shadow-sm ring-2 ring-primary/15'
+        )}
+      >
+        <AvatarFallback className="bg-gradient-to-br from-primary to-primary/80 text-primary-foreground">
           <BrandLogoMark
             className={cn('h-3.5 w-3.5 sm:h-4 sm:w-4', message.isStreaming && 'animate-pulse')}
           />
         </AvatarFallback>
       </Avatar>
 
-      <div className="min-w-0 flex-1 space-y-2.5 overflow-hidden">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-xs font-semibold tracking-tight text-foreground">
-            {message.model || 'gemini-4-hydrogen'}
+      <div className="min-w-0 flex-1 space-y-3 overflow-hidden">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+          <span className="inline-flex max-w-full items-center gap-1.5 rounded-xl border border-border/80 bg-card/90 px-2.5 py-0.5 text-xs font-semibold tracking-tight text-foreground shadow-sm">
+            <Cpu className="h-3 w-3 shrink-0 text-primary" />
+            <span className="truncate">{message.model || 'gemini-4-hydrogen'}</span>
           </span>
+
+          {message.starred && (
+            <Badge
+              variant="outline"
+              className="gap-1 border-amber-500/40 bg-amber-500/10 px-2 py-0 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+            >
+              <Star className="h-2.5 w-2.5 fill-amber-500 text-amber-500" />
+              Starred
+            </Badge>
+          )}
+
           {message.isDemo && (
-            <Badge variant="outline" className="text-[10px] font-normal">
+            <Badge variant="outline" className="px-2 py-0 text-[10px] font-normal">
               Demo SSE
             </Badge>
           )}
+
+          {message.stopped && !message.error && !message.isStreaming && (
+            <Badge
+              variant="outline"
+              className="border-amber-500/35 bg-amber-500/10 px-2 py-0 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+            >
+              Dihentikan
+            </Badge>
+          )}
+
           {message.isStreaming && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
-              <span className="h-1.5 w-1.5 animate-ping rounded-full bg-primary" />
+            <span className="inline-flex items-center gap-2 rounded-full border border-primary/35 bg-primary/10 px-2.5 py-0.5 text-[11px] font-medium text-primary shadow-sm">
+              <span className="flex h-3 items-end gap-[2px]">
+                <span className="chat-wave-bar h-2.5 w-[2px] rounded-full bg-primary [animation-delay:-0.3s]" />
+                <span className="chat-wave-bar h-3 w-[2px] rounded-full bg-primary [animation-delay:-0.15s]" />
+                <span className="chat-wave-bar h-2 w-[2px] rounded-full bg-primary" />
+              </span>
               {hasAnswerStarted ? 'Streaming' : 'Thinking'}
             </span>
           )}
@@ -381,10 +448,13 @@ export const ChatMessage = memo(function ChatMessage({
         ) : (
           message.isStreaming &&
           !thinkingEnabled && (
-            <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
-              <span className="h-2 w-2 animate-bounce rounded-full bg-primary [animation-delay:-0.3s]" />
-              <span className="h-2 w-2 animate-bounce rounded-full bg-primary [animation-delay:-0.15s]" />
-              <span className="h-2 w-2 animate-bounce rounded-full bg-primary" />
+            <div className="inline-flex items-center gap-2.5 rounded-2xl border border-border/75 bg-card/70 px-3.5 py-2 text-xs text-muted-foreground">
+              <span className="flex h-3.5 items-end gap-[2.5px]">
+                <span className="chat-wave-bar h-3 w-[2.5px] rounded-full bg-primary [animation-delay:-0.3s]" />
+                <span className="chat-wave-bar h-3.5 w-[2.5px] rounded-full bg-primary [animation-delay:-0.15s]" />
+                <span className="chat-wave-bar h-2.5 w-[2.5px] rounded-full bg-primary" />
+              </span>
+              <span>Menyusun respons...</span>
             </div>
           )
         )}
@@ -393,22 +463,29 @@ export const ChatMessage = memo(function ChatMessage({
           ((message.grounding.sources && message.grounding.sources.length > 0) ||
             (message.grounding.urlContexts && message.grounding.urlContexts.length > 0) ||
             (message.grounding.webSearchQueries && message.grounding.webSearchQueries.length > 0)) && (
-            <div className="mt-2 rounded-xl border border-border/70 bg-card/50 px-3 py-2.5 text-xs">
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-semibold text-muted-foreground">
-                <span className="inline-flex items-center gap-1.5">
-                  <Globe className="h-3.5 w-3.5 text-primary" />
-                  Sumber Grounding & URL Context
+            <div className="chat-card-surface mt-2 overflow-hidden rounded-2xl border border-border/80 px-3.5 py-3 text-xs">
+              <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px] font-semibold text-foreground/90">
+                <span className="inline-flex items-center gap-2">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-md border border-primary/25 bg-primary/15 text-primary">
+                    <Globe className="h-3 w-3" />
+                  </span>
+                  <span>Sumber Grounding & URL Context</span>
+                  {message.grounding.sources && message.grounding.sources.length > 0 && (
+                    <Badge variant="secondary" className="px-1.5 py-0 font-mono text-[10px]">
+                      {message.grounding.sources.length}
+                    </Badge>
+                  )}
                 </span>
                 {message.grounding.webSearchQueries &&
                   message.grounding.webSearchQueries.length > 0 && (
-                    <span className="truncate font-mono text-[10px] opacity-80">
+                    <span className="max-w-full truncate rounded-lg border border-border/70 bg-background/75 px-2 py-0.5 font-mono text-[10px] font-normal text-muted-foreground">
                       Query: {message.grounding.webSearchQueries.slice(0, 2).join(' · ')}
                     </span>
                   )}
               </div>
 
               {message.grounding.urlContexts && message.grounding.urlContexts.length > 0 && (
-                <div className="mb-2 flex flex-wrap gap-1.5">
+                <div className="mb-2.5 flex flex-wrap gap-1.5">
                   {message.grounding.urlContexts.map((u, idx) => {
                     const isFailed = Boolean(
                       u.status && /error|fail|unsafe|unavailable|timeout/i.test(u.status)
@@ -420,15 +497,15 @@ export const ChatMessage = memo(function ChatMessage({
                         target="_blank"
                         rel="noopener noreferrer"
                         className={cn(
-                          'inline-flex max-w-full items-center gap-1 rounded-lg border px-2 py-0.5 text-[11px]',
+                          'inline-flex max-w-full items-center gap-1.5 rounded-xl border px-2.5 py-1 text-[11px] transition-colors',
                           isFailed
-                            ? 'border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
-                            : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'
+                            ? 'border-amber-500/35 bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:text-amber-300'
+                            : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300'
                         )}
                         title={u.status || u.url}
                       >
                         <Link2 className="h-3 w-3 shrink-0" />
-                        <span className="max-w-[200px] truncate">{u.url}</span>
+                        <span className="max-w-[220px] truncate">{u.url}</span>
                         {isFailed && (
                           <span className="rounded bg-amber-500/20 px-1 text-[9px] font-semibold">
                             Gagal
@@ -441,7 +518,7 @@ export const ChatMessage = memo(function ChatMessage({
               )}
 
               {message.grounding.sources && message.grounding.sources.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
+                <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
                   {message.grounding.sources.map((src, idx) => {
                     let host = src.uri;
                     try {
@@ -455,13 +532,21 @@ export const ChatMessage = memo(function ChatMessage({
                         href={src.uri}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex max-w-[260px] items-center gap-1.5 rounded-lg border border-border/80 bg-background/60 px-2 py-1 text-[11px] text-foreground/90 transition-colors hover:border-primary/40 hover:text-primary"
+                        className="group/src flex min-w-0 items-center gap-2 rounded-xl border border-border/75 bg-background/75 px-2.5 py-2 text-[11px] text-foreground/90 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/45 hover:bg-accent/40"
                         title={src.title || src.uri}
                       >
-                        <span className="rounded bg-primary/15 px-1 font-mono text-[9px] font-semibold text-primary">
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/15 font-mono text-[10px] font-semibold text-primary">
                           {idx + 1}
                         </span>
-                        <span className="truncate">{src.title || host}</span>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium text-foreground group-hover/src:text-primary">
+                            {src.title || host}
+                          </div>
+                          <div className="truncate font-mono text-[9.5px] text-muted-foreground">
+                            {host}
+                          </div>
+                        </div>
+                        <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-50 transition-all group-hover/src:translate-x-0.5 group-hover/src:-translate-y-0.5 group-hover/src:text-primary group-hover/src:opacity-100" />
                       </a>
                     );
                   })}
@@ -477,13 +562,19 @@ export const ChatMessage = memo(function ChatMessage({
                 key={art.id}
                 type="button"
                 onClick={() => onOpenArtifact(art)}
-                className="inline-flex max-w-full items-center gap-2 rounded-xl border bg-card/90 px-3 py-2 text-xs font-medium shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/50 hover:bg-accent/50"
+                className="chat-card-surface group/art inline-flex max-w-full items-center gap-2.5 rounded-2xl border border-border/80 px-3.5 py-2 text-xs font-medium transition-all hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md"
               >
-                <Layers className="h-3.5 w-3.5 shrink-0 text-primary" />
-                <span className="truncate">{art.title}</span>
-                <Badge variant="secondary" className="shrink-0 px-1.5 py-0 font-mono text-[10px]">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl border border-primary/25 bg-primary/15 text-primary transition-colors group-hover/art:bg-primary group-hover/art:text-primary-foreground">
+                  <Layers className="h-3.5 w-3.5" />
+                </span>
+                <span className="truncate font-semibold text-foreground">{art.title}</span>
+                <Badge
+                  variant="secondary"
+                  className="shrink-0 rounded-md px-1.5 py-0 font-mono text-[10px] uppercase"
+                >
                   {art.language}
                 </Badge>
+                <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-hover/art:translate-x-0.5 group-hover/art:-translate-y-0.5 group-hover/art:text-primary" />
               </button>
             ))}
           </div>
@@ -550,118 +641,153 @@ export const ChatMessage = memo(function ChatMessage({
         )}
 
         {!message.isStreaming && (
-          <div className="flex flex-wrap items-center gap-1 pt-1 text-xs text-muted-foreground">
-            {message.content && (
-              <>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleCopy}
-                  className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-                >
-                  {copied ? (
-                    <>
-                      <Check className="h-3.5 w-3.5 text-emerald-500" />
-                      <span>Copied</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="h-3.5 w-3.5" />
-                      <span>Copy</span>
-                    </>
-                  )}
-                </Button>
-
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleReadAloud}
-                  className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-                >
-                  {speaking ? (
-                    <>
-                      <Square className="h-3 w-3 fill-current text-primary" />
-                      <span>Stop</span>
-                    </>
-                  ) : (
-                    <>
-                      <Volume2 className="h-3.5 w-3.5" />
-                      <span>Read</span>
-                    </>
-                  )}
-                </Button>
-
-                {onToggleStar && (
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs text-muted-foreground">
+            <div className="chat-action-dock inline-flex flex-wrap items-center gap-0.5 rounded-xl border border-border/75 p-0.5 backdrop-blur-sm">
+              {message.content && (
+                <>
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
-                    onClick={() => onToggleStar(message.id)}
+                    onClick={handleCopy}
+                    className="h-7 gap-1 rounded-lg px-2 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    {copied ? (
+                      <>
+                        <Check className="h-3.5 w-3.5 text-emerald-500" />
+                        <span>Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3.5 w-3.5" />
+                        <span>Copy</span>
+                      </>
+                    )}
+                  </Button>
+
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleReadAloud}
                     className={cn(
-                      'h-7 gap-1 px-2 text-xs hover:text-foreground',
-                      message.starred ? 'text-amber-400' : 'text-muted-foreground'
+                      'h-7 gap-1 rounded-lg px-2 text-xs hover:text-foreground',
+                      speaking ? 'bg-primary/15 text-primary' : 'text-muted-foreground'
                     )}
                   >
-                    <Star className={cn('h-3.5 w-3.5', message.starred && 'fill-amber-400')} />
-                    <span>{message.starred ? 'Starred' : 'Star'}</span>
+                    {speaking ? (
+                      <>
+                        <Square className="h-3 w-3 fill-current text-primary" />
+                        <span>Stop</span>
+                      </>
+                    ) : (
+                      <>
+                        <Volume2 className="h-3.5 w-3.5" />
+                        <span>Read</span>
+                      </>
+                    )}
                   </Button>
-                )}
-              </>
-            )}
 
-            {onForkFromMessage && message.content && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => onForkFromMessage(message.id)}
-                className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-              >
-                <GitBranch className="h-3.5 w-3.5" />
-                <span>Fork</span>
-              </Button>
-            )}
+                  {onToggleStar && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onToggleStar(message.id)}
+                      className={cn(
+                        'h-7 gap-1 rounded-lg px-2 text-xs hover:text-foreground',
+                        message.starred
+                          ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                          : 'text-muted-foreground'
+                      )}
+                    >
+                      <Star
+                        className={cn(
+                          'h-3.5 w-3.5',
+                          message.starred && 'fill-amber-500 text-amber-500'
+                        )}
+                      />
+                      <span>{message.starred ? 'Starred' : 'Star'}</span>
+                    </Button>
+                  )}
+                </>
+              )}
 
-            {isLastAssistant && onContinue && canContinue && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={onContinue}
-                className="h-7 gap-1 px-2 text-xs font-medium text-primary hover:bg-primary/10 hover:text-primary"
-                title="Lanjutkan dari state terakhir tanpa mengulang dari awal"
-              >
-                <Play className="h-3 w-3 fill-current" />
-                <span>Continue</span>
-              </Button>
-            )}
+              {onForkFromMessage && message.content && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onForkFromMessage(message.id)}
+                  className="h-7 gap-1 rounded-lg px-2 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <GitBranch className="h-3.5 w-3.5" />
+                  <span>Fork</span>
+                </Button>
+              )}
 
-            {isLastAssistant && onRegenerate && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={onRegenerate}
-                className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-                <span>Regenerate</span>
-              </Button>
-            )}
+              {isLastAssistant && onContinue && canContinue && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={onContinue}
+                  className="h-7 gap-1 rounded-lg bg-primary/15 px-2.5 text-xs font-medium text-primary hover:bg-primary/25 hover:text-primary"
+                  title="Lanjutkan dari state terakhir tanpa mengulang dari awal"
+                >
+                  <Play className="h-3 w-3 fill-current" />
+                  <span>Continue</span>
+                </Button>
+              )}
+
+              {isLastAssistant && onRegenerate && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={onRegenerate}
+                  className="h-7 gap-1 rounded-lg px-2 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>Regenerate</span>
+                </Button>
+              )}
+            </div>
 
             {(message.usage?.totalTokenCount || message.metrics?.ttftMs) && (
-              <div className="ml-auto flex flex-wrap items-center gap-2 font-mono text-[10px] opacity-80">
+              <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
                 {message.metrics?.ttftMs && (
-                  <span className="inline-flex items-center gap-1">
-                    <Zap className="h-3 w-3 text-amber-400" />
+                  <span
+                    title="Time to First Token"
+                    className="inline-flex items-center gap-1 rounded-lg border border-border/70 bg-card/75 px-2 py-0.5 tabular-nums"
+                  >
+                    <Zap className="h-3 w-3 text-amber-500" />
                     {message.metrics.ttftMs}ms
                   </span>
                 )}
-                {message.metrics?.tokensPerSec && <span>{message.metrics.tokensPerSec} tok/s</span>}
+                {message.metrics?.tokensPerSec && (
+                  <span
+                    title="Kecepatan Generasi"
+                    className="inline-flex items-center gap-1 rounded-lg border border-border/70 bg-card/75 px-2 py-0.5 tabular-nums"
+                  >
+                    <Activity className="h-3 w-3 text-emerald-500" />
+                    {message.metrics.tokensPerSec} tok/s
+                  </span>
+                )}
+                {message.metrics?.durationMs && (
+                  <span
+                    title="Durasi Total"
+                    className="hidden items-center gap-1 rounded-lg border border-border/70 bg-card/75 px-2 py-0.5 tabular-nums sm:inline-flex"
+                  >
+                    <Clock className="h-3 w-3 text-muted-foreground" />
+                    {(message.metrics.durationMs / 1000).toFixed(1)}s
+                  </span>
+                )}
                 {message.usage?.totalTokenCount && (
-                  <span>
+                  <span
+                    title="Input / Output Token & Estimasi Biaya"
+                    className="inline-flex items-center gap-1 rounded-lg border border-border/70 bg-card/75 px-2 py-0.5 tabular-nums"
+                  >
                     {message.usage.promptTokenCount ?? 0}/{message.usage.candidatesTokenCount ?? 0}
                     {costLabel ? ` • ${costLabel}` : ''}
                   </span>

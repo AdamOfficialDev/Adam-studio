@@ -123,7 +123,7 @@ function CodeBlock({ language, code, isStreaming, onOpenArtifact }: CodeBlockPro
   };
 
   return (
-    <div className="my-4 w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-zinc-800/90 bg-[#0b0d12] text-zinc-100 shadow-xl">
+    <div className="my-4 w-full min-w-0 max-w-full overflow-hidden rounded-2xl border border-zinc-800/90 bg-[#0b0d12] text-zinc-100 shadow-xl ring-1 ring-white/[0.06]">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 bg-zinc-900/90 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="hidden items-center gap-1.5 sm:flex">
@@ -342,52 +342,60 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
             );
           },
           h1({ children }) {
-            return <h1 className="mt-5 text-xl font-bold tracking-tight first:mt-0">{children}</h1>;
+            return (
+              <h1 className="mt-6 border-b border-border/55 pb-2 text-xl font-bold tracking-tight first:mt-0">
+                {children}
+              </h1>
+            );
           },
           h2({ children }) {
-            return <h2 className="mt-4 text-lg font-semibold tracking-tight first:mt-0">{children}</h2>;
+            return (
+              <h2 className="mt-5 text-lg font-semibold tracking-tight first:mt-0">
+                {children}
+              </h2>
+            );
           },
           h3({ children }) {
-            return <h3 className="mt-3 text-base font-semibold first:mt-0">{children}</h3>;
+            return <h3 className="mt-4 text-base font-semibold first:mt-0">{children}</h3>;
           },
           p({ children }) {
-            return <p className="leading-7 [&:not(:first-child)]:mt-2.5">{children}</p>;
+            return <p className="leading-[1.75] [&:not(:first-child)]:mt-2.5">{children}</p>;
           },
           ul({ children }) {
-            return <ul className="my-2 ml-5 list-disc space-y-1.5">{children}</ul>;
+            return <ul className="my-2.5 ml-5 list-disc space-y-1.5 marker:text-primary/70">{children}</ul>;
           },
           ol({ children }) {
-            return <ol className="my-2 ml-5 list-decimal space-y-1.5">{children}</ol>;
+            return <ol className="my-2.5 ml-5 list-decimal space-y-1.5 marker:font-mono marker:text-xs marker:text-primary/80">{children}</ol>;
           },
           li({ children }) {
-            return <li className="leading-7">{children}</li>;
+            return <li className="leading-[1.7]">{children}</li>;
           },
           blockquote({ children }) {
             return (
-              <blockquote className="my-3 rounded-r-xl border-l-2 border-primary bg-muted/35 py-2 pl-4 pr-3 text-muted-foreground">
+              <blockquote className="my-3.5 rounded-r-2xl border-l-[3px] border-primary/80 bg-gradient-to-r from-primary/[0.08] via-muted/35 to-transparent py-2.5 pl-4 pr-3.5 text-muted-foreground">
                 {children}
               </blockquote>
             );
           },
           table({ children }) {
             return (
-              <div className="my-3 w-full max-w-full overflow-x-auto rounded-xl border bg-card/50 shadow-sm">
+              <div className="chat-card-surface my-3.5 w-full max-w-full overflow-x-auto rounded-2xl border border-border/80">
                 <table className="w-full border-collapse text-left text-sm">{children}</table>
               </div>
             );
           },
           thead({ children }) {
             return (
-              <thead className="bg-muted/70 text-[11px] uppercase tracking-wider text-muted-foreground">
+              <thead className="bg-muted/75 text-[11px] uppercase tracking-wider text-muted-foreground">
                 {children}
               </thead>
             );
           },
           th({ children }) {
-            return <th className="border-b px-3.5 py-2.5 font-semibold">{children}</th>;
+            return <th className="border-b border-border/75 px-3.5 py-2.5 font-semibold">{children}</th>;
           },
           td({ children }) {
-            return <td className="border-b px-3.5 py-2.5 last:border-b-0">{children}</td>;
+            return <td className="border-b border-border/55 px-3.5 py-2.5 last:border-b-0">{children}</td>;
           },
           a({ href, children }) {
             return (
@@ -395,7 +403,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
                 href={href}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="break-all font-medium text-primary underline underline-offset-4 hover:opacity-80"
+                className="break-words [overflow-wrap:anywhere] font-medium text-primary underline decoration-primary/40 underline-offset-4 transition-colors hover:decoration-primary"
               >
                 {children}
               </a>
