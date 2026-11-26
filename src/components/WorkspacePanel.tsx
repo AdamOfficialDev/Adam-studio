@@ -167,7 +167,43 @@ function renderHighlightedText(text: string, query: string) {
 }
 const LazyCodeMirrorEditor = lazy(() => import('@/components/CodeMirrorEditor'));
 
+const TERMINAL_ENTRIES_STORAGE_KEY = 'adam_emergent_terminal_entries_v1';
+const TERMINAL_HISTORY_STORAGE_KEY = 'adam_emergent_cmd_history_v1';
+
+const DEFAULT_TERMINAL_WELCOME: TerminalEntry = {
+  id: 'init-welcome',
+  kind: 'system',
+  output: 'Daytona Cloud Terminal siap. Klik "Run in Daytona", pilih Quick Command, atau ketik perintah bash di bawah.',
+  timestamp: Date.now(),
+};
+
+function loadPersistedTerminalEntries(): TerminalEntry[] {
+  try {
+    const raw = localStorage.getItem(TERMINAL_ENTRIES_STORAGE_KEY);
+    if (!raw) return [DEFAULT_TERMINAL_WELCOME];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed.slice(-80);
+    }
+  } catch {
+    // Abaikan error parse storage
+  }
+  return [DEFAULT_TERMINAL_WELCOME];
+}
+
+function loadPersistedCmdHistory(): string[] {
+  try {
+    const raw = localStorage.getItem(TERMINAL_HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.slice(0, 40) : [];
+  } catch {
+    return [];
+  }
+}
+
 interface WorkspacePanelProps {
+  isOpen?: boolean;
   workspace: VirtualWorkspace;
   githubProject?: GitHubProjectContext;
   githubToken?: string;
@@ -195,7 +231,28 @@ type ViewportSize = 'desktop' | 'tablet' | 'mobile';
 type WorkspaceTab = 'preview' | 'code' | 'terminal' | 'plan';
 type PreviewEngine = 'browser' | 'daytona';
 
+const DAYTONA_SANDBOX_STORAGE_KEY = 'adam_active_daytona_sandbox_id';
+
+function readStoredSandboxId(): string | undefined {
+  try {
+    const val = localStorage.getItem(DAYTONA_SANDBOX_STORAGE_KEY)?.trim();
+    return val || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeStoredSandboxId(id?: string) {
+  try {
+    if (id?.trim()) localStorage.setItem(DAYTONA_SANDBOX_STORAGE_KEY, id.trim());
+    else localStorage.removeItem(DAYTONA_SANDBOX_STORAGE_KEY);
+  } catch {
+    // Abaikan error storage
+  }
+}
+
 export const WorkspacePanel = memo(function WorkspacePanel({
+  isOpen = true,
   workspace,
   githubProject,
   githubToken,
@@ -212,6 +269,20 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   onClose,
 }: WorkspacePanelProps) {
   const [tab, setTab] = useState<WorkspaceTab>('preview');
+
+  const [cleaningSandboxes, setCleaningSandboxes] = useState(false);
+  const effectiveSandboxId = workspace.daytonaSandboxId || readStoredSandboxId();
+
+  useEffect(() => {
+    if (workspace.daytonaSandboxId) {
+      writeStoredSandboxId(workspace.daytonaSandboxId);
+    } else {
+      const savedId = readStoredSandboxId();
+      if (savedId) {
+        onUpdateSandbox?.({ sandboxId: savedId });
+      }
+    }
+  }, [workspace.daytonaSandboxId]);
   const [engine, setEngine] = useState<PreviewEngine>(() =>
     workspace.daytonaPreviewUrl ? 'daytona' : 'browser'
   );
@@ -233,15 +304,8 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   const [cmdStartedAt, setCmdStartedAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [terminalCmd, setTerminalCmd] = useState('');
-  const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>(() => [
-    {
-      id: 'init-welcome',
-      kind: 'system',
-      output: 'Daytona Cloud Terminal siap. Klik "Run in Daytona", pilih Quick Command, atau ketik perintah bash di bawah.',
-      timestamp: Date.now(),
-    },
-  ]);
-  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
+  const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>(loadPersistedTerminalEntries);
+  const [cmdHistory, setCmdHistory] = useState<string[]>(loadPersistedCmdHistory);
   const [historyIdx, setHistoryIdx] = useState<number>(-1);
   const [terminalSearch, setTerminalSearch] = useState('');
   const [showTerminalSearch, setShowTerminalSearch] = useState(false);
@@ -301,6 +365,28 @@ export const WorkspacePanel = memo(function WorkspacePanel({
     }, 100);
     return () => window.clearInterval(id);
   }, [runningCmd, deployingDaytona, cmdStartedAt]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        TERMINAL_ENTRIES_STORAGE_KEY,
+        JSON.stringify(terminalEntries.slice(-80))
+      );
+    } catch {
+      // Abaikan quota error
+    }
+  }, [terminalEntries]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        TERMINAL_HISTORY_STORAGE_KEY,
+        JSON.stringify(cmdHistory.slice(0, 40))
+      );
+    } catch {
+      // Abaikan quota error
+    }
+  }, [cmdHistory]);
 
   useEffect(() => {
     if (tab !== 'terminal') return;
@@ -427,7 +513,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         headers: sandboxHeaders(),
         body: JSON.stringify({
           action: 'deploy-preview',
-          sandboxId: workspace.daytonaSandboxId,
+          sandboxId: effectiveSandboxId,
           files: scaffolded,
           port: 5173,
         }),
@@ -446,6 +532,14 @@ export const WorkspacePanel = memo(function WorkspacePanel({
       if (data.devLogs) appendLog(data.devLogs);
       if (data.output) appendLog(data.output);
 
+      if (data.sandboxId) {
+        writeStoredSandboxId(data.sandboxId);
+        onUpdateSandbox?.({
+          sandboxId: data.sandboxId,
+          ...(data.previewUrl ? { previewUrl: data.previewUrl } : {}),
+          ...(data.previewToken ? { previewToken: data.previewToken } : {}),
+        });
+      }
       if (!res.ok || !data.ok) {
         const errLog = [data.message, data.output, data.installOutput, data.devLogs]
           .filter(Boolean)
@@ -494,7 +588,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         headers: sandboxHeaders(),
         body: JSON.stringify({
           action: 'clone-github',
-          sandboxId: workspace.daytonaSandboxId,
+          sandboxId: effectiveSandboxId,
           owner: githubProject.owner,
           repo: githubProject.repo,
           branch: githubProject.branch,
@@ -587,7 +681,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         headers: sandboxHeaders(),
         body: JSON.stringify({
           action: 'exec',
-          sandboxId: workspace.daytonaSandboxId,
+          sandboxId: effectiveSandboxId,
           command: cmd,
         }),
       });
@@ -643,17 +737,48 @@ export const WorkspacePanel = memo(function WorkspacePanel({
       setRunningCmdLabel('');
     }
   };
+  const handleCleanupExtraSandboxes = async () => {
+    if (cleaningSandboxes) return;
+    setCleaningSandboxes(true);
+    try {
+      const res = await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: sandboxHeaders(),
+        body: JSON.stringify({
+          action: 'cleanup-sandboxes',
+          sandboxId: effectiveSandboxId,
+        }),
+      });
+      const data = await safeParseSandboxJson<{
+        deleted?: number;
+        totalFound?: number;
+        keptSandboxId?: string;
+      }>(res);
+      if (data.keptSandboxId) {
+        writeStoredSandboxId(data.keptSandboxId);
+        onUpdateSandbox?.({ sandboxId: data.keptSandboxId });
+      }
+      toast.success(
+        `Selesai: ${data.deleted ?? 0} sandbox sisa dihapus (1 VM aktif dipertahankan).`
+      );
+    } catch {
+      toast.error('Gagal membersihkan sandbox sisa di Daytona');
+    } finally {
+      setCleaningSandboxes(false);
+    }
+  };
+
   const handleStopSandbox = async () => {
     if (!workspace.daytonaSandboxId) return;
     try {
       const res = await fetch('/api/sandbox', {
         method: 'POST',
         headers: sandboxHeaders(),
-        body: JSON.stringify({ action: 'stop', sandboxId: workspace.daytonaSandboxId }),
+        body: JSON.stringify({ action: 'stop', sandboxId: effectiveSandboxId }),
       });
       if (res.ok) {
         toast.success('Daytona VM dihentikan (hemat kredit)');
-        onUpdateSandbox?.({ sandboxId: workspace.daytonaSandboxId, previewUrl: undefined });
+        onUpdateSandbox?.({ sandboxId: effectiveSandboxId, previewUrl: undefined });
         setEngine('browser');
       }
     } catch {
@@ -726,7 +851,11 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   return (
     <aside
       ref={asideRef}
-      style={!isFullscreen ? { ['--ws-w' as string]: panelWidthPct + '%' } : undefined}
+      aria-hidden={!isOpen}
+      style={{
+        ...(!isFullscreen ? { ['--ws-w' as string]: panelWidthPct + '%' } : {}),
+        ...(isOpen ? {} : { display: 'none' }),
+      }}
       className={cn(
         'fixed inset-0 z-40 flex h-full min-w-0 flex-col border-l border-border/80 bg-card',
         !isFullscreen && 'md:static md:z-auto md:w-[var(--ws-w)] md:shrink-0',
@@ -1131,7 +1260,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
                 )}
               >
                 <iframe
-                  key={workspace.updatedAt + '-' + refreshNonce}
+                  key={'browser-' + refreshNonce}
                   title="Emergent Live Preview"
                   srcDoc={compiled.html}
                   sandbox="allow-scripts allow-modals allow-forms"
@@ -1411,6 +1540,22 @@ export const WorkspacePanel = memo(function WorkspacePanel({
                     <span className="hidden sm:inline">Stop VM</span>
                   </Button>
                 )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={cleaningSandboxes}
+                  onClick={() => void handleCleanupExtraSandboxes()}
+                  className="h-7 gap-1 rounded-lg border border-border/70 bg-background/60 px-2 text-[10px] text-muted-foreground hover:text-foreground"
+                  title="Hapus sandbox lama yang menumpuk di Daytona (sisakan 1 VM aktif)"
+                >
+                  {cleaningSandboxes ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3 w-3" />
+                  )}
+                  <span className="hidden sm:inline">Bersihkan VM Sisa</span>
+                </Button>
               </div>
             </div>
 

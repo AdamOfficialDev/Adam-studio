@@ -655,11 +655,130 @@ export async function deployAndPreviewDaytona({
   });
 }
 
+
+function resolveDaytonaBase(apiUrl) {
+  const raw = String(apiUrl || process.env.DAYTONA_API_URL || 'https://app.daytona.io/api').trim();
+  return raw.replace(/\/+$/, '');
+}
+
+async function listDaytonaSandboxes({ apiKey, apiUrl, signal }) {
+  const base = resolveDaytonaBase(apiUrl);
+  const res = await fetch(`${base}/sandbox`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: 'application/json',
+    },
+    signal,
+  });
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => []);
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.items)) return data.items;
+  if (Array.isArray(data?.sandboxes)) return data.sandboxes;
+  return [];
+}
+
+async function findReusableDaytonaSandbox({ apiKey, apiUrl, signal }) {
+  try {
+    const list = await listDaytonaSandboxes({ apiKey, apiUrl, signal });
+    if (!list.length) return '';
+
+    const normalized = list
+      .filter((s) => s && s.id)
+      .map((s) => ({
+        id: String(s.id),
+        name: String(s.name || ''),
+        state: String(s.state || s.status || '').toLowerCase(),
+        labels: s.labels && typeof s.labels === 'object' ? s.labels : {},
+        updatedAt: Date.parse(s.updatedAt || s.createdAt || '') || 0,
+      }))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+
+    const isAdamSandbox = (s) =>
+      s.labels?.app === 'adam-studio' ||
+      s.name.toLowerCase().includes('adam') ||
+      s.labels?.source === 'adam-studio';
+
+    const adamList = normalized.filter(isAdamSandbox);
+    const pool = adamList.length > 0 ? adamList : normalized;
+
+    const running = pool.find((s) => s.state === 'started' || s.state === 'running');
+    if (running) return running.id;
+
+    const stopped = pool.find((s) => s.state === 'stopped' || s.state === 'archived');
+    if (stopped) {
+      const base = resolveDaytonaBase(apiUrl);
+      await fetch(`${base}/sandbox/${encodeURIComponent(stopped.id)}/start`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: 'application/json',
+        },
+        signal,
+      }).catch(() => {});
+      return stopped.id;
+    }
+
+    return pool[0]?.id || '';
+  } catch {
+    return '';
+  }
+}
+
+async function cleanupExtraDaytonaSandboxes({ keepSandboxId, apiKey, apiUrl, signal }) {
+  const base = resolveDaytonaBase(apiUrl);
+  const list = await listDaytonaSandboxes({ apiKey, apiUrl, signal });
+  const keepId = String(keepSandboxId || '').trim();
+  const candidates = list.filter((s) => s?.id && String(s.id) !== keepId);
+
+  let deleted = 0;
+  for (const sb of candidates) {
+    try {
+      const res = await fetch(`${base}/sandbox/${encodeURIComponent(sb.id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal,
+      });
+      if (res.ok) deleted++;
+    } catch {
+      // Abaikan sandbox yang gagal dihapus
+    }
+  }
+  return { ok: true, totalFound: list.length, deleted, keptSandboxId: keepId || undefined };
+}
+
 export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, githubToken = '', signal }) {
   const cfg = resolveDaytonaConfig({
     apiKey: apiKey || body?.apiKey,
     apiUrl: apiUrl || body?.apiUrl,
   });
+
+  if (action === 'cleanup-sandboxes') {
+    const activeId =
+      String(body?.sandboxId || '').trim() ||
+      (await findReusableDaytonaSandbox({ apiKey: cfg.apiKey, apiUrl: cfg.apiUrl, signal }));
+    const cleaned = await cleanupExtraDaytonaSandboxes({
+      keepSandboxId: activeId,
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+    return { status: 200, payload: cleaned };
+  }
+
+  let effectiveSandboxId = String(body?.sandboxId || '').trim();
+  if (
+    !effectiveSandboxId &&
+    ['deploy-preview', 'clone-github', 'exec', 'sync'].includes(String(action || ''))
+  ) {
+    effectiveSandboxId = await findReusableDaytonaSandbox({
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+  }
+  const safeBody = effectiveSandboxId ? { ...body, sandboxId: effectiveSandboxId } : body;
 
   if (action === 'status') {
     if (!cfg.apiKey) {
@@ -707,7 +826,7 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
 
   if (action === 'clone-github') {
     const out = await cloneGitHubIntoDaytona({
-      sandboxId: body?.sandboxId,
+      sandboxId: safeBody?.sandboxId,
       owner: body?.owner,
       repo: body?.repo,
       branch: body?.branch || 'main',
@@ -719,11 +838,11 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
       apiUrl: cfg.apiUrl,
       signal,
     });
-    return { status: out.ok ? 200 : 500, payload: out };
+    return { status: 200, payload: out };
   }
   if (action === 'deploy-preview') {
     const out = await deployAndPreviewDaytona({
-      sandboxId: body?.sandboxId,
+      sandboxId: safeBody?.sandboxId,
       files: body?.files,
       port: body?.port || 5173,
       apiKey: cfg.apiKey,
@@ -736,7 +855,7 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
   if (action === 'exec') {
     const rawCmd = String(body?.command || '').trim();
     const sb = await ensureDaytonaSandbox({
-      sandboxId: body?.sandboxId,
+      sandboxId: safeBody?.sandboxId,
       apiKey: cfg.apiKey,
       apiUrl: cfg.apiUrl,
       signal,
@@ -790,7 +909,7 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
     };
   }
 
-  if (action === 'stop' && body?.sandboxId) {
+  if (action === 'stop' && safeBody?.sandboxId) {
     await daytonaFetch(`${cfg.apiUrl}/sandbox/${encodeURIComponent(body.sandboxId)}/stop`, {
       method: 'POST',
       apiKey: cfg.apiKey,
@@ -799,7 +918,7 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
     return { status: 200, payload: { ok: true, message: 'Sandbox dihentikan.' } };
   }
 
-  if (action === 'delete' && body?.sandboxId) {
+  if (action === 'delete' && safeBody?.sandboxId) {
     await daytonaFetch(`${cfg.apiUrl}/sandbox/${encodeURIComponent(body.sandboxId)}`, {
       method: 'DELETE',
       apiKey: cfg.apiKey,

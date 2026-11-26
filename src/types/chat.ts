@@ -55,6 +55,31 @@ export interface GitHubProjectFile {
   tokens: number;
 }
 
+export interface EmergentClarificationOption {
+  id: string;
+  label: string;
+  description?: string;
+  recommended?: boolean;
+}
+
+export interface EmergentClarificationQuestion {
+  id: string;
+  question: string;
+  type: 'single' | 'multiple' | 'input';
+  placeholder?: string;
+  allowCustomInput?: boolean;
+  options?: EmergentClarificationOption[];
+}
+
+export interface EmergentClarification {
+  id: string;
+  title: string;
+  subtitle?: string;
+  recommendation?: string;
+  questions: EmergentClarificationQuestion[];
+  submitted?: boolean;
+  submittedSummary?: string;
+}
 export interface EmergentPlanTask {
   id: string;
   title: string;
@@ -133,6 +158,7 @@ export interface ChatMessage {
   thought?: string;
   statusText?: string;
   toolEvents?: ToolTraceItem[];
+  clarification?: EmergentClarification;
   grounding?: GroundingMetadataInfo;
   visualTarget?: VisualTarget;
   attachments?: Attachment[];

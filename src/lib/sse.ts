@@ -1,4 +1,4 @@
-import type { Attachment, BuilderMode, EmergentPlan, GitHubProjectContext, GroundingMetadataInfo, ThinkingLevel, TokenUsage, ToolTraceItem, VirtualWorkspace, VisualTarget } from '@/types/chat';
+import type { Attachment, BuilderMode, EmergentClarification, EmergentPlan, GitHubProjectContext, GroundingMetadataInfo, ThinkingLevel, TokenUsage, ToolTraceItem, VirtualWorkspace, VisualTarget } from '@/types/chat';
 
 export interface StreamChatPayload {
   model: string;
@@ -45,6 +45,7 @@ export interface StreamHandlers {
   onToolCall?: (item: ToolTraceItem) => void;
   onToolResult?: (item: ToolTraceItem) => void;
   onWorkspacePlan?: (plan: EmergentPlan) => void;
+  onWorkspaceClarification?: (clarification: EmergentClarification) => void;
   onWorkspaceFile?: (evt: { action: 'write' | 'delete'; path: string; content?: string; language?: string }) => void;
   onWorkspaceSandbox?: (evt: { sandboxId?: string; previewUrl?: string; previewToken?: string }) => void;
   onStatus?: (message: string) => void;
@@ -306,6 +307,8 @@ export async function streamChatCompletion(
       handlers.onToolResult?.(parsed as unknown as ToolTraceItem);
     } else if (eventName === 'workspace_plan' && parsed.plan) {
       handlers.onWorkspacePlan?.(parsed.plan as unknown as EmergentPlan);
+    } else if (eventName === 'workspace_clarification' && parsed.clarification) {
+      handlers.onWorkspaceClarification?.(parsed.clarification as unknown as EmergentClarification);
     } else if (eventName === 'workspace_file' && typeof parsed.path === 'string') {
       handlers.onWorkspaceFile?.(parsed as unknown as { action: 'write' | 'delete'; path: string; content?: string; language?: string });
     } else if (eventName === 'workspace_sandbox') {

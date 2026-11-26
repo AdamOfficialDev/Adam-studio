@@ -9,18 +9,24 @@ import { ensureDaytonaSandbox, execDaytonaCommand, deployAndPreviewDaytona, sync
 // EMERGENT E1 AUTONOMOUS BUILDER SKILL & VIRTUAL WORKSPACE TOOLS
 // ============================================================================
 const EMERGENT_AGENT_SKILL = [
-  '[EMERGENT E1 AUTONOMOUS APP BUILDER WORKFLOW — AKTIF]',
-  'Kamu bekerja di dalam Multi-File Virtual Workspace yang terhubung ke Code Editor & Live Preview di sebelah kanan layar pengguna.',
-  'IKUTI SIKLUS EMERGENT SECARA BERURUTAN:',
-  '1. PLANNING: Di awal tugas pembuatan/perubahan aplikasi, WAJIB panggil emergent_set_plan dengan judul proyek, ringkasan arsitektur, stack, dan 3-6 task konkret.',
-  '2. INSPECT: Jika workspace sudah memiliki file (atau GitHub repo terhubung), panggil workspace_list_files / workspace_read_file sebelum mengubah. Jika GitHub repo terhubung dan Daytona aktif, kamu bisa memanggil sandbox_clone_github untuk meng-clone seluruh repo langsung ke Daytona VM & Workspace.',
-  '3. BUILD MODULAR: Buat & edit file lewat workspace_write_file atau workspace_patch_file.',
+  '[EMERGENT E1 AUTONOMOUS APP BUILDER WORKFLOW — ALA EMERGENT.SH]',
+  'Kamu adalah Product Architect & Autonomous App Builder di Multi-File Virtual Workspace yang terhubung ke Code Editor & Live Preview di sebelah kanan layar.',
+  'IKUTI SIKLUS EMERGENT SECARA CERDAS:',
+  '0. DISCOVERY & SUGGESTIONS (WAJIB UNTUK IDE BARU / PERMINTAAN TERBUKA):',
+  '   - Jika user baru memulai ide aplikasi/fitur besar dan belum merinci fitur, gaya visual, atau alur pengguna, PANGGIL tool `emergent_ask_clarification` TERLEBIH DAHULU sebelum menulis kode!',
+  '   - Buat 2-4 pertanyaan terstruktur: (a) Fitur Inti (`multiple` + `allowCustomInput: true`), (b) Gaya Visual / UX (`single`), (c) Target Pengguna / Integrasi / Kebutuhan Khusus (`single` atau `input`).',
+  '   - Tandai 1-2 opsi terbaik dengan `recommended: true` dan isi `recommendation` dengan saran arsitektur/produk dari sudut pandang Principal Architect.',
+  '   - Setelah memanggil `emergent_ask_clarification`, HENTIKAN pemanggilan tool build di giliran ini. Berikan pengantar singkat dan persilakan user memilih opsi atau mengisi input pada kartu interaktif.',
+  '   - LEWATI Langkah 0 dan langsung ke Langkah 1 jika: user baru saja menjawab klarifikasi, memberi spesifikasi file-level yang sangat detail, meminta perbaikan bug/error, atau berkata "langsung buat / pakai rekomendasi AI".',
+  '1. PLANNING: Di awal pembangunan/perubahan kode, WAJIB panggil `emergent_set_plan` dengan judul proyek, ringkasan arsitektur, stack, dan 3-6 task konkret.',
+  '2. INSPECT: Jika workspace sudah memiliki file (atau GitHub repo terhubung), panggil `workspace_list_files` / `workspace_read_file` sebelum mengubah. Jika GitHub repo terhubung dan Daytona aktif, kamu bisa memanggil `sandbox_clone_github` untuk meng-clone repo langsung ke Daytona VM & Workspace.',
+  '3. BUILD MODULAR: Buat & edit file lewat `workspace_write_file` atau `workspace_patch_file`.',
   '   - Untuk app React interaktif: gunakan entry src/App.tsx + pecah komponen ke src/components/... + CSS di src/styles.css.',
   '   - Agar langsung berjalan mulus di Live Preview browser, gunakan hanya React (react, react-dom), Tailwind CSS classes, dan ikon dari lucide-react.',
   '   - Untuk web HTML murni: gunakan index.html, styles.css, dan app.js.',
-  '4. PROGRESS TRACKING: Update progres setiap task via emergent_update_task (in_progress -> completed).',
-  '5. SELF-VERIFICATION: Sebelum menyusun balasan akhir, WAJIB panggil workspace_verify_project untuk mengecek entry point, import lokal, dan bebas placeholder.',
-  '6. FINAL REPORT: Jangan tulis ulang semua isi kode ke chat karena sudah ada di IDE Workspace. Berikan ringkasan elegan fitur, arsitektur file, dan hasil verifikasi.',
+  '4. PROGRESS TRACKING: Update progres setiap task via `emergent_update_task` (in_progress -> completed).',
+  '5. SELF-VERIFICATION: Sebelum menyusun balasan akhir, WAJIB panggil `workspace_verify_project` untuk mengecek entry point, import lokal, dan bebas placeholder.',
+  '6. FINAL REPORT & NEXT SUGGESTIONS: Jangan tulis ulang semua isi kode ke chat. Berikan ringkasan elegan fitur, arsitektur file, hasil verifikasi, dan 2-3 saran peningkatan fitur berikutnya (opsional tawarkan opsi lanjutan).',
 ].join('\n');
 
 
@@ -207,6 +213,46 @@ async function executeDaytonaAgentTool({ name, args, workspaceState, daytonaConf
 
 const WORKSPACE_TOOL_DECLARATIONS = [
   {
+    name: 'emergent_ask_clarification',
+    description: 'Menampilkan kartu pertanyaan interaktif (pilihan tunggal, multi-pilih, input kustom, dan rekomendasi AI) ala emergent.sh agar user bisa menentukan fitur, gaya desain, dan spesifikasi sebelum atau sesudah build.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        title: { type: 'STRING', description: 'Judul kartu brief interaktif, misal: Rancang Detail Aplikasi Anda' },
+        subtitle: { type: 'STRING', description: 'Penjelasan singkat kenapa pertanyaan ini membantu hasil build lebih akurat' },
+        recommendation: { type: 'STRING', description: 'Saran & rekomendasi arsitektur/fitur terbaik dari Emergent E1' },
+        questions: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              id: { type: 'STRING' },
+              question: { type: 'STRING' },
+              type: { type: 'STRING', description: 'single | multiple | input' },
+              placeholder: { type: 'STRING', description: 'Placeholder untuk kolom input kustom' },
+              allowCustomInput: { type: 'BOOLEAN', description: 'Aktifkan input bebas selain pilihan opsi' },
+              options: {
+                type: 'ARRAY',
+                items: {
+                  type: 'OBJECT',
+                  properties: {
+                    id: { type: 'STRING' },
+                    label: { type: 'STRING' },
+                    description: { type: 'STRING' },
+                    recommended: { type: 'BOOLEAN' },
+                  },
+                  required: ['id', 'label'],
+                },
+              },
+            },
+            required: ['id', 'question', 'type'],
+          },
+        },
+      },
+      required: ['title', 'questions'],
+    },
+  },
+  {
     name: 'emergent_set_plan',
     description: 'Menetapkan atau memperbarui Blueprint Plan & daftar task di Emergent Plan Card.',
     parameters: {
@@ -325,6 +371,45 @@ function detectWsLang(p) {
 function executeWorkspaceTool({ name, args, workspaceState, sendEvent }) {
   const files = workspaceState.files;
   try {
+    if (name === 'emergent_ask_clarification') {
+      const rawQuestions = Array.isArray(args?.questions) ? args.questions : [];
+      const questions = rawQuestions.slice(0, 5).map((q, qi) => {
+        const qType = q?.type === 'multiple' || q?.type === 'input' ? q.type : 'single';
+        const opts = Array.isArray(q?.options)
+          ? q.options.slice(0, 8).map((o, oi) => ({
+              id: String(o?.id || `opt-${qi + 1}-${oi + 1}`),
+              label: String(o?.label || 'Opsi'),
+              ...(o?.description ? { description: String(o.description) } : {}),
+              ...(o?.recommended ? { recommended: true } : {}),
+            }))
+          : [];
+        return {
+          id: String(q?.id || `q-${qi + 1}`),
+          question: String(q?.question || 'Preferensi Anda?'),
+          type: qType,
+          ...(q?.placeholder ? { placeholder: String(q.placeholder) } : {}),
+          allowCustomInput: q?.allowCustomInput !== false && qType !== 'input' ? true : Boolean(q?.allowCustomInput),
+          ...(opts.length > 0 ? { options: opts } : {}),
+        };
+      });
+      const clarification = {
+        id: `clarify-${Date.now()}`,
+        title: String(args?.title || 'Klarifikasi & Rekomendasi Fitur'),
+        ...(args?.subtitle ? { subtitle: String(args.subtitle) } : {}),
+        ...(args?.recommendation ? { recommendation: String(args.recommendation) } : {}),
+        questions,
+      };
+      sendEvent('workspace_clarification', { clarification });
+      return {
+        ok: true,
+        summary: `Menanyakan ${questions.length} poin klarifikasi & rekomendasi`,
+        response: {
+          ok: true,
+          awaitingUserInput: true,
+          instruction: 'Kartu pertanyaan & rekomendasi interaktif sudah ditampilkan ke pengguna. JANGAN panggil workspace_write_file atau emergent_set_plan di giliran ini. Berikan teks pengantar singkat yang merangkum saran terbaikmu dan ajak pengguna memilih opsi atau mengisi input pada kartu.',
+        },
+      };
+    }
     if (name === 'emergent_set_plan') {
       const plan = {
         title: String(args?.title || 'Emergent Build Plan'),

@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { BrandLogoMark } from '@/components/BrandLogo';
+import { EmergentClarificationCard } from '@/components/EmergentPlanCard';
 import { ThinkingCard } from '@/components/ThinkingCard';
 import { ToolTraceCard } from '@/components/ToolTraceCard';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -51,6 +52,7 @@ interface ChatMessageProps {
   onToggleStar?: (messageId: string) => void;
   onOpenArtifact: (artifact: ArtifactItem) => void;
   onPreviewImage: (url: string) => void;
+  onSubmitClarification?: (messageId: string, replyText: string, summaryText: string) => void;
 }
 
 export const ChatMessage = memo(function ChatMessage({
@@ -66,6 +68,7 @@ export const ChatMessage = memo(function ChatMessage({
   onToggleStar,
   onOpenArtifact,
   onPreviewImage,
+  onSubmitClarification,
 }: ChatMessageProps) {
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -353,6 +356,16 @@ export const ChatMessage = memo(function ChatMessage({
         />
 
         <ToolTraceCard events={message.toolEvents} isStreaming={message.isStreaming} />
+
+        {message.clarification && (
+          <EmergentClarificationCard
+            clarification={message.clarification}
+            isStreaming={message.isStreaming}
+            onSubmit={(replyText, summaryText) =>
+              onSubmitClarification?.(message.id, replyText, summaryText)
+            }
+          />
+        )}
 
         {message.content ? (
           <div className="relative w-full min-w-0">

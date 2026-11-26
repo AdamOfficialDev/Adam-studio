@@ -4,7 +4,7 @@ import { BrandLogoMark } from '@/components/BrandLogo';
 import { ChatMessage } from '@/components/ChatMessage';
 import { MarkdownRenderer } from '@/components/MarkdownRenderer';
 import { ThinkingCard } from '@/components/ThinkingCard';
-import { EmergentPlanCard } from '@/components/EmergentPlanCard';
+import { EmergentClarificationCard, EmergentPlanCard } from '@/components/EmergentPlanCard';
 import { ToolTraceCard } from '@/components/ToolTraceCard';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -26,6 +26,7 @@ interface StreamingChatMessageProps {
   onToggleStar?: (messageId: string) => void;
   onOpenArtifact: (artifact: ArtifactItem) => void;
   onPreviewImage: (url: string) => void;
+  onSubmitClarification?: (messageId: string, replyText: string, summaryText: string) => void;
   livePlan?: EmergentPlan | null;
   workspaceFileCount?: number;
   onOpenWorkspace?: () => void;
@@ -101,6 +102,7 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
   onToggleStar,
   onOpenArtifact,
   onPreviewImage,
+  onSubmitClarification,
   livePlan = null,
   workspaceFileCount = 0,
   onOpenWorkspace,
@@ -131,6 +133,7 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
         onToggleStar={onToggleStar}
         onOpenArtifact={onOpenArtifact}
         onPreviewImage={onPreviewImage}
+        onSubmitClarification={onSubmitClarification}
       />
     );
   }
@@ -180,6 +183,16 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
           />
         )}
         <ToolTraceCard events={override.toolEvents} isStreaming={true} />
+
+        {(override.clarification || message.clarification) && (
+          <EmergentClarificationCard
+            clarification={(override.clarification || message.clarification)!}
+            isStreaming={true}
+            onSubmit={(replyText, summaryText) =>
+              onSubmitClarification?.(message.id, replyText, summaryText)
+            }
+          />
+        )}
 
         {override.grounding &&
           ((override.grounding.sources && override.grounding.sources.length > 0) ||

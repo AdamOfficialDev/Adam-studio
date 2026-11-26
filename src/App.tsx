@@ -100,6 +100,7 @@ import type {
   AppSettings,
   ArtifactItem,
   BuilderMode,
+  EmergentClarification,
   EmergentPlan,
   Attachment,
   ChatMessage as ChatMessageType,
@@ -715,6 +716,7 @@ export default function App() {
         : [];
       let accUsage: TokenUsage | undefined = continueMessage?.usage;
       let accGrounding: GroundingMetadataInfo | undefined = continueMessage?.grounding;
+      let accClarification: EmergentClarification | undefined = undefined;
       let chunkCount = 0;
 
       const continueFrom = continueMessage
@@ -740,6 +742,7 @@ export default function App() {
         tps: 0,
         usage: accUsage,
         grounding: accGrounding,
+        clarification: accClarification,
       };
       setStreamState(initialStream);
 
@@ -759,6 +762,7 @@ export default function App() {
           tps,
           thinkingDurationMs,
           usage: accUsage,
+          clarification: accClarification,
         };
         setStreamState(snapshot);
       };
@@ -953,6 +957,10 @@ export default function App() {
           },
           {
             signal: controller.signal,
+            onWorkspaceClarification: (clarification: EmergentClarification) => {
+              accClarification = clarification;
+              commitStreamSnapshot();
+            },
             onWorkspacePlan: (plan: EmergentPlan) => {
               setConversations((prev) =>
                 prev.map((conv) =>
@@ -1114,6 +1122,7 @@ export default function App() {
                                 content: accContent,
                                 thought: accThought || undefined,
                                 toolEvents: accTools.length > 0 ? accTools : undefined,
+                                ...(accClarification ? { clarification: accClarification } : {}),
                                 statusText: undefined,
                                 usage: accUsage,
                                 isStreaming: false,
@@ -1161,6 +1170,7 @@ export default function App() {
                                 content: accContent,
                                 thought: accThought || undefined,
                                 toolEvents: accTools.length > 0 ? accTools : undefined,
+                                ...(accClarification ? { clarification: accClarification } : {}),
                                 statusText: undefined,
                                 usage: accUsage,
                                 isStreaming: false,
@@ -1192,6 +1202,7 @@ export default function App() {
                           content: accContent,
                           thought: accThought || undefined,
                           toolEvents: accTools.length > 0 ? accTools : undefined,
+                                ...(accClarification ? { clarification: accClarification } : {}),
                           statusText: undefined,
                           usage: accUsage,
                           isStreaming: false,
@@ -1755,6 +1766,34 @@ export default function App() {
     return STARTER_CARDS.filter((c) => c.category === welcomeTab);
   }, [welcomeTab]);
 
+  const handleSubmitClarification = useCallback(
+    (messageId: string, replyText: string, summaryText: string) => {
+      setConversations((prev) =>
+        prev.map((conv) =>
+          conv.id !== activeId
+            ? conv
+            : {
+                ...conv,
+                messages: conv.messages.map((m) =>
+                  m.id === messageId && m.clarification
+                    ? {
+                        ...m,
+                        clarification: {
+                          ...m.clarification,
+                          submitted: true,
+                          submittedSummary: summaryText,
+                        },
+                      }
+                    : m
+                ),
+              }
+        )
+      );
+      handleSend(replyText, []);
+    },
+    [activeId, handleSend]
+  );
+
   return (
     <MotionConfig reducedMotion="user">
       <TooltipProvider>
@@ -2296,6 +2335,7 @@ export default function App() {
                             className={settings.density === 'compact' ? 'pb-4' : 'pb-6'}
                           >
                             <StreamingChatMessage
+                      onSubmitClarification={handleSubmitClarification}
                         convId={activeConversation.id}
                         livePlan={
                           msg.id === lastAssistantId && isStreamingActive
@@ -2378,8 +2418,9 @@ export default function App() {
           </div>
 
           <AnimatePresence>
-            {workspaceOpen && activeConversation && (
-        <WorkspacePanel
+            {activeConversation?.workspace && (
+          <WorkspacePanel
+          isOpen={workspaceOpen}
           githubProject={activeConversation?.githubProject}
           githubToken={settings.githubToken}
           onImportFiles={handleImportFilesToWorkspace}
@@ -2474,7 +2515,7 @@ export default function App() {
           }}
           onClose={() => setWorkspaceOpen(false)}
         />
-      )}
+        )}
       {activeArtifact && !workspaceOpen && (
               <>
                 {!artifactFullscreen && (
