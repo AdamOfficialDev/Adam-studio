@@ -212,6 +212,18 @@ function utf8ToBase64GitHub(str) {
   return btoa(bin);
 }
 
+async function computeGitBlobSha1(content) {
+  const contentBytes = new TextEncoder().encode(String(content ?? ""));
+  const headerBytes = new TextEncoder().encode(`blob ${contentBytes.byteLength}\0`);
+  const combined = new Uint8Array(headerBytes.byteLength + contentBytes.byteLength);
+  combined.set(headerBytes, 0);
+  combined.set(contentBytes, headerBytes.byteLength);
+  const digest = await globalThis.crypto.subtle.digest("SHA-1", combined);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 async function ghApiJson(url, token, options = {}) {
   const resp = await fetch(url, {
     ...options,
@@ -234,23 +246,8 @@ async function ghApiJson(url, token, options = {}) {
   return { ok: resp.ok, status: resp.status, data: json };
 }
 
-async function pushWorkspaceToGitHub({
-  token,
-  owner,
-  repo,
-  branch,
-  message,
-  files,
-  createBranch = true,
-}) {
-  if (!token) throw new Error("GitHub PAT wajib diisi untuk push ke repository.");
-  if (!owner || !repo) throw new Error("Owner dan nama repository wajib diisi.");
-  if (!message || !String(message).trim()) throw new Error("Pesan commit tidak boleh kosong.");
-  if (!Array.isArray(files) || files.length === 0) {
-    throw new Error("Tidak ada file workspace untuk di-push.");
-  }
-
-  const validFiles = files
+function normalizePushFiles(files) {
+  return (Array.isArray(files) ? files : [])
     .map((f) => ({
       path: String(f?.path || "").replace(/^\/+/, "").trim(),
       content: typeof f?.content === "string" ? f.content : String(f?.content ?? ""),
@@ -262,9 +259,14 @@ async function pushWorkspaceToGitHub({
         !f.path.startsWith("node_modules/") &&
         !f.path.startsWith("dist/")
     );
+}
 
+async function analyzeWorkspaceDiff({ token, owner, repo, branch, files, createBranch = true }) {
+  if (!token) throw new Error("GitHub PAT wajib diisi terlebih dahulu.");
+  if (!owner || !repo) throw new Error("Owner dan nama repository wajib diisi.");
+  const validFiles = normalizePushFiles(files);
   if (validFiles.length === 0) {
-    throw new Error("Semua file workspace terfilter atau path tidak valid.");
+    throw new Error("Tidak ada file workspace yang valid untuk dibandingkan.");
   }
 
   const repoRes = await ghApiJson(
@@ -272,7 +274,9 @@ async function pushWorkspaceToGitHub({
     token
   );
   if (!repoRes.ok) {
-    throw new Error(repoRes.data?.message || `Repository ${owner}/${repo} tidak dapat diakses (${repoRes.status})`);
+    throw new Error(
+      repoRes.data?.message || `Repository ${owner}/${repo} tidak dapat diakses (${repoRes.status})`
+    );
   }
 
   const defaultBranch = repoRes.data.default_branch || "main";
@@ -280,8 +284,8 @@ async function pushWorkspaceToGitHub({
 
   let baseCommitSha = null;
   let baseTreeSha = null;
-  let createdBranch = false;
-  let remainingFiles = validFiles;
+  let branchExists = false;
+  let isEmptyRepo = false;
 
   const refRes = await ghApiJson(
     `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(targetBranch)}`,
@@ -289,59 +293,27 @@ async function pushWorkspaceToGitHub({
   );
 
   if (refRes.ok && refRes.data?.object?.sha) {
+    branchExists = true;
     baseCommitSha = refRes.data.object.sha;
   } else if (refRes.status === 404 || refRes.status === 409) {
     const defaultRefRes = await ghApiJson(
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
       token
     );
-
     if (defaultRefRes.ok && defaultRefRes.data?.object?.sha) {
       if (!createBranch) {
         throw new Error(`Branch "${targetBranch}" belum ada di repository.`);
       }
       baseCommitSha = defaultRefRes.data.object.sha;
-      createdBranch = true;
     } else {
-      const first = validFiles[0];
-      const initRes = await ghApiJson(
-        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${first.path.split("/").map(encodeURIComponent).join("/")}`,
-        token,
-        {
-          method: "PUT",
-          body: JSON.stringify({
-            message: String(message).trim(),
-            content: utf8ToBase64GitHub(first.content),
-            branch: targetBranch,
-          }),
-        }
-      );
-
-      if (!initRes.ok) {
-        throw new Error(initRes.data?.message || "Gagal membuat initial commit pada repo kosong.");
-      }
-
-      baseCommitSha = initRes.data?.commit?.sha || null;
-      baseTreeSha = initRes.data?.commit?.tree?.sha || null;
-      remainingFiles = validFiles.slice(1);
-
-      if (remainingFiles.length === 0 && baseCommitSha) {
-        return {
-          ok: true,
-          commitSha: baseCommitSha,
-          branch: targetBranch,
-          commitUrl: `https://github.com/${owner}/${repo}/commit/${baseCommitSha}`,
-          branchUrl: `https://github.com/${owner}/${repo}/tree/${targetBranch}`,
-          filesPushed: 1,
-          createdBranch: true,
-        };
-      }
+      isEmptyRepo = true;
     }
   } else {
     throw new Error(refRes.data?.message || `Gagal memeriksa branch ${targetBranch}`);
   }
 
-  if (baseCommitSha && !baseTreeSha) {
+  const remoteBlobMap = new Map();
+  if (baseCommitSha) {
     const commitRes = await ghApiJson(
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${baseCommitSha}`,
       token
@@ -350,6 +322,135 @@ async function pushWorkspaceToGitHub({
       throw new Error(commitRes.data?.message || "Gagal membaca base commit tree.");
     }
     baseTreeSha = commitRes.data.tree.sha;
+
+    const treeRes = await ghApiJson(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${baseTreeSha}?recursive=1`,
+      token
+    );
+    if (treeRes.ok && Array.isArray(treeRes.data?.tree)) {
+      for (const item of treeRes.data.tree) {
+        if (item?.type === "blob" && item?.path && item?.sha) {
+          remoteBlobMap.set(item.path, item.sha);
+        }
+      }
+    }
+  }
+
+  const added = [];
+  const modified = [];
+  let unchangedCount = 0;
+
+  for (const file of validFiles) {
+    if (isEmptyRepo) {
+      added.push(file);
+      continue;
+    }
+    const remoteSha = remoteBlobMap.get(file.path);
+    if (!remoteSha) {
+      added.push(file);
+      continue;
+    }
+    const localSha = await computeGitBlobSha1(file.content);
+    if (localSha !== remoteSha) {
+      modified.push(file);
+    } else {
+      unchangedCount++;
+    }
+  }
+
+  const changedFiles = [...added, ...modified];
+  return {
+    ok: true,
+    owner,
+    repo,
+    defaultBranch,
+    targetBranch,
+    branchExists,
+    createdBranch: !branchExists,
+    isEmptyRepo,
+    baseCommitSha,
+    baseTreeSha,
+    totalFiles: validFiles.length,
+    unchangedCount,
+    addedPaths: added.map((f) => f.path),
+    modifiedPaths: modified.map((f) => f.path),
+    changedFiles,
+    hasChanges: changedFiles.length > 0,
+  };
+}
+
+async function pushWorkspaceToGitHub({
+  token,
+  owner,
+  repo,
+  branch,
+  message,
+  files,
+  createBranch = true,
+}) {
+  if (!message || !String(message).trim()) {
+    throw new Error("Pesan commit tidak boleh kosong.");
+  }
+
+  const diff = await analyzeWorkspaceDiff({
+    token,
+    owner,
+    repo,
+    branch,
+    files,
+    createBranch,
+  });
+
+  if (!diff.hasChanges) {
+    const err = new Error(
+      `Tidak ada perubahan file dibandingkan branch "${diff.targetBranch}" (semua ${diff.totalFiles} file sudah sama persis).`
+    );
+    err.noChanges = true;
+    throw err;
+  }
+
+  const targetBranch = diff.targetBranch;
+  let baseCommitSha = diff.baseCommitSha;
+  let baseTreeSha = diff.baseTreeSha;
+  let remainingFiles = diff.changedFiles;
+  const createdBranch = diff.createdBranch;
+
+  if (diff.isEmptyRepo) {
+    const first = remainingFiles[0];
+    const initRes = await ghApiJson(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${first.path.split("/").map(encodeURIComponent).join("/")}`,
+      token,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          message: String(message).trim(),
+          content: utf8ToBase64GitHub(first.content),
+          branch: targetBranch,
+        }),
+      }
+    );
+
+    if (!initRes.ok) {
+      throw new Error(initRes.data?.message || "Gagal membuat initial commit pada repo kosong.");
+    }
+
+    baseCommitSha = initRes.data?.commit?.sha || null;
+    baseTreeSha = initRes.data?.commit?.tree?.sha || null;
+    remainingFiles = remainingFiles.slice(1);
+
+    if (remainingFiles.length === 0 && baseCommitSha) {
+      return {
+        ok: true,
+        commitSha: baseCommitSha,
+        branch: targetBranch,
+        commitUrl: `https://github.com/${owner}/${repo}/commit/${baseCommitSha}`,
+        branchUrl: `https://github.com/${owner}/${repo}/tree/${targetBranch}`,
+        filesPushed: 1,
+        addedCount: 1,
+        modifiedCount: 0,
+        createdBranch: true,
+      };
+    }
   }
 
   const treeEntries = [];
@@ -396,6 +497,12 @@ async function pushWorkspaceToGitHub({
     throw new Error(newTreeRes.data?.message || "Gagal membuat Git tree di GitHub.");
   }
 
+  if (baseTreeSha && newTreeRes.data.sha === baseTreeSha) {
+    const err = new Error(`Tidak ada perubahan file yang berbeda dengan branch "${targetBranch}".`);
+    err.noChanges = true;
+    throw err;
+  }
+
   const newCommitRes = await ghApiJson(
     `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits`,
     token,
@@ -437,12 +544,50 @@ async function pushWorkspaceToGitHub({
     branch: targetBranch,
     commitUrl: `https://github.com/${owner}/${repo}/commit/${newSha}`,
     branchUrl: `https://github.com/${owner}/${repo}/tree/${targetBranch}`,
-    filesPushed: validFiles.length,
+    filesPushed: diff.changedFiles.length,
+    addedCount: diff.addedPaths.length,
+    modifiedCount: diff.modifiedPaths.length,
     createdBranch,
   };
 }
 
 export async function handleGitHubAction({ action, body, token }) {
+  if (action === 'preview-workspace-diff') {
+    try {
+      const diff = await analyzeWorkspaceDiff({
+        token,
+        owner: body?.owner,
+        repo: body?.repo,
+        branch: body?.branch,
+        files: body?.files,
+        createBranch: body?.createBranch !== false,
+      });
+      return {
+        status: 200,
+        payload: {
+          ok: true,
+          targetBranch: diff.targetBranch,
+          branchExists: diff.branchExists,
+          createdBranch: diff.createdBranch,
+          isEmptyRepo: diff.isEmptyRepo,
+          totalFiles: diff.totalFiles,
+          unchangedCount: diff.unchangedCount,
+          addedPaths: diff.addedPaths,
+          modifiedPaths: diff.modifiedPaths,
+          hasChanges: diff.hasChanges,
+        },
+      };
+    } catch (err) {
+      return {
+        status: 400,
+        payload: {
+          ok: false,
+          message: err instanceof Error ? err.message : "Gagal memeriksa perubahan repository.",
+        },
+      };
+    }
+  }
+
   if (action === 'push-workspace') {
     try {
       const pushed = await pushWorkspaceToGitHub({
@@ -457,8 +602,12 @@ export async function handleGitHubAction({ action, body, token }) {
       return { status: 200, payload: pushed };
     } catch (err) {
       return {
-        status: 400,
-        payload: { ok: false, message: err instanceof Error ? err.message : "Gagal push ke GitHub." },
+        status: err?.noChanges ? 409 : 400,
+        payload: {
+          ok: false,
+          noChanges: Boolean(err?.noChanges),
+          message: err instanceof Error ? err.message : "Gagal push ke GitHub.",
+        },
       };
     }
   }
