@@ -94,6 +94,7 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
   const [resolvingApproval, setResolvingApproval] = useState(false);
   const [togglingPause, setTogglingPause] = useState(false);
   const [copiedCmd, setCopiedCmd] = useState(false);
+  const [bypassSecret, setBypassSecret] = useState('');
 
   const fetchDevices = useCallback(
     async (silent = false) => {
@@ -316,18 +317,26 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
 
   const originUrl =
     typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001';
-  const isLocalHost =
-    typeof window !== 'undefined' &&
-    /^(localhost|127\.0\.0\.1|0\.0\.0\.0)$/i.test(window.location.hostname);
+  const hostName = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+  const isLocalHost = /^(localhost|127\.0\.0\.1|0\.0\.0\.0)$/i.test(hostName);
+  const isVercelPreviewHost = /-git-|-[a-z0-9]{6,}-projects\.vercel\.app$/i.test(hostName);
   const needsSharedStoreWarning = sharedStore === false && !isLocalHost;
+  const cleanBypass = bypassSecret.trim();
   const bridgeDownloadUrl = `${originUrl}/api/device?action=bridge-script`;
+  const psHeaderArg = cleanBypass
+    ? ` -Headers @{"x-vercel-protection-bypass"="${cleanBypass}"}`
+    : '';
+  const curlHeaderArg = cleanBypass
+    ? ` -H "x-vercel-protection-bypass: ${cleanBypass}"`
+    : '';
+  const nodeBypassArg = cleanBypass ? ` --bypass "${cleanBypass}"` : '';
   const bridgeCommand = !pairCode
     ? ''
     : shellKind === 'powershell'
-      ? `irm "${bridgeDownloadUrl}" -OutFile adam-device-bridge.mjs; node adam-device-bridge.mjs --server ${originUrl} --pair ${pairCode} --platform ${pairPlatform}`
+      ? `$s = irm "${bridgeDownloadUrl}"${psHeaderArg}; if ($s -match '^\\s*<') { throw "Terblokir Vercel Deployment Protection (HTML). Pakai Production URL atau isi Bypass Secret." }; [IO.File]::WriteAllText((Join-Path $PWD 'adam-device-bridge.mjs'), $s); node adam-device-bridge.mjs --server ${originUrl} --pair ${pairCode} --platform ${pairPlatform}${nodeBypassArg}`
       : shellKind === 'bash'
-        ? `curl -fsSL "${bridgeDownloadUrl}" -o adam-device-bridge.mjs && node adam-device-bridge.mjs --server ${originUrl} --pair ${pairCode} --platform ${pairPlatform}`
-        : `node companion/adam-device-bridge.mjs --server ${originUrl} --pair ${pairCode} --platform ${pairPlatform}`;
+        ? `curl -fsSL${curlHeaderArg} "${bridgeDownloadUrl}" -o adam-device-bridge.mjs && ! head -n 1 adam-device-bridge.mjs | grep -q '^<' && node adam-device-bridge.mjs --server ${originUrl} --pair ${pairCode} --platform ${pairPlatform}${nodeBypassArg}`
+        : `node companion/adam-device-bridge.mjs --server ${originUrl} --pair ${pairCode} --platform ${pairPlatform}${nodeBypassArg}`;
 
   const copyCommand = async () => {
     if (!bridgeCommand) return;
@@ -622,6 +631,43 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
                   </div>
                 </button>
               </div>
+
+              {isVercelPreviewHost && !cleanBypass && (
+                <div className="flex items-start gap-2 rounded-xl border border-rose-500/40 bg-rose-500/10 p-2.5 text-[11px] leading-relaxed text-rose-200">
+                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-400" />
+                  <div className="space-y-1">
+                    <div>
+                      <strong>Vercel Preview Protection Aktif:</strong> URL preview (
+                      <code className="rounded bg-black/40 px-1 font-mono text-[10px]">
+                        *-git-*.vercel.app
+                      </code>
+                      ) memblokir <code className="font-mono text-[10px]">irm</code> &amp;{' '}
+                      <code className="font-mono text-[10px]">node</code> dengan halaman login HTML.
+                    </div>
+                    <div className="text-[10px] text-rose-200/90">
+                      Solusi: (1) Buka lewat <strong>Production URL</strong> (setelah merge ke{' '}
+                      <code className="font-mono">main</code>), atau (2) Matikan{' '}
+                      <strong>Vercel Authentication</strong> di Vercel → Settings → Deployment
+                      Protection, atau (3) Isi <strong>Bypass Secret</strong> di bawah.
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {!isLocalHost && (
+                <div className="space-y-1">
+                  <label className="block text-[10px] font-medium text-muted-foreground">
+                    Vercel Protection Bypass Secret (opsional, khusus Preview URL terproteksi):
+                  </label>
+                  <input
+                    type="password"
+                    value={bypassSecret}
+                    onChange={(e) => setBypassSecret(e.target.value)}
+                    placeholder="Tempel x-vercel-protection-bypass jika pakai Preview URL..."
+                    className="h-7 w-full rounded-lg border bg-background px-2.5 font-mono text-[11px] text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+              )}
 
               {needsSharedStoreWarning && (
                 <div className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] leading-relaxed text-amber-200">
