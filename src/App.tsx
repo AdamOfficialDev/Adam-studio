@@ -28,6 +28,7 @@ import {
   Menu,
   Minimize2,
   MonitorDown,
+  MonitorSmartphone,
   MoreVertical,
   Palette,
   Radio,
@@ -55,6 +56,7 @@ import {
 import { StudioScroll, type StudioScrollHandle } from '@/components/ui/studio-scroll';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ArtifactPanel } from '@/components/ArtifactPanel';
+import { DeviceControlPanel } from '@/components/DeviceControlPanel';
 import { WorkspacePanel } from '@/components/WorkspacePanel';
 import {
   createEmptyWorkspace,
@@ -100,6 +102,10 @@ import type {
   AppSettings,
   ArtifactItem,
   BuilderMode,
+  DeviceActionLog,
+  DeviceApprovalMode,
+  DeviceApprovalRequest,
+  DeviceScreenFrame,
   EmergentClarification,
   EmergentPlan,
   Attachment,
@@ -264,6 +270,11 @@ export default function App() {
 
   const [activeArtifact, setActiveArtifact] = useState<ArtifactItem | null>(null);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [devicePanelOpen, setDevicePanelOpen] = useState(false);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [latestDeviceFrame, setLatestDeviceFrame] = useState<DeviceScreenFrame | null>(null);
+  const [pendingDeviceApproval, setPendingDeviceApproval] = useState<DeviceApprovalRequest | null>(null);
+  const [deviceActionLogs, setDeviceActionLogs] = useState<DeviceActionLog[]>([]);
   const [draftBuilderMode, setDraftBuilderMode] = useState<BuilderMode>('chat');
   const [artifactFullscreen, setArtifactFullscreen] = useState(false);
   const [artifactWidthPct, setArtifactWidthPct] = useState(46);
@@ -617,6 +628,7 @@ export default function App() {
     setActiveId(null);
     setActiveArtifact(null);
     setWorkspaceOpen(false);
+    setDevicePanelOpen(false);
     setArtifactFullscreen(false);
     setVisualTarget(null);
   }, [handleStopStream, isStreamingActive]);
@@ -717,6 +729,7 @@ export default function App() {
       let accUsage: TokenUsage | undefined = continueMessage?.usage;
       let accGrounding: GroundingMetadataInfo | undefined = continueMessage?.grounding;
       let accClarification: EmergentClarification | undefined = undefined;
+      let accDeviceApproval: DeviceApprovalRequest | null = null;
       let chunkCount = 0;
 
       const continueFrom = continueMessage
@@ -743,6 +756,7 @@ export default function App() {
         usage: accUsage,
         grounding: accGrounding,
         clarification: accClarification,
+        deviceApproval: accDeviceApproval,
       };
       setStreamState(initialStream);
 
@@ -763,6 +777,7 @@ export default function App() {
           thinkingDurationMs,
           usage: accUsage,
           clarification: accClarification,
+          deviceApproval: accDeviceApproval,
         };
         setStreamState(snapshot);
       };
@@ -942,6 +957,8 @@ export default function App() {
             daytonaApiKey: settings.daytonaApiKey,
             daytonaApiUrl: settings.daytonaApiUrl,
             builderMode: builderMode || 'chat',
+            deviceId: selectedDeviceId || undefined,
+            deviceApprovalMode: settings.deviceApprovalMode || 'high-risk',
             workspace,
             systemInstruction: effectiveSystemInstruction,
             maxOutputTokens: settings.maxOutputTokens,
@@ -1010,13 +1027,53 @@ export default function App() {
                 setWorkspaceOpen(true);
               }
             },
+            onDeviceScreen: (frame: DeviceScreenFrame) => {
+              setLatestDeviceFrame(frame);
+              setSelectedDeviceId(frame.deviceId);
+              setActiveArtifact(null);
+              setWorkspaceOpen(false);
+              setDevicePanelOpen(true);
+            },
+            onDeviceApproval: (approval: DeviceApprovalRequest) => {
+              accDeviceApproval = approval;
+              setPendingDeviceApproval(approval);
+              setDevicePanelOpen(true);
+              commitStreamSnapshot();
+            },
             onToolCall: (item) => {
               currentStatus = undefined;
               accTools = [...accTools, item];
+              if (item.name.startsWith('device_')) {
+                setDeviceActionLogs((prev) => [
+                  ...prev.slice(-49),
+                  {
+                    id: item.id,
+                    toolName: item.name,
+                    summary: item.argsSummary || item.name,
+                    status: 'running',
+                    timestamp: Date.now(),
+                  },
+                ]);
+              }
               commitStreamSnapshot();
             },
             onToolResult: (item) => {
               accTools = accTools.map((t) => (t.id === item.id ? item : t));
+              if (item.name.startsWith('device_')) {
+                accDeviceApproval = null;
+                setPendingDeviceApproval(null);
+                setDeviceActionLogs((prev) =>
+                  prev.map((log) =>
+                    log.id === item.id
+                      ? {
+                          ...log,
+                          status: item.status === 'error' ? 'error' : 'done',
+                          summary: item.resultSummary || log.summary,
+                        }
+                      : log
+                  )
+                );
+              }
               commitStreamSnapshot();
             },
             onStatus: (statusMessage) => {
@@ -1076,6 +1133,7 @@ export default function App() {
               toast.info(infoMsg);
             },
             onDone: ({ model: resolvedModel, isDemo }) => {
+              setPendingDeviceApproval(null);
               if (flushTimerRef.current !== null) {
                 window.clearTimeout(flushTimerRef.current);
                 flushTimerRef.current = null;
@@ -1151,6 +1209,7 @@ export default function App() {
               }
             },
             onError: (errorMessage) => {
+              setPendingDeviceApproval(null);
               if (flushTimerRef.current !== null) {
                 window.clearTimeout(flushTimerRef.current);
                 flushTimerRef.current = null;
@@ -1242,7 +1301,30 @@ export default function App() {
         }
       }
     },
-    [settings]
+    [settings, selectedDeviceId]
+  );
+
+  const handleResolveDeviceApproval = useCallback(
+    async (approvalId: string, approved: boolean) => {
+      try {
+        const res = await fetch('/api/device', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'resolve-approval', approvalId, approved }),
+        });
+        if (res.ok) {
+          setPendingDeviceApproval(null);
+          const snap = getActiveStreamSnapshot();
+          if (snap) {
+            setStreamState({ ...snap, deviceApproval: null });
+          }
+          toast.success(approved ? 'Aksi device diizinkan' : 'Aksi device ditolak');
+        }
+      } catch {
+        toast.error('Gagal mengirim keputusan approval device');
+      }
+    },
+    []
   );
 
   const handleSend = useCallback(
@@ -1834,6 +1916,11 @@ export default function App() {
               onOpenSettings={() => setSettingsDialogOpen(true)}
               onOpenCommandPalette={() => setCommandOpen(true)}
               onOpenBookmarks={() => setBookmarksOpen(true)}
+              onOpenDeviceControl={() => {
+                setActiveArtifact(null);
+                setWorkspaceOpen(false);
+                setDevicePanelOpen(true);
+              }}
               onCycleSkin={handleCycleSkin}
               showInstallButton={!isStandalone}
               onInstallApp={() => void handleInstallAction()}
@@ -1890,6 +1977,36 @@ export default function App() {
                     <span className="hidden sm:inline">Offline</span>
                   </Badge>
                 )}
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={devicePanelOpen ? 'secondary' : 'ghost'}
+                      size="sm"
+                      onClick={() => {
+                        setDevicePanelOpen((prev) => {
+                          const next = !prev;
+                          if (next) {
+                            setActiveArtifact(null);
+                            setWorkspaceOpen(false);
+                          }
+                          return next;
+                        });
+                      }}
+                      className={cn(
+                        'h-8 gap-1.5 rounded-full border px-2.5 text-xs',
+                        devicePanelOpen
+                          ? 'border-primary/40 bg-primary/10 text-primary'
+                          : 'border-border/60 bg-card/60 text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      <MonitorSmartphone className="h-3.5 w-3.5 text-primary" />
+                      <span className="hidden sm:inline">Device</span>
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Device Control Center (Desktop & Android)</TooltipContent>
+                </Tooltip>
 
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -2347,8 +2464,10 @@ export default function App() {
                         }
                         onOpenWorkspace={() => {
                           setActiveArtifact(null);
+                          setDevicePanelOpen(false);
                           setWorkspaceOpen(true);
                         }}
+                        onResolveDeviceApproval={handleResolveDeviceApproval}
                               message={msg}
                               compact={settings.density === 'compact'}
                               thinkingEnabled={thinkingEnabled}
@@ -2389,10 +2508,19 @@ export default function App() {
                   )
                 );
               }
+              if (nextMode === 'device') {
+                setActiveArtifact(null);
+                setWorkspaceOpen(false);
+                setDevicePanelOpen(true);
+              } else if (nextMode === 'emergent' && Object.keys(activeConversation?.workspace?.files || {}).length > 0) {
+                setDevicePanelOpen(false);
+              }
               toast.success(
                 nextMode === 'emergent'
                   ? 'Emergent Autonomous Builder AKTIF (Plan → Build → Verify)'
-                  : 'Kembali ke Chat Mode'
+                  : nextMode === 'device'
+                    ? 'Device Control Operator AKTIF (Desktop & Android)'
+                    : 'Kembali ke Chat Mode'
               );
             }}
             workspaceFileCount={
@@ -2400,8 +2528,15 @@ export default function App() {
             }
             onOpenWorkspace={() => {
               setActiveArtifact(null);
+              setDevicePanelOpen(false);
               setWorkspaceOpen(true);
             }}
+            onOpenDevicePanel={() => {
+              setActiveArtifact(null);
+              setWorkspaceOpen(false);
+              setDevicePanelOpen(true);
+            }}
+            connectedDeviceName={selectedDeviceId ? 'Device' : null}
               model={currentModelId}
               isStreaming={isStreamingActive}
               settings={settings}
@@ -2418,7 +2553,27 @@ export default function App() {
           </div>
 
           <AnimatePresence>
-            {activeConversation?.workspace && (
+            {devicePanelOpen && (
+              <DeviceControlPanel
+                isOpen={devicePanelOpen}
+                onClose={() => setDevicePanelOpen(false)}
+                selectedDeviceId={selectedDeviceId}
+                onSelectDeviceId={setSelectedDeviceId}
+                latestFrame={latestDeviceFrame}
+                onFrameUpdate={setLatestDeviceFrame}
+                pendingApproval={pendingDeviceApproval}
+                onClearApproval={() => setPendingDeviceApproval(null)}
+                actionLogs={deviceActionLogs}
+                approvalMode={(settings.deviceApprovalMode || 'high-risk') as DeviceApprovalMode}
+                onChangeApprovalMode={(mode) =>
+                  setSettings((prev) => ({ ...prev, deviceApprovalMode: mode }))
+                }
+                isStreaming={isStreamingActive}
+                onStopAi={handleStopStream}
+                onSendQuickCommand={(prompt) => handleSend(prompt, [])}
+              />
+            )}
+            {activeConversation?.workspace && !devicePanelOpen && (
           <WorkspacePanel
           isOpen={workspaceOpen}
           githubProject={activeConversation?.githubProject}
@@ -2516,7 +2671,7 @@ export default function App() {
           onClose={() => setWorkspaceOpen(false)}
          activeModel={selectedModel} geminiApiKey={settings.apiKey} demoMode={Boolean(settings.demoMode)}/>
         )}
-      {activeArtifact && !workspaceOpen && (
+      {activeArtifact && !workspaceOpen && !devicePanelOpen && (
               <>
                 {!artifactFullscreen && (
                   <div

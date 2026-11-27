@@ -46,7 +46,7 @@ import {
   restoreConversationsBackup,
 } from '@/lib/db';
 import { countApiKeys, DEFAULT_SETTINGS } from '@/lib/storage';
-import type { AppSettings, Conversation, ServerHealth, ThemeSkin } from '@/types/chat';
+import type { AppSettings, Conversation, DeviceApprovalMode, ServerHealth, ThemeSkin } from '@/types/chat';
 import { cn } from '@/lib/utils';
 
 interface SettingsDialogProps {
@@ -317,7 +317,41 @@ export const SettingsDialog = memo(function SettingsDialog({
 
               <StudioModalBody>
                 <TabsContent value="connection" className="mt-0 space-y-4">
-                  <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
+                      <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
+                    <div className="space-y-0.5">
+                      <div className="text-xs font-semibold text-foreground">
+                        Device Control Safety Gate (Desktop & Android)
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        Mengatur kapan AI meminta izin sebelum mengeksekusi klik, ketik, atau perintah pada perangkat.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(
+                        [
+                          { id: 'high-risk', label: 'High-Risk Ask' },
+                          { id: 'always', label: 'Always Ask' },
+                          { id: 'autonomous', label: 'Autonomous' },
+                        ] as Array<{ id: DeviceApprovalMode; label: string }>
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setDraft({ ...draft, deviceApprovalMode: opt.id })}
+                          className={cn(
+                            'rounded-xl border py-2 text-[11px] font-medium transition-colors',
+                            (draft.deviceApprovalMode || 'high-risk') === opt.id
+                              ? 'border-primary bg-primary/15 font-semibold text-primary'
+                              : 'bg-background/60 hover:bg-accent'
+                          )}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+              <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <Shuffle className="h-4 w-4 text-primary" />

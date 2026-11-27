@@ -25,6 +25,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   activePersonaId: PERSONA_PRESETS[0].id,
   skin: 'obsidian',
   density: 'comfortable',
+  deviceApprovalMode: 'high-risk',
 };
 
 export function countApiKeys(raw: string): number {

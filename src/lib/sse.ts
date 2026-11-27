@@ -1,4 +1,4 @@
-import type { Attachment, BuilderMode, EmergentClarification, EmergentPlan, GitHubProjectContext, GroundingMetadataInfo, ThinkingLevel, TokenUsage, ToolTraceItem, VirtualWorkspace, VisualTarget } from '@/types/chat';
+import type { Attachment, BuilderMode, DeviceApprovalMode, DeviceApprovalRequest, DeviceScreenFrame, EmergentClarification, EmergentPlan, GitHubProjectContext, GroundingMetadataInfo, ThinkingLevel, TokenUsage, ToolTraceItem, VirtualWorkspace, VisualTarget } from '@/types/chat';
 
 export interface StreamChatPayload {
   model: string;
@@ -13,6 +13,8 @@ export interface StreamChatPayload {
   daytonaApiKey?: string;
   daytonaApiUrl?: string;
   builderMode?: BuilderMode;
+  deviceId?: string;
+  deviceApprovalMode?: DeviceApprovalMode;
   workspace?: VirtualWorkspace;
   systemInstruction: string;
   maxOutputTokens: number;
@@ -48,6 +50,8 @@ export interface StreamHandlers {
   onWorkspaceClarification?: (clarification: EmergentClarification) => void;
   onWorkspaceFile?: (evt: { action: 'write' | 'delete'; path: string; content?: string; language?: string }) => void;
   onWorkspaceSandbox?: (evt: { sandboxId?: string; previewUrl?: string; previewToken?: string }) => void;
+  onDeviceScreen?: (frame: DeviceScreenFrame) => void;
+  onDeviceApproval?: (approval: DeviceApprovalRequest) => void;
   onStatus?: (message: string) => void;
   onInfo?: (message: string) => void;
   onDone: (meta: { model: string; finishReason?: string; isDemo?: boolean }) => void;
@@ -157,6 +161,8 @@ function buildSafeChatPayloadJson(payload: StreamChatPayload): { json: string; b
       messages: mappedMessages,
       githubProject: gh,
       builderMode: payload.builderMode || 'chat',
+      deviceId: payload.deviceId,
+      deviceApprovalMode: payload.deviceApprovalMode || 'high-risk',
       workspaceSnapshot: wsSnapshot,
       systemInstruction: payload.systemInstruction,
       maxOutputTokens: payload.maxOutputTokens,
@@ -313,6 +319,10 @@ export async function streamChatCompletion(
       handlers.onWorkspaceFile?.(parsed as unknown as { action: 'write' | 'delete'; path: string; content?: string; language?: string });
     } else if (eventName === 'workspace_sandbox') {
       handlers.onWorkspaceSandbox?.(parsed as unknown as { sandboxId?: string; previewUrl?: string; previewToken?: string });
+    } else if (eventName === 'device_screen' && parsed.frame) {
+      handlers.onDeviceScreen?.(parsed.frame as unknown as DeviceScreenFrame);
+    } else if (eventName === 'device_approval' && parsed.approval) {
+      handlers.onDeviceApproval?.(parsed.approval as unknown as DeviceApprovalRequest);
     } else if (eventName === 'grounding' && parsed.grounding) {
       handlers.onGrounding?.(parsed.grounding as unknown as GroundingMetadataInfo);
     } else if (eventName === 'usage') {

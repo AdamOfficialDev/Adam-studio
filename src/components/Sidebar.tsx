@@ -8,6 +8,7 @@ import {
   Layers,
   MessageSquare,
   MonitorDown,
+  MonitorSmartphone,
   MoreHorizontal,
   Palette,
   PanelLeftClose,
@@ -55,6 +56,7 @@ interface SidebarProps {
   onOpenSettings: () => void;
   onOpenCommandPalette: () => void;
   onOpenBookmarks: () => void;
+  onOpenDeviceControl?: () => void;
   onCycleSkin: () => void;
   showInstallButton?: boolean;
   onInstallApp?: () => void;
@@ -113,6 +115,7 @@ export const Sidebar = memo(function Sidebar({
   onOpenSettings,
   onOpenCommandPalette,
   onOpenBookmarks,
+  onOpenDeviceControl,
   onCycleSkin,
   showInstallButton = false,
   onInstallApp,
@@ -429,6 +432,23 @@ export const Sidebar = memo(function Sidebar({
               </TooltipTrigger>
               <TooltipContent side="right">Starred Answers</TooltipContent>
             </Tooltip>
+
+            {onOpenDeviceControl && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={onOpenDeviceControl}
+                    className="rounded-xl text-primary"
+                  >
+                    <MonitorSmartphone className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="right">Device Control (Desktop / HP)</TooltipContent>
+              </Tooltip>
+            )}
           </div>
 
           <div className="flex flex-col items-center gap-2">

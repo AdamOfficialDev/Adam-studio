@@ -5,6 +5,11 @@ import {
 } from './_github.js';
 import { hydrateKeyCooldowns, recordKeyCooldown } from './_cooldown.js';
 import { ensureDaytonaSandbox, execDaytonaCommand, deployAndPreviewDaytona, syncFilesToDaytona, cloneGitHubIntoDaytona } from './_daytona.js';
+import {
+  DEVICE_AGENT_SKILL,
+  DEVICE_TOOL_DECLARATIONS,
+  executeDeviceAgentTool,
+} from './_device.js';
 // ============================================================================
 // EMERGENT E1 AUTONOMOUS BUILDER SKILL & VIRTUAL WORKSPACE TOOLS
 // ============================================================================
@@ -1279,6 +1284,8 @@ export async function runResilientGeminiChat({
   daytonaApiKey = '',
   daytonaApiUrl = '',
   builderMode = 'chat',
+  deviceId = '',
+  deviceApprovalMode = 'high-risk',
   workspaceSnapshot = null,
   systemInstruction,
   maxOutputTokens,
@@ -1293,6 +1300,7 @@ export async function runResilientGeminiChat({
   sendEvent,
 }) {
   const isEmergentMode = builderMode === 'emergent';
+  const isDeviceMode = builderMode === 'device';
   const daytonaConfig = daytonaApiKey
     ? { apiKey: String(daytonaApiKey).trim(), apiUrl: String(daytonaApiUrl || 'https://app.daytona.io/api').trim().replace(/\/+$/, '') }
     : null;
@@ -1316,6 +1324,7 @@ export async function runResilientGeminiChat({
   const mergedSystemInstruction = [
     UNIVERSAL_MASTER_SKILL,
     isEmergentMode ? EMERGENT_AGENT_SKILL : '',
+    isDeviceMode ? DEVICE_AGENT_SKILL : '',
     daytonaSkillHint,
     systemInstruction,
     projectSection,
@@ -1325,11 +1334,12 @@ export async function runResilientGeminiChat({
   const hasGitHubTools = Boolean(
     githubProject?.owner && githubProject?.repo && githubProject?.agenticToolsEnabled
   );
-  const hasAnyTools = hasGitHubTools || isEmergentMode;
+  const hasAnyTools = hasGitHubTools || isEmergentMode || isDeviceMode;
   const activeDeclarations = [
     ...(hasGitHubTools ? GITHUB_TOOL_DECLARATIONS : []),
     ...(isEmergentMode ? WORKSPACE_TOOL_DECLARATIONS : []),
     ...(isEmergentMode && daytonaConfig ? DAYTONA_TOOL_DECLARATIONS : []),
+    ...(isDeviceMode ? DEVICE_TOOL_DECLARATIONS : []),
   ];
 
   const workingContents = buildGeminiContents(messages);
@@ -1396,7 +1406,7 @@ export async function runResilientGeminiChat({
   let totalAnswerText = '';
   let toolsHaveBeenUsed = false;
 
-  const MAX_TOOL_ROUNDS = isEmergentMode ? 16 : hasGitHubTools ? 6 : 1;
+  const MAX_TOOL_ROUNDS = isDeviceMode ? 24 : isEmergentMode ? 16 : hasGitHubTools ? 6 : 1;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const allowToolsThisRound = hasAnyTools && round < MAX_TOOL_ROUNDS - 1;
@@ -1435,8 +1445,8 @@ export async function runResilientGeminiChat({
       const promptHasUrl =
         typeof lastUserMsgText === 'string' &&
         /https?:\/\/[^\s)>\]"']+/i.test(lastUserMsgText);
-      const sendWithSearch = Boolean(enableGoogleSearch) && !isEmergentMode;
-      const sendWithUrl = Boolean(enableUrlContext) && promptHasUrl && !isEmergentMode;
+      const sendWithSearch = Boolean(enableGoogleSearch) && !isEmergentMode && !isDeviceMode;
+      const sendWithUrl = Boolean(enableUrlContext) && promptHasUrl && !isEmergentMode && !isDeviceMode;
 
       let result = await fetchGeminiWithRotationAndRetry({
         targetModel: activeModel,
@@ -1649,6 +1659,7 @@ export async function runResilientGeminiChat({
     toolsHaveBeenUsed = true;
     workingContents.push({ role: 'model', parts: roundOutcome.modelTurnParts });
 
+    const collectedFrames = [];
     const functionResponseParts = await Promise.all(
       roundOutcome.functionCalls.map(async (fc, idx) => {
         const callId = `tool-${round}-${idx}-${Date.now()}`;
@@ -1656,8 +1667,16 @@ export async function runResilientGeminiChat({
           typeof fc.name === 'string' &&
           (fc.name.startsWith('emergent_') || fc.name.startsWith('workspace_'));
         const isSandboxTool = typeof fc.name === 'string' && fc.name.startsWith('sandbox_');
+        const isDeviceTool = typeof fc.name === 'string' && fc.name.startsWith('device_');
 
-        const argsSummary = isSandboxTool
+        const argsSummary = isDeviceTool
+          ? String(
+              fc.args?.reason ||
+                fc.args?.appOrUrl ||
+                fc.args?.combo ||
+                (typeof fc.args?.x === 'number' ? `(${fc.args.x}, ${fc.args.y})` : fc.name)
+            )
+          : isSandboxTool
           ? String(fc.args?.command || (fc.name === 'sandbox_start_preview' ? 'port ' + (fc.args?.port || 5173) : 'sandbox'))
           : isWorkspaceTool
           ? String(
@@ -1679,7 +1698,8 @@ export async function runResilientGeminiChat({
             ? `#${fc.args?.startLine ?? 1}-${fc.args?.endLine ?? 'end'}`
             : '';
         const sig = `${fc.name}::${argsSummary}${rangeTag}`;
-        const shouldSkipCached = !isWorkspaceTool && !isSandboxTool && completedToolSignatureSet.has(sig);
+        const shouldSkipCached =
+          !isWorkspaceTool && !isSandboxTool && !isDeviceTool && completedToolSignatureSet.has(sig);
         const toolOutcome = shouldSkipCached
           ? {
               ok: true,
@@ -1689,6 +1709,15 @@ export async function runResilientGeminiChat({
                 note: `Tool ${fc.name}(${argsSummary}) sudah dijalankan pada state sebelum Continue. Jangan panggil ulang; gunakan konteks yang sudah ada atau langsung tulis jawaban akhir.`,
               },
             }
+          : isDeviceTool
+            ? await executeDeviceAgentTool({
+                name: fc.name,
+                args: fc.args || {},
+                deviceId,
+                approvalMode: deviceApprovalMode,
+                sendEvent,
+                signal,
+              })
           : isSandboxTool
             ? await executeDaytonaAgentTool({ githubProject, githubToken, 
                 name: fc.name,
@@ -1713,6 +1742,9 @@ export async function runResilientGeminiChat({
                 signal,
               });
         if (toolOutcome.ok) completedToolSignatureSet.add(sig);
+        if (toolOutcome.frame && toolOutcome.frame.imageBase64) {
+          collectedFrames.push(toolOutcome.frame);
+        }
 
         sendEvent('tool_result', {
           id: callId,
@@ -1730,6 +1762,22 @@ export async function runResilientGeminiChat({
         };
       })
     );
+
+    if (isDeviceMode && collectedFrames.length > 0) {
+      // Pangkas screenshot lama dari iterasi tool sebelumnya agar token & payload tetap ramping
+      for (const turn of workingContents) {
+        if (turn.role === 'user' && Array.isArray(turn.parts) && turn.parts.some((p) => p?.functionResponse)) {
+          turn.parts = turn.parts.filter((p) => !p?.inlineData);
+        }
+      }
+      const latestFrame = collectedFrames[collectedFrames.length - 1];
+      functionResponseParts.push({
+        inlineData: {
+          mimeType: latestFrame.mimeType || 'image/png',
+          data: latestFrame.imageBase64,
+        },
+      });
+    }
 
     workingContents.push({ role: 'user', parts: functionResponseParts });
   }
