@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Adam Companion</string>
+    <string name="accessibility_service_label">Adam AI Device Control</string>
+    <string name="accessibility_service_description">Mengizinkan Adam Studio AI melakukan tap, swipe, scroll, mengetik teks, dan navigasi tombol Back/Home di perangkat Android Anda saat sesi kontrol aktif.</string>
+</resources>

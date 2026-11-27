@@ -55,6 +55,8 @@ interface DiffSummary {
   addedPaths: string[];
   modifiedPaths: string[];
   hasChanges: boolean;
+  hasWorkflowChanges?: boolean;
+  missingWorkflowScope?: boolean;
 }
 
 interface PushResult {
@@ -110,6 +112,7 @@ export function GitHubPushDialog({
   const [repoInput, setRepoInput] = useState(defaultRepoSlug);
   const [branch, setBranch] = useState(defaultBranch || 'main');
   const [createBranchIfMissing, setCreateBranchIfMissing] = useState(true);
+  const [includeWorkflows, setIncludeWorkflows] = useState(true);
   const [commitStyle, setCommitStyle] = useState<CommitMessageStyle>('short');
   const [commitMessage, setCommitMessage] = useState('');
   const [customNote, setCustomNote] = useState('');
@@ -130,6 +133,11 @@ export function GitHubPushDialog({
   const resolvedModel = activeModel || readActiveModelFromStorage();
 
   const parsedRepo = useMemo(() => parseRepoInput(repoInput), [repoInput]);
+  const hasAnyWorkflowFile = useMemo(
+    () => files.some((f) => f.path?.toLowerCase().startsWith('.github/workflows/')),
+    [files]
+  );
+
   const pushableFiles = useMemo(
     () =>
       files.filter(
@@ -137,9 +145,10 @@ export function GitHubPushDialog({
           f.path &&
           !f.path.startsWith('node_modules/') &&
           !f.path.startsWith('.git/') &&
-          !f.path.startsWith('dist/')
+          !f.path.startsWith('dist/') &&
+          (includeWorkflows || !f.path.toLowerCase().startsWith('.github/workflows/'))
       ),
-    [files]
+    [files, includeWorkflows]
   );
 
   const changedFilesForAi = useMemo(() => {
@@ -194,6 +203,8 @@ export function GitHubPushDialog({
         addedPaths: Array.isArray(data.addedPaths) ? data.addedPaths.map(String) : [],
         modifiedPaths: Array.isArray(data.modifiedPaths) ? data.modifiedPaths.map(String) : [],
         hasChanges: Boolean(data.hasChanges),
+        hasWorkflowChanges: Boolean(data.hasWorkflowChanges),
+        missingWorkflowScope: Boolean(data.missingWorkflowScope),
       });
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -316,7 +327,17 @@ export function GitHubPushDialog({
 
       const data = (await res.json()) as Record<string, unknown>;
       if (!res.ok || data.error || data.ok === false) {
-        throw new Error(String(data.message || data.error || `Gagal push (${res.status})`));
+        const rawErr = String(data.message || data.error || `Gagal push (${res.status})`);
+        if (
+          includeWorkflows &&
+          (diffSummary?.hasWorkflowChanges || hasAnyWorkflowFile) &&
+          /^not found$/i.test(rawErr.trim())
+        ) {
+          throw new Error(
+            'GitHub mengembalikan "Not Found" karena push ini menyertakan file ".github/workflows/*" sementara PAT kamu belum punya izin "workflow". Centang scope "workflow" di PAT GitHub kamu, atau matikan centang "Sertakan .github/workflows/*" di atas.'
+          );
+        }
+        throw new Error(rawErr);
       }
 
       setResult({
@@ -398,15 +419,66 @@ export function GitHubPushDialog({
             </div>
           </div>
 
-          <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={createBranchIfMissing}
-              onChange={(e) => setCreateBranchIfMissing(e.target.checked)}
-              className="h-3.5 w-3.5 rounded border-border accent-primary"
-            />
-            <span>Otomatis buat branch baru jika branch target belum ada di GitHub</span>
-          </label>
+          <div className="space-y-2">
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={createBranchIfMissing}
+                onChange={(e) => setCreateBranchIfMissing(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-border accent-primary"
+              />
+              <span>Otomatis buat branch baru jika branch target belum ada di GitHub</span>
+            </label>
+
+            {hasAnyWorkflowFile && (
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={includeWorkflows}
+                  onChange={(e) => setIncludeWorkflows(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-border accent-primary"
+                />
+                <span>
+                  Sertakan file <code className="font-mono text-[10.5px]">.github/workflows/*</code> (wajib izin{' '}
+                  <code className="font-mono text-[10.5px]">workflow</code> di PAT)
+                </span>
+              </label>
+            )}
+          </div>
+
+          {diffSummary?.missingWorkflowScope && includeWorkflows && (
+            <div className="space-y-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                <div>
+                  <p className="font-semibold">PAT belum punya izin &quot;workflow&quot;</p>
+                  <p className="mt-0.5 text-[11px] opacity-90">
+                    Commit ini berisi <code className="font-mono">.github/workflows/*</code>. Tanpa scope{' '}
+                    <code className="font-mono">workflow</code>, GitHub akan menolak push dengan error{' '}
+                    <code className="font-mono">Not Found</code>.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 pl-6">
+                <a
+                  href="https://github.com/settings/tokens"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-background/80 px-2.5 py-1 text-[11px] font-medium hover:underline"
+                >
+                  <span>Edit PAT (Centang workflow)</span>
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setIncludeWorkflows(false)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-background/80 px-2.5 py-1 text-[11px] font-medium hover:bg-background"
+                >
+                  <span>Kecualikan Workflow</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Pre-flight Diff Status Card */}
           <div
