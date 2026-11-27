@@ -1,35 +1,7 @@
-import { memo, useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ChangeEvent,
-  type ClipboardEvent,
-  type DragEvent,
-  type KeyboardEvent, } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  ArrowUp,
-  Brain,
-  Globe,
-  Link2,
-  Check,
-  Crosshair,
-  FileAudio,
-  FileCode2,
-  FileText,
-  FileVideo,
-  Loader2,
-  Mic,
-  Paperclip,
-  Slash,
-  SlidersHorizontal,
-  Rocket,
-  Sparkles,
-  Square,
-  Terminal,
-  Wand2,
-  X,
-} from 'lucide-react';
+  ArrowUp, Brain, Globe, Link2, Check, Crosshair, FileAudio, FileCode2, FileText, FileVideo, Loader2, Mic, Paperclip, Slash, SlidersHorizontal, Rocket, Sparkles, Square, Terminal, Wand2, X, Undo2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -56,6 +28,8 @@ import { estimateTokens, formatBytes, generateId } from '@/lib/utils';
 import type { AppSettings, Attachment, BuilderMode, VisualTarget } from '@/types/chat';
 import { cn } from '@/lib/utils';
 
+import { enhancePromptWithModel } from '../lib/promptEnhancer';
+import { SelectionQuotePopover, type SelectionQuotePayload } from './SelectionQuotePopover';
 interface SpeechRecognitionAlternativeLike {
   transcript: string;
 }
@@ -701,22 +675,115 @@ export const ChatComposer = memo(function ChatComposer({
     }
   };
 
-  const handleEnhancePrompt = () => {
-    const trimmed = input.trim();
-    if (!trimmed) return;
-    const enhanced = [
-      `Tolong kerjakan permintaan berikut secara terstruktur dan menyeluruh:`,
-      ``,
-      `**Tujuan Utama:** ${trimmed}`,
-      ``,
-      `**Kriteria Output:**`,
-      `- Berikan analisis arsitektur / langkah jelas`,
-      `- Sertakan contoh implementasi lengkap & siap jalan`,
-      `- Jelaskan edge-case dan optimasi performa`,
-    ].join('\n');
-    setInput(enhanced);
-    setTimeout(adjustHeight, 10);
-    toast.success('Prompt diperkaya');
+    const [isEnhancing, setIsEnhancing] = useState(false);
+  const [previousDraftBeforeEnhance, setPreviousDraftBeforeEnhance] = useState<string | null>(null);
+  const [enhanceMeta, setEnhanceMeta] = useState<{ model: string; fallback: boolean } | null>(null);
+  const enhanceAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      enhanceAbortRef.current?.abort();
+    };
+  }, []);
+
+  const handleInsertQuote = useCallback((payload: SelectionQuotePayload) => {
+    const rawQuote = (payload.quote || '').trim();
+    if (!rawQuote) return;
+
+    const quotedBlock = rawQuote
+      .split(/\r?\n/)
+      .map((line) => `> ${line}`)
+      .join('\n');
+
+    const suffix =
+      payload.mode === 'explain'
+        ? '\n\nJelaskan bagian di atas secara ringkas, jelas, dan berikan contoh konkret jika relevan.'
+        : '\n\n';
+
+    setInput((prev) => {
+      const base = prev.trimEnd();
+      return base ? `${base}\n\n${quotedBlock}${suffix}` : `${quotedBlock}${suffix}`;
+    });
+
+    requestAnimationFrame(() => {
+      adjustHeight();
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const len = el.value.length;
+        el.setSelectionRange(len, len);
+      }
+    });
+  }, []);
+
+  const handleUndoEnhance = () => {
+    if (previousDraftBeforeEnhance === null) return;
+    setInput(previousDraftBeforeEnhance);
+    setPreviousDraftBeforeEnhance(null);
+    setEnhanceMeta(null);
+    requestAnimationFrame(() => {
+      adjustHeight();
+      textareaRef.current?.focus();
+    });
+  };
+
+  const handleCancelEnhance = () => {
+    enhanceAbortRef.current?.abort();
+    enhanceAbortRef.current = null;
+    setIsEnhancing(false);
+  };
+
+const handleEnhancePrompt = async () => {
+    if (isEnhancing) {
+      handleCancelEnhance();
+      return;
+    }
+
+    const raw = input.trim();
+    if (!raw) return;
+
+    const controller = new AbortController();
+    enhanceAbortRef.current = controller;
+    setPreviousDraftBeforeEnhance(input);
+    setEnhanceMeta(null);
+    setIsEnhancing(true);
+
+    try {
+      const result = await enhancePromptWithModel({
+        prompt: raw,
+        model: model || 'gemini-3.8-flash',
+        builderMode: builderMode === 'emergent',
+        apiKey: settings.apiKey,
+        demoMode: Boolean(settings.demoMode),
+        signal: controller.signal,
+        onStream: (partial) => {
+          if (partial) {
+            setInput(partial);
+            requestAnimationFrame(() => adjustHeight());
+          }
+        },
+      });
+
+      if (result.enhancedText) {
+        setInput(result.enhancedText);
+        setEnhanceMeta({ model: result.modelUsed, fallback: result.usedFallback });
+      }
+    } catch (err) {
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        setInput(raw);
+        setPreviousDraftBeforeEnhance(null);
+      }
+    } finally {
+      if (enhanceAbortRef.current === controller) {
+        enhanceAbortRef.current = null;
+      }
+      setIsEnhancing(false);
+      requestAnimationFrame(() => {
+        adjustHeight();
+        textareaRef.current?.focus();
+      });
+    }
   };
 
   const applySlashTemplate = (template: string) => {
@@ -1026,6 +1093,49 @@ export const ChatComposer = memo(function ChatComposer({
         )}
 
         <StudioScroll ref={inputScrollRef} className="max-h-[185px] w-full" autoHide="scroll">
+          {(isEnhancing || previousDraftBeforeEnhance !== null) && (
+            <div className="chat-enhance-pill mb-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/30 bg-primary/[0.08] px-3 py-1.5 text-[11px]">
+              <div className="flex min-w-0 items-center gap-2">
+                {isEnhancing ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+                    <span className="truncate font-medium text-foreground">
+                      Menyempurnakan prompt dengan{' '}
+                      <span className="font-mono text-primary">{model || 'gemini-3.8-flash'}</span>...
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-3.5 w-3.5 shrink-0 text-primary" />
+                    <span className="truncate text-foreground/90">
+                      {enhanceMeta?.fallback
+                        ? 'Ditingkatkan (mode struktur lokal)'
+                        : `Ditingkatkan oleh ${enhanceMeta?.model || model || 'gemini-3.8-flash'}`}
+                    </span>
+                  </>
+                )}
+              </div>
+              {isEnhancing ? (
+                <button
+                  type="button"
+                  onClick={handleCancelEnhance}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border/70 bg-background/80 px-2 py-0.5 font-medium text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  <X className="h-3 w-3" />
+                  <span>Batal</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleUndoEnhance}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-primary/35 bg-background/85 px-2 py-0.5 font-medium text-primary transition-colors hover:bg-primary/15"
+                >
+                  <Undo2 className="h-3 w-3" />
+                  <span>Undo</span>
+                </button>
+              )}
+            </div>
+          )}
           <Textarea
             ref={textareaRef}
             rows={1}
@@ -1482,6 +1592,7 @@ export const ChatComposer = memo(function ChatComposer({
         <span className="hidden sm:inline">Ctrl+K Palette • Ctrl+\ Zen Mode</span>
         <span className="sm:hidden">Ketik / untuk template</span>
       </div>
+      <SelectionQuotePopover onInsertQuote={handleInsertQuote} />
     </div>
   );
 });

@@ -246,7 +246,7 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
           )}
 
         {hasAnswerStarted ? (
-          <div className="w-full min-w-0 space-y-2">
+          <div className="w-full min-w-0 space-y-2" data-assistant-selectable="true">
             {split.frozenPrefix && (
               <MarkdownRenderer
                 content={split.frozenPrefix}

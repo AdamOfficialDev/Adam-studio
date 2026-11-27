@@ -435,7 +435,7 @@ export const ChatMessage = memo(function ChatMessage({
         )}
 
         {message.content ? (
-          <div className="relative w-full min-w-0">
+          <div className="relative w-full min-w-0" data-assistant-selectable="true">
             <MarkdownRenderer
               content={message.content}
               isStreaming={message.isStreaming}
