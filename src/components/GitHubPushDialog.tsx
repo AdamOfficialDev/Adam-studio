@@ -343,8 +343,8 @@ export function GitHubPushDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] w-[calc(100vw-24px)] max-w-xl overflow-y-auto rounded-3xl border border-border/90 bg-card/95 p-0 shadow-2xl backdrop-blur-xl">
-        <div className="border-b border-border/75 bg-gradient-to-r from-primary/[0.11] via-primary/[0.03] to-transparent px-5 py-4 sm:px-6">
+      <DialogContent className="flex max-h-[88dvh] w-[calc(100vw-20px)] max-w-xl flex-col gap-0 overflow-hidden rounded-3xl border border-border/90 bg-card/95 p-0 shadow-2xl backdrop-blur-xl">
+        <div className="shrink-0 border-b border-border/75 bg-gradient-to-r from-primary/[0.11] via-primary/[0.03] to-transparent px-4 py-3.5 sm:px-6 sm:py-4">
           <DialogHeader className="space-y-1 text-left">
             <DialogTitle className="flex items-center gap-2.5 text-base font-semibold tracking-tight">
               <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/35 bg-primary/15 text-primary shadow-sm">
@@ -360,7 +360,7 @@ export function GitHubPushDialog({
           </DialogHeader>
         </div>
 
-        <div className="space-y-4 p-5 sm:p-6">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 sm:p-6">
           {!githubToken?.trim() && (
             <div className="flex items-start gap-2.5 rounded-2xl border border-amber-500/35 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -665,7 +665,7 @@ export function GitHubPushDialog({
         </div>
 
         {/* Footer */}
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/75 bg-muted/20 px-5 py-3.5 sm:px-6">
+        <div className="shrink-0 flex flex-wrap items-center justify-between gap-2 border-t border-border/75 bg-card/95 px-4 py-3 sm:px-6 sm:py-3.5">
           <span className="hidden truncate font-mono text-[11px] text-muted-foreground sm:inline">
             {parsedRepo ? `${parsedRepo.owner}/${parsedRepo.repo} → ${branch || 'main'}` : 'Target belum dipilih'}
           </span>
