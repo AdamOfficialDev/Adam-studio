@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  ArrowUp, Brain, Globe, Link2, Check, Crosshair, FileAudio, FileCode2, FileText, FileVideo, Loader2, Mic, Paperclip, Slash, SlidersHorizontal, Rocket, Sparkles, Square, Terminal, Wand2, X, Undo2 } from 'lucide-react';
+  ArrowUp, Brain, Globe, Link2, Check, Crosshair, FileAudio, FileCode2, FileText, FileVideo, Loader2, MessageSquare, Mic, MonitorSmartphone, Paperclip, Slash, SlidersHorizontal, Rocket, Sparkles, Square, Terminal, Wand2, X, Undo2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -74,6 +74,8 @@ interface ChatComposerProps {
   onToggleBuilderMode?: (mode: BuilderMode) => void;
   workspaceFileCount?: number;
   onOpenWorkspace?: () => void;
+  onOpenDevicePanel?: () => void;
+  connectedDeviceName?: string | null;
 }
 
 const TEXT_EXTENSIONS = new Set([
@@ -248,6 +250,8 @@ export const ChatComposer = memo(function ChatComposer({
   onToggleBuilderMode,
   workspaceFileCount = 0,
   onOpenWorkspace,
+  onOpenDevicePanel,
+  connectedDeviceName,
 }: ChatComposerProps) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -1151,7 +1155,9 @@ const handleEnhancePrompt = async () => {
                 ? `Instruksi edit untuk <${visualTarget.selector}>...`
                 : builderMode === 'emergent'
                   ? 'Deskripsikan aplikasi yang ingin dibangun Emergent Agent...'
-                  : `Tanya ${model}...`
+                  : builderMode === 'device'
+                    ? 'Perintahkan AI mengendalikan Desktop / HP Anda (mis: buka browser, cari X, klik Y)...'
+                    : `Tanya ${model}...`
             }
             className="chat-composer-textarea min-h-[42px] w-full resize-none overflow-hidden border-0 bg-transparent px-2 py-2 text-[15px] leading-relaxed shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
           />
@@ -1169,22 +1175,72 @@ const handleEnhancePrompt = async () => {
             />
 
             {onToggleBuilderMode && (
+              <div
+                className="inline-flex h-8 items-center rounded-xl border border-border/75 bg-background/60 p-0.5"
+                role="group"
+                aria-label="Mode Workspace"
+              >
+                <button
+                  type="button"
+                  disabled={isStreaming}
+                  onClick={() => onToggleBuilderMode('chat')}
+                  className={cn(
+                    'inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-semibold transition-colors',
+                    builderMode === 'chat'
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                  title="Chat Mode"
+                >
+                  <MessageSquare className="h-3 w-3" />
+                  <span className="hidden sm:inline">Chat</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isStreaming}
+                  onClick={() => onToggleBuilderMode('emergent')}
+                  className={cn(
+                    'inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-semibold transition-colors',
+                    builderMode === 'emergent'
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                  title="Emergent Autonomous App Builder"
+                >
+                  <Rocket className="h-3 w-3" />
+                  <span className="hidden sm:inline">Emergent</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isStreaming}
+                  onClick={() => onToggleBuilderMode('device')}
+                  className={cn(
+                    'inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-semibold transition-colors',
+                    builderMode === 'device'
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                  title="Device Control Operator (Desktop / HP)"
+                >
+                  <MonitorSmartphone className="h-3 w-3" />
+                  <span className="hidden sm:inline">Device</span>
+                </button>
+              </div>
+            )}
+
+            {(builderMode === 'device' || connectedDeviceName) && onOpenDevicePanel && (
               <Button
                 type="button"
-                variant={builderMode === 'emergent' ? 'secondary' : 'ghost'}
+                variant="secondary"
                 size="sm"
-                disabled={isStreaming}
-                onClick={() => onToggleBuilderMode(builderMode === 'emergent' ? 'chat' : 'emergent')}
-                className={cn(
-                  'h-8 gap-1.5 rounded-xl px-2.5 text-xs font-semibold transition-colors',
-                  builderMode === 'emergent'
-                    ? 'border border-primary/45 bg-primary/15 text-primary hover:bg-primary/25'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-                title="Switch Mode: Chat Biasa vs Emergent Autonomous App Builder"
+                onClick={onOpenDevicePanel}
+                className="h-8 gap-1.5 rounded-xl border border-primary/35 bg-primary/10 px-2.5 text-[11px] font-semibold text-primary hover:bg-primary/20"
+                title="Buka Device Control Center"
               >
-                <Rocket className="h-3.5 w-3.5" />
-                <span>{builderMode === 'emergent' ? 'Emergent' : 'Chat'}</span>
+                <MonitorSmartphone className="h-3.5 w-3.5" />
+                <span className="max-w-[90px] truncate">
+                  {connectedDeviceName || 'Control'}
+                </span>
               </Button>
             )}
 

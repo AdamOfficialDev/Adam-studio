@@ -1,5 +1,11 @@
 import { useSyncExternalStore } from 'react';
-import type { EmergentClarification, GroundingMetadataInfo, TokenUsage, ToolTraceItem } from '@/types/chat';
+import type {
+  DeviceApprovalRequest,
+  EmergentClarification,
+  GroundingMetadataInfo,
+  TokenUsage,
+  ToolTraceItem,
+} from '@/types/chat';
 
 export interface ActiveStreamState {
   convId: string;
@@ -9,6 +15,7 @@ export interface ActiveStreamState {
   statusText?: string;
   toolEvents?: ToolTraceItem[];
   clarification?: EmergentClarification;
+  deviceApproval?: DeviceApprovalRequest | null;
   grounding?: GroundingMetadataInfo;
   tps: number;
   thinkingDurationMs?: number;

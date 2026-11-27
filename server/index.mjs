@@ -5,6 +5,20 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { handleGitHubAction } from '../api/_github.js';
 import { handleDaytonaAction } from '../api/_daytona.js';
+import { ADAM_BRIDGE_SCRIPT } from '../api/_bridgeScript.js';
+import {
+  createPairingSession,
+  getDeviceFrame,
+  isDeviceSharedStoreEnabled,
+  listDevices,
+  pollBridgeCommands,
+  pushDeviceFrame,
+  registerDevice,
+  removeDevice,
+  resolveDeviceApproval,
+  setDevicePaused,
+  submitBridgeCommandResult,
+} from '../api/_device.js';
 import { getKeyPoolStatusAsync, runResilientGeminiChat } from '../api/_gemini.js';
 import {
   hydrateKeyCooldowns,
@@ -81,6 +95,98 @@ app.post('/api/github', async (req, res) => {
     res.status(result.status).json(result.payload);
   } catch (err) {
     res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'GitHub error' });
+  }
+});
+
+app.get('/api/device', async (req, res) => {
+  try {
+    const action = String(req.query.action || 'list');
+    const deviceId = String(req.query.deviceId || '');
+    if (action === 'bridge-script') {
+      const diskPath = path.join(rootDir, 'companion', 'adam-device-bridge.mjs');
+      const scriptContent = fs.existsSync(diskPath)
+        ? fs.readFileSync(diskPath, 'utf8')
+        : ADAM_BRIDGE_SCRIPT;
+      res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="adam-device-bridge.mjs"');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.send(scriptContent);
+    }
+    if (action === 'list') {
+      const devices = await listDevices();
+      return res.json({ ok: true, devices, sharedStore: isDeviceSharedStoreEnabled() });
+    }
+    if (action === 'frame' && deviceId) {
+      const frame = await getDeviceFrame(deviceId);
+      return res.json({ ok: true, frame });
+    }
+    if (action === 'poll' && deviceId) {
+      const commands = await pollBridgeCommands(deviceId, true);
+      return res.json({ ok: true, commands });
+    }
+    return res.status(400).json({ ok: false, message: 'Parameter action GET tidak valid.' });
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'Device error' });
+  }
+});
+
+app.post('/api/device', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const action = String(body.action || '');
+    if (action === 'create-pair') {
+      const session = await createPairingSession(body.platform || 'desktop');
+      return res.json({ ok: true, ...session });
+    }
+    if (action === 'register') {
+      const out = await registerDevice(body);
+      return res.status(out.ok ? 200 : 400).json(out);
+    }
+    if (action === 'list') {
+      const devices = await listDevices();
+      return res.json({ ok: true, devices });
+    }
+    if (action === 'remove') {
+      if (!body.deviceId) return res.status(400).json({ ok: false, message: 'deviceId wajib diisi' });
+      await removeDevice(String(body.deviceId));
+      return res.json({ ok: true });
+    }
+    if (action === 'pause') {
+      const out = await setDevicePaused(String(body.deviceId || ''), Boolean(body.paused));
+      return res.status(out.ok ? 200 : 404).json(out);
+    }
+    if (action === 'push-frame') {
+      if (!body.deviceId) return res.status(400).json({ ok: false, message: 'deviceId wajib diisi' });
+      const out = await pushDeviceFrame(String(body.deviceId), body.frame || body);
+      return res.json(out);
+    }
+    if (action === 'poll-commands') {
+      if (!body.deviceId) return res.status(400).json({ ok: false, message: 'deviceId wajib diisi' });
+      const commands = await pollBridgeCommands(String(body.deviceId), true);
+      return res.json({ ok: true, commands });
+    }
+    if (action === 'submit-result') {
+      if (!body.commandId || !body.deviceId) {
+        return res.status(400).json({ ok: false, message: 'commandId & deviceId wajib diisi' });
+      }
+      const out = await submitBridgeCommandResult({
+        commandId: String(body.commandId),
+        deviceId: String(body.deviceId),
+        ok: body.ok !== false,
+        output: body.output || '',
+        error: body.error || '',
+        frame: body.frame || null,
+      });
+      return res.json(out);
+    }
+    if (action === 'resolve-approval') {
+      if (!body.approvalId) return res.status(400).json({ ok: false, message: 'approvalId wajib diisi' });
+      const out = await resolveDeviceApproval(String(body.approvalId), Boolean(body.approved));
+      return res.json(out);
+    }
+    return res.status(400).json({ ok: false, message: `Unknown device action: ${action}` });
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'Device error' });
   }
 });
 
@@ -650,6 +756,8 @@ app.post('/api/chat', async (req, res) => {
     messages = [],
     githubProject,
     builderMode = 'chat',
+    deviceId = '',
+    deviceApprovalMode = 'high-risk',
     workspaceSnapshot = null,
     systemInstruction = '',
     maxOutputTokens = 8192,
@@ -738,6 +846,8 @@ app.post('/api/chat', async (req, res) => {
       daytonaApiKey,
       daytonaApiUrl,
       builderMode,
+      deviceId,
+      deviceApprovalMode,
       workspaceSnapshot,
       systemInstruction,
       maxOutputTokens,

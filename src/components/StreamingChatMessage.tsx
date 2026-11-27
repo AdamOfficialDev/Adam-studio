@@ -1,5 +1,5 @@
-import { memo, useMemo } from 'react';
-import { Activity, ArrowUpRight, Cpu, FileCode2, Globe, Link2 } from 'lucide-react';
+import { memo, useMemo, useState } from 'react';
+import { Activity, ArrowUpRight, Check, Cpu, FileCode2, Globe, Link2, ShieldAlert, X } from 'lucide-react';
 import { BrandLogoMark } from '@/components/BrandLogo';
 import { ChatMessage } from '@/components/ChatMessage';
 import { MarkdownRenderer } from '@/components/MarkdownRenderer';
@@ -8,6 +8,7 @@ import { EmergentClarificationCard, EmergentPlanCard } from '@/components/Emerge
 import { ToolTraceCard } from '@/components/ToolTraceCard';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { useMessageStreamOverride } from '@/lib/streamStore';
 import type { ArtifactItem, ChatMessage as ChatMessageType, EmergentPlan } from '@/types/chat';
 
@@ -30,6 +31,7 @@ interface StreamingChatMessageProps {
   livePlan?: EmergentPlan | null;
   workspaceFileCount?: number;
   onOpenWorkspace?: () => void;
+  onResolveDeviceApproval?: (approvalId: string, approved: boolean) => void | Promise<void>;
 }
 
 function splitStreamingContent(content: string): {
@@ -106,8 +108,10 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
   livePlan = null,
   workspaceFileCount = 0,
   onOpenWorkspace,
+  onResolveDeviceApproval,
 }: StreamingChatMessageProps) {
   const override = useMessageStreamOverride(convId, message.id);
+  const [resolvingApproval, setResolvingApproval] = useState(false);
 
   const split = useMemo(() => {
     if (!override) return null;
@@ -203,6 +207,64 @@ export const StreamingChatMessage = memo(function StreamingChatMessage({
               onSubmitClarification?.(message.id, replyText, summaryText)
             }
           />
+        )}
+
+        {override.deviceApproval && (
+          <div className="rounded-2xl border border-amber-500/50 bg-amber-500/10 p-3.5 shadow-md">
+            <div className="flex items-start gap-2.5">
+              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-bold text-amber-300">
+                    Izin Eksekusi Device ({override.deviceApproval.riskLevel.toUpperCase()})
+                  </span>
+                  <span className="rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[10px] text-amber-200">
+                    {override.deviceApproval.toolName}
+                  </span>
+                </div>
+                <p className="text-xs text-foreground">{override.deviceApproval.summary}</p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={resolvingApproval}
+                    onClick={async () => {
+                      if (!override.deviceApproval || !onResolveDeviceApproval) return;
+                      setResolvingApproval(true);
+                      try {
+                        await onResolveDeviceApproval(override.deviceApproval.approvalId, true);
+                      } finally {
+                        setResolvingApproval(false);
+                      }
+                    }}
+                    className="h-7 gap-1.5 rounded-lg bg-emerald-600 px-3 text-xs text-white hover:bg-emerald-500"
+                  >
+                    <Check className="h-3.5 w-3.5" />
+                    Izinkan
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    disabled={resolvingApproval}
+                    onClick={async () => {
+                      if (!override.deviceApproval || !onResolveDeviceApproval) return;
+                      setResolvingApproval(true);
+                      try {
+                        await onResolveDeviceApproval(override.deviceApproval.approvalId, false);
+                      } finally {
+                        setResolvingApproval(false);
+                      }
+                    }}
+                    className="h-7 gap-1.5 rounded-lg px-3 text-xs"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Tolak
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {override.grounding &&

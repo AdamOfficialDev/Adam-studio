@@ -1,6 +1,55 @@
 export type ThemeSkin = 'obsidian' | 'claude' | 'aurora' | 'paper';
-export type BuilderMode = 'chat' | 'emergent';
+export type BuilderMode = 'chat' | 'emergent' | 'device';
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high';
+export type DeviceApprovalMode = 'always' | 'high-risk' | 'autonomous';
+export type DevicePlatform = 'desktop' | 'android';
+
+export interface DeviceInfo {
+  id: string;
+  name: string;
+  platform: DevicePlatform;
+  os: string;
+  screenWidth: number;
+  screenHeight: number;
+  status: 'online' | 'busy' | 'paused' | 'offline';
+  isSimulator?: boolean;
+  connectedAt: number;
+  lastSeenAt: number;
+  lastAction?: string;
+}
+
+export interface DeviceScreenFrame {
+  deviceId: string;
+  platform: DevicePlatform;
+  imageBase64: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  cursorX?: number;
+  cursorY?: number;
+  actionLabel?: string;
+  capturedAt: number;
+}
+
+export interface DeviceApprovalRequest {
+  approvalId: string;
+  deviceId: string;
+  toolName: string;
+  riskLevel: 'medium' | 'high';
+  summary: string;
+  args: Record<string, unknown>;
+  createdAt: number;
+}
+
+export interface DeviceActionLog {
+  id: string;
+  toolName: string;
+  summary: string;
+  status: 'running' | 'done' | 'error' | 'denied';
+  cursorX?: number;
+  cursorY?: number;
+  timestamp: number;
+}
 
 export interface Attachment {
   id: string;
@@ -219,6 +268,7 @@ export interface AppSettings {
   activePersonaId: string;
   skin: ThemeSkin;
   density: 'comfortable' | 'compact';
+  deviceApprovalMode?: DeviceApprovalMode;
 }
 
 export interface ServerHealth {
