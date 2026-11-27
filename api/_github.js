@@ -201,7 +201,267 @@ export async function cloneGitHubRepoFiles({
   };
 }
 
+
+function utf8ToBase64GitHub(str) {
+  const bytes = new TextEncoder().encode(String(str ?? ""));
+  let bin = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(bin);
+}
+
+async function ghApiJson(url, token, options = {}) {
+  const resp = await fetch(url, {
+    ...options,
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "Adam-Studio",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  const text = await resp.text();
+  let json = {};
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    json = { message: text };
+  }
+  return { ok: resp.ok, status: resp.status, data: json };
+}
+
+async function pushWorkspaceToGitHub({
+  token,
+  owner,
+  repo,
+  branch,
+  message,
+  files,
+  createBranch = true,
+}) {
+  if (!token) throw new Error("GitHub PAT wajib diisi untuk push ke repository.");
+  if (!owner || !repo) throw new Error("Owner dan nama repository wajib diisi.");
+  if (!message || !String(message).trim()) throw new Error("Pesan commit tidak boleh kosong.");
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error("Tidak ada file workspace untuk di-push.");
+  }
+
+  const validFiles = files
+    .map((f) => ({
+      path: String(f?.path || "").replace(/^\/+/, "").trim(),
+      content: typeof f?.content === "string" ? f.content : String(f?.content ?? ""),
+    }))
+    .filter(
+      (f) =>
+        f.path &&
+        !f.path.startsWith(".git/") &&
+        !f.path.startsWith("node_modules/") &&
+        !f.path.startsWith("dist/")
+    );
+
+  if (validFiles.length === 0) {
+    throw new Error("Semua file workspace terfilter atau path tidak valid.");
+  }
+
+  const repoRes = await ghApiJson(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+    token
+  );
+  if (!repoRes.ok) {
+    throw new Error(repoRes.data?.message || `Repository ${owner}/${repo} tidak dapat diakses (${repoRes.status})`);
+  }
+
+  const defaultBranch = repoRes.data.default_branch || "main";
+  const targetBranch = (branch && String(branch).trim()) || defaultBranch;
+
+  let baseCommitSha = null;
+  let baseTreeSha = null;
+  let createdBranch = false;
+  let remainingFiles = validFiles;
+
+  const refRes = await ghApiJson(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(targetBranch)}`,
+    token
+  );
+
+  if (refRes.ok && refRes.data?.object?.sha) {
+    baseCommitSha = refRes.data.object.sha;
+  } else if (refRes.status === 404 || refRes.status === 409) {
+    const defaultRefRes = await ghApiJson(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
+      token
+    );
+
+    if (defaultRefRes.ok && defaultRefRes.data?.object?.sha) {
+      if (!createBranch) {
+        throw new Error(`Branch "${targetBranch}" belum ada di repository.`);
+      }
+      baseCommitSha = defaultRefRes.data.object.sha;
+      createdBranch = true;
+    } else {
+      const first = validFiles[0];
+      const initRes = await ghApiJson(
+        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${first.path.split("/").map(encodeURIComponent).join("/")}`,
+        token,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            message: String(message).trim(),
+            content: utf8ToBase64GitHub(first.content),
+            branch: targetBranch,
+          }),
+        }
+      );
+
+      if (!initRes.ok) {
+        throw new Error(initRes.data?.message || "Gagal membuat initial commit pada repo kosong.");
+      }
+
+      baseCommitSha = initRes.data?.commit?.sha || null;
+      baseTreeSha = initRes.data?.commit?.tree?.sha || null;
+      remainingFiles = validFiles.slice(1);
+
+      if (remainingFiles.length === 0 && baseCommitSha) {
+        return {
+          ok: true,
+          commitSha: baseCommitSha,
+          branch: targetBranch,
+          commitUrl: `https://github.com/${owner}/${repo}/commit/${baseCommitSha}`,
+          branchUrl: `https://github.com/${owner}/${repo}/tree/${targetBranch}`,
+          filesPushed: 1,
+          createdBranch: true,
+        };
+      }
+    }
+  } else {
+    throw new Error(refRes.data?.message || `Gagal memeriksa branch ${targetBranch}`);
+  }
+
+  if (baseCommitSha && !baseTreeSha) {
+    const commitRes = await ghApiJson(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${baseCommitSha}`,
+      token
+    );
+    if (!commitRes.ok || !commitRes.data?.tree?.sha) {
+      throw new Error(commitRes.data?.message || "Gagal membaca base commit tree.");
+    }
+    baseTreeSha = commitRes.data.tree.sha;
+  }
+
+  const treeEntries = [];
+  const BATCH_SIZE = 6;
+  for (let i = 0; i < remainingFiles.length; i += BATCH_SIZE) {
+    const chunk = remainingFiles.slice(i, i + BATCH_SIZE);
+    const createdBlobs = await Promise.all(
+      chunk.map(async (f) => {
+        const blobRes = await ghApiJson(
+          `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs`,
+          token,
+          {
+            method: "POST",
+            body: JSON.stringify({ content: f.content, encoding: "utf-8" }),
+          }
+        );
+        if (!blobRes.ok || !blobRes.data?.sha) {
+          throw new Error(`Gagal upload file ${f.path}: ${blobRes.data?.message || blobRes.status}`);
+        }
+        return {
+          path: f.path,
+          mode: "100644",
+          type: "blob",
+          sha: blobRes.data.sha,
+        };
+      })
+    );
+    treeEntries.push(...createdBlobs);
+  }
+
+  const newTreeRes = await ghApiJson(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        base_tree: baseTreeSha,
+        tree: treeEntries,
+      }),
+    }
+  );
+
+  if (!newTreeRes.ok || !newTreeRes.data?.sha) {
+    throw new Error(newTreeRes.data?.message || "Gagal membuat Git tree di GitHub.");
+  }
+
+  const newCommitRes = await ghApiJson(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        message: String(message).trim(),
+        tree: newTreeRes.data.sha,
+        parents: baseCommitSha ? [baseCommitSha] : [],
+      }),
+    }
+  );
+
+  if (!newCommitRes.ok || !newCommitRes.data?.sha) {
+    throw new Error(newCommitRes.data?.message || "Gagal membuat commit di GitHub.");
+  }
+
+  const newSha = newCommitRes.data.sha;
+  const refEndpoint = createdBranch
+    ? `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs`
+    : `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(targetBranch)}`;
+
+  const updateRefRes = await ghApiJson(refEndpoint, token, {
+    method: createdBranch ? "POST" : "PATCH",
+    body: JSON.stringify(
+      createdBranch
+        ? { ref: `refs/heads/${targetBranch}`, sha: newSha }
+        : { sha: newSha, force: false }
+    ),
+  });
+
+  if (!updateRefRes.ok) {
+    throw new Error(updateRefRes.data?.message || `Gagal memperbarui branch ${targetBranch}`);
+  }
+
+  return {
+    ok: true,
+    commitSha: newSha,
+    branch: targetBranch,
+    commitUrl: `https://github.com/${owner}/${repo}/commit/${newSha}`,
+    branchUrl: `https://github.com/${owner}/${repo}/tree/${targetBranch}`,
+    filesPushed: validFiles.length,
+    createdBranch,
+  };
+}
+
 export async function handleGitHubAction({ action, body, token }) {
+  if (action === 'push-workspace') {
+    try {
+      const pushed = await pushWorkspaceToGitHub({
+        token,
+        owner: body?.owner,
+        repo: body?.repo,
+        branch: body?.branch,
+        message: body?.message,
+        files: body?.files,
+        createBranch: body?.createBranch !== false,
+      });
+      return { status: 200, payload: pushed };
+    } catch (err) {
+      return {
+        status: 400,
+        payload: { ok: false, message: err instanceof Error ? err.message : "Gagal push ke GitHub." },
+      };
+    }
+  }
   if (action === 'list-repos') {
     if (!token) {
       return {

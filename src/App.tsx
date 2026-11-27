@@ -2514,7 +2514,7 @@ export default function App() {
             );
           }}
           onClose={() => setWorkspaceOpen(false)}
-        />
+         activeModel={selectedModel} geminiApiKey={settings.apiKey} demoMode={Boolean(settings.demoMode)}/>
         )}
       {activeArtifact && !workspaceOpen && (
               <>

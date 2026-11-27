@@ -824,6 +824,38 @@ async function cleanupExtraDaytonaSandboxes({ keepSandboxId, apiKey, apiUrl, sig
   return { ok: true, totalFound: list.length, deleted, keptSandboxId: keepId || undefined };
 }
 
+
+function sanitizeSecretOutput(text, secret) {
+  if (typeof text !== "string" || !text) return text || "";
+  let out = text;
+  if (secret && typeof secret === "string" && secret.trim().length > 4) {
+    out = out.split(secret.trim()).join("***");
+  }
+  out = out.replace(/https:\/\/x-access-token:[^@\s]+@github\.com/gi, "https://x-access-token:***@github.com");
+  return out;
+}
+
+function buildGitAuthExecCommand(rawCommand, githubToken) {
+  const cmd = String(rawCommand || "").trim();
+  const token = String(githubToken || "").trim();
+  if (!cmd || !token || !/\bgit\b/.test(cmd)) return cmd;
+  const tokenB64 = utf8ToBase64(token);
+  const cmdB64 = utf8ToBase64(cmd);
+  return [
+    "export GIT_TERMINAL_PROMPT=0",
+    "export GCM_INTERACTIVE=never",
+    `export ADAM_GH_TOKEN="$(printf '%s' '${tokenB64}' | base64 -d)"`,
+    "__ADAM_ASKPASS=\"$(mktemp /tmp/adam-git-askpass-XXXXXX.sh)\"",
+    "trap 'rm -f \"$__ADAM_ASKPASS\"' EXIT",
+    "printf '%s\\n' '#!/usr/bin/env sh' 'case \"$1\" in' '  *Username*|*username*) printf \"%s\\n\" \"x-access-token\" ;;' '  *) printf \"%s\\n\" \"$ADAM_GH_TOKEN\" ;;' 'esac' > \"$__ADAM_ASKPASS\"",
+    "chmod 700 \"$__ADAM_ASKPASS\"",
+    "export GIT_ASKPASS=\"$__ADAM_ASKPASS\"",
+    "[ -z \"$(git config --global user.name 2>/dev/null)\" ] && git config --global user.name \"Adam Studio User\" >/dev/null 2>&1 || true",
+    "[ -z \"$(git config --global user.email 2>/dev/null)\" ] && git config --global user.email \"user@users.noreply.github.com\" >/dev/null 2>&1 || true",
+    `eval "$(printf '%s' '${cmdB64}' | base64 -d)"`,
+  ].join("; ");
+}
+
 export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, githubToken = '', signal }) {
   const cfg = resolveDaytonaConfig({
     apiKey: apiKey || body?.apiKey,
@@ -958,8 +990,7 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
           ok: Boolean(started.ok),
           sandboxId: sb.id,
           exitCode: started.ok ? 0 : 1,
-          output:
-            started.devLogs ||
+          output: sanitizeSecretOutput(started.devLogs, githubToken) ||
             started.output ||
             started.message ||
             'Dev server dijalankan di background.',
@@ -972,7 +1003,7 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
 
     const out = await execDaytonaCommand({
       sandboxId: sb.id,
-      command: rawCmd,
+      command: buildGitAuthExecCommand(rawCmd, githubToken),
       cwd: '$HOME/adam-app',
       timeoutSec: Math.min(45, Number(body?.timeoutSec) || 45),
       apiKey: cfg.apiKey,
@@ -981,7 +1012,7 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
     });
     return {
       status: 200,
-      payload: { ok: out.exitCode === 0, sandboxId: sb.id, exitCode: out.exitCode, output: out.output },
+      payload: { ok: out.exitCode === 0, sandboxId: sb.id, exitCode: out.exitCode, output: sanitizeSecretOutput(out.output, githubToken) },
     };
   }
 

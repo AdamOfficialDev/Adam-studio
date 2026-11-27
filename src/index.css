@@ -838,3 +838,34 @@ html[data-skin='paper'] .chat-enhance-pill {
   }
 }
 /* === End Adam Studio Selection Quote & Enhancer System === */
+
+/* === Adam Studio Mobile Smart-Select (Zero OS Popup) === */
+@media (pointer: coarse) {
+  [data-assistant-selectable="true"],
+  [data-assistant-selectable="true"] * {
+    -webkit-user-select: none !important;
+    user-select: none !important;
+    -webkit-touch-callout: none !important;
+  }
+}
+
+[data-smart-selected="true"] {
+  background-color: hsl(var(--primary) / 0.14) !important;
+  box-shadow: inset 3px 0 0 0 hsl(var(--primary)), 0 0 0 1px hsl(var(--primary) / 0.24);
+  border-radius: 0.65rem;
+  padding-left: 0.45rem;
+  padding-right: 0.35rem;
+  transition: background-color 140ms ease, box-shadow 140ms ease;
+}
+
+html[data-skin='paper'] [data-smart-selected="true"] {
+  background-color: hsl(var(--primary) / 0.11) !important;
+  box-shadow: inset 3px 0 0 0 hsl(var(--primary)), 0 0 0 1px hsl(var(--primary) / 0.28);
+}
+/* === End Adam Studio Mobile Smart-Select === */
+
+@keyframes quote-check-pop {
+  0% { transform: scale(0.5); opacity: 0; }
+  65% { transform: scale(1.22); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}

@@ -1,41 +1,6 @@
 import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle,
-  Archive,
-  ArrowDown,
-  Check,
-  CheckCircle2,
-  ChevronRight,
-  Clock,
-  Cloud,
-  Code2,
-  Copy,
-  Eraser,
-  ExternalLink,
-  Eye,
-  FileCode2,
-  FolderGit2,
-  FolderTree,
-  Laptop,
-  Loader2,
-  Maximize2,
-  Minimize2,
-  Play,
-  Plus,
-  RefreshCw,
-  Rocket,
-  RotateCcw,
-  Search,
-  Smartphone,
-  Sparkles,
-  Square,
-  Tablet,
-  Terminal,
-  Trash2,
-  WrapText,
-  X,
-  XCircle,
-} from 'lucide-react';
+  AlertTriangle, Archive, ArrowDown, Check, CheckCircle2, ChevronRight, Clock, Cloud, Code2, Copy, Eraser, ExternalLink, Eye, FileCode2, FolderGit2, FolderTree, Laptop, Loader2, Maximize2, Minimize2, Play, Plus, RefreshCw, Rocket, RotateCcw, Search, Smartphone, Sparkles, Square, Tablet, Terminal, Trash2, WrapText, X, XCircle, UploadCloud } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -48,6 +13,7 @@ import {
 import { cn, copyToClipboard } from '@/lib/utils';
 import type { GitHubProjectContext, VirtualWorkspace } from '@/types/chat';
 
+import { GitHubPushDialog } from './GitHubPushDialog';
 interface TerminalEntry {
   id: string;
   kind: 'system' | 'command' | 'success' | 'error' | 'info';
@@ -225,6 +191,9 @@ interface WorkspacePanelProps {
   onDeleteFile: (path: string) => void;
   onAutoFixError: (errorMsg: string) => void;
   onClose: () => void;
+  activeModel?: string;
+  geminiApiKey?: string;
+  demoMode?: boolean;
 }
 
 type ViewportSize = 'desktop' | 'tablet' | 'mobile';
@@ -266,8 +235,9 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   onCreateFile,
   onDeleteFile,
   onAutoFixError,
-  onClose,
+  onClose, activeModel = 'gemini-3.8-flash', geminiApiKey, demoMode = false,
 }: WorkspacePanelProps) {
+  const [pushDialogOpen, setPushDialogOpen] = useState(false);
   const [tab, setTab] = useState<WorkspaceTab>('preview');
 
   const [cleaningSandboxes, setCleaningSandboxes] = useState(false);
@@ -962,6 +932,18 @@ export const WorkspacePanel = memo(function WorkspacePanel({
           >
             <Archive className="h-3.5 w-3.5 shrink-0" />
             <span className="hidden lg:inline">.zip</span>
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setPushDialogOpen(true)}
+            disabled={!workspace || Object.keys(workspace.files || {}).length === 0}
+            className="h-7 gap-1.5 rounded-lg border-primary/35 bg-primary/10 px-2.5 text-xs font-medium text-primary hover:bg-primary/20"
+            title="Commit & Push workspace langsung ke GitHub"
+          >
+            <UploadCloud className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Push</span>
           </Button>
           <Button
             type="button"
@@ -1921,6 +1903,18 @@ export const WorkspacePanel = memo(function WorkspacePanel({
           </div>
         )}
       </div>
-    </aside>
+    
+      <GitHubPushDialog
+        open={pushDialogOpen}
+        onOpenChange={setPushDialogOpen}
+        files={(Array.isArray(workspace?.files) ? workspace.files : Object.values(workspace?.files || {})).map((f) => ({ path: f.path, content: f.content }))}
+        githubToken={githubToken}
+        defaultRepoSlug={githubProject?.owner && githubProject?.repo ? `${githubProject.owner}/${githubProject.repo}` : ""}
+        defaultBranch={githubProject?.branch || "main"}
+        activeModel={activeModel}
+        apiKey={geminiApiKey}
+        demoMode={demoMode}
+      />
+</aside>
   );
 });
