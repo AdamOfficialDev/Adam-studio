@@ -8,7 +8,6 @@ import {
   Laptop,
   Loader2,
   MonitorSmartphone,
-  Pause,
   Play,
   Plus,
   RefreshCw,
@@ -319,8 +318,10 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
     }
   };
 
-  const frameMatchesActive =
-    latestFrame && (!activeDevice || latestFrame.deviceId === activeDevice.id);
+  const activeScreenFrame =
+    latestFrame && (!activeDevice || latestFrame.deviceId === activeDevice.id)
+      ? latestFrame
+      : null;
 
   return (
     <aside className="fixed inset-0 z-40 flex h-full w-full flex-col border-l bg-background lg:static lg:w-[44vw] lg:min-w-[380px] lg:max-w-[66vw] lg:shrink-0">
@@ -692,31 +693,31 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
                   )}
                 />
                 <span className="font-medium">
-                  {frameMatchesActive?.actionLabel ||
+                  {activeScreenFrame?.actionLabel ||
                     (activeDevice ? 'Live Screen Feed' : 'Menunggu Koneksi Device')}
                 </span>
               </div>
-              {frameMatchesActive && (
+              {activeScreenFrame && (
                 <span className="font-mono text-[10px] text-zinc-400">
-                  {frameMatchesActive.width}×{frameMatchesActive.height}
+                  {activeScreenFrame.width}×{activeScreenFrame.height}
                 </span>
               )}
             </div>
 
-            {frameMatchesActive ? (
+            {activeScreenFrame ? (
               <div className="relative flex w-full items-center justify-center bg-black/75 p-2">
                 <div className="relative inline-block max-w-full overflow-hidden rounded-lg border border-zinc-800">
                   <img
-                    src={`data:${frameMatchesActive.mimeType};base64,${frameMatchesActive.imageBase64}`}
+                    src={`data:${activeScreenFrame.mimeType};base64,${activeScreenFrame.imageBase64}`}
                     alt="Live Device Screen"
                     className="block max-h-[380px] w-auto max-w-full object-contain select-none"
                   />
-                  {typeof frameMatchesActive.cursorX === 'number' &&
-                    typeof frameMatchesActive.cursorY === 'number' && (
+                  {typeof activeScreenFrame.cursorX === 'number' &&
+                    typeof activeScreenFrame.cursorY === 'number' && (
                       <div
                         style={{
-                          left: `${Math.min(100, Math.max(0, frameMatchesActive.cursorX / 10))}%`,
-                          top: `${Math.min(100, Math.max(0, frameMatchesActive.cursorY / 10))}%`,
+                          left: `${Math.min(100, Math.max(0, activeScreenFrame.cursorX / 10))}%`,
+                          top: `${Math.min(100, Math.max(0, activeScreenFrame.cursorY / 10))}%`,
                         }}
                         className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
                       >
