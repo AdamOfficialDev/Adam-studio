@@ -5,9 +5,11 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { handleGitHubAction } from '../api/_github.js';
 import { handleDaytonaAction } from '../api/_daytona.js';
+import { ADAM_BRIDGE_SCRIPT } from '../api/_bridgeScript.js';
 import {
   createPairingSession,
   getDeviceFrame,
+  isDeviceSharedStoreEnabled,
   listDevices,
   pollBridgeCommands,
   pushDeviceFrame,
@@ -100,9 +102,19 @@ app.get('/api/device', async (req, res) => {
   try {
     const action = String(req.query.action || 'list');
     const deviceId = String(req.query.deviceId || '');
+    if (action === 'bridge-script') {
+      const diskPath = path.join(rootDir, 'companion', 'adam-device-bridge.mjs');
+      const scriptContent = fs.existsSync(diskPath)
+        ? fs.readFileSync(diskPath, 'utf8')
+        : ADAM_BRIDGE_SCRIPT;
+      res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="adam-device-bridge.mjs"');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.send(scriptContent);
+    }
     if (action === 'list') {
       const devices = await listDevices();
-      return res.json({ ok: true, devices });
+      return res.json({ ok: true, devices, sharedStore: isDeviceSharedStoreEnabled() });
     }
     if (action === 'frame' && deviceId) {
       const frame = await getDeviceFrame(deviceId);

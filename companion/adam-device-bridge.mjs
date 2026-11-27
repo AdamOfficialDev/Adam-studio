@@ -5,8 +5,8 @@
  * ke Adam Studio Web / Server melalui HTTP Polling + Frame Upload.
  *
  * Cara pakai:
- *   node companion/adam-device-bridge.mjs --pair ADM-XXXX --server http://localhost:3001
- *   node companion/adam-device-bridge.mjs --pair ADM-XXXX --platform android --server https://your-app.vercel.app
+ *   node adam-device-bridge.mjs --pair ADM-XXXX --server http://localhost:3001
+ *   node adam-device-bridge.mjs --pair ADM-XXXX --platform android --server https://your-app.vercel.app
  */
 
 import { exec, execFile } from 'node:child_process';
@@ -24,6 +24,7 @@ function parseArgs(argv) {
     server: process.env.ADAM_SERVER_URL || 'http://localhost:3001',
     platform: process.env.ADAM_DEVICE_PLATFORM || 'desktop', // 'desktop' | 'android'
     serial: process.env.ANDROID_SERIAL || '',
+    bypass: process.env.VERCEL_PROTECTION_BYPASS || '',
     name: '',
     fpsMs: 1600,
   };
@@ -42,6 +43,9 @@ function parseArgs(argv) {
     } else if (k === '--serial' && v) {
       out.serial = v.trim();
       i++;
+    } else if (k === '--bypass' && v) {
+      out.bypass = v.trim();
+      i++;
     } else if (k === '--name' && v) {
       out.name = v.trim();
       i++;
@@ -56,18 +60,19 @@ const cfg = parseArgs(process.argv.slice(2));
 
 if (cfg.help || !cfg.pair) {
   console.log(`
-Adam Studio Device Bridge (v1.0)
+Adam Studio Device Bridge (v1.1)
 ================================
 Hubungkan Desktop (Windows/macOS/Linux) atau HP Android (ADB) ke Adam Studio.
 
 Penggunaan:
-  node companion/adam-device-bridge.mjs --pair <PAIR_CODE> [opsi]
+  node adam-device-bridge.mjs --pair <PAIR_CODE> [opsi]
 
 Opsi:
   --pair, -p     Kode pairing dari Panel Device Adam Studio (wajib, misal: ADM-7K2P)
   --server, -s   URL server Adam Studio (default: http://localhost:3001)
   --platform     Target device: desktop | android (default: desktop)
   --serial       Serial/IP:port ADB jika lebih dari 1 HP Android terhubung
+  --bypass       Optional Vercel Protection Bypass secret header
   --name         Nama device kustom di UI
 `);
   process.exit(cfg.help ? 0 : 1);
@@ -78,12 +83,24 @@ const tmpDir = path.join(os.tmpdir(), 'adam-device-bridge');
 await fs.mkdir(tmpDir, { recursive: true });
 
 async function postDeviceApi(action, payload = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (cfg.bypass) {
+    headers['x-vercel-protection-bypass'] = cfg.bypass;
+  }
   const res = await fetch(`${cfg.server}/api/device`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ action, ...payload }),
   });
-  const data = await res.json().catch(() => ({}));
+  const raw = await res.text();
+  let data = null;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      `Server mengembalikan non-JSON (HTTP ${res.status}). Jika memakai Vercel Preview URL dengan Deployment Protection, gunakan Production URL, tambahkan --bypass <secret>, atau jalankan lokal via pnpm dev.`
+    );
+  }
   if (!res.ok || data?.ok === false) {
     throw new Error(data?.message || `HTTP ${res.status}`);
   }
@@ -340,7 +357,7 @@ Add-Type @"
 using System.Runtime.InteropServices;
 public class WinScroll {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
-  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, int dwData, int dwExtraInfo);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
 }
 "@
 [WinScroll]::SetCursorPos(${x}, ${y}) | Out-Null
@@ -416,7 +433,6 @@ Add-Type -AssemblyName System.Windows.Forms
     }
     if (toolName === 'device_click_or_tap') {
       const { x, y } = normToPx(args.x, args.y, dims.width, dims.height);
-      // Coba cliclick jika terpasang di macOS
       await execFileAsync('cliclick', [`c:${x},${y}`]);
       return { output: `Klik macOS (${x},${y})`, cursorX: args.x, cursorY: args.y };
     }

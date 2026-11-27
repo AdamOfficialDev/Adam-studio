@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Check,
   Copy,
+  Download,
   Hand,
   Laptop,
   Loader2,
@@ -78,6 +79,12 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
   onSendQuickCommand,
 }: DeviceControlPanelProps) {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
+  const [sharedStore, setSharedStore] = useState<boolean | null>(null);
+  const [shellKind, setShellKind] = useState<'bash' | 'powershell' | 'repo'>(() =>
+    typeof navigator !== 'undefined' && /Win/i.test(navigator.userAgent)
+      ? 'powershell'
+      : 'bash'
+  );
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [showPairWizard, setShowPairWizard] = useState(false);
   const [pairPlatform, setPairPlatform] = useState<DevicePlatform>('desktop');
@@ -94,7 +101,14 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
       try {
         const res = await fetch('/api/device?action=list');
         if (!res.ok) return;
-        const data = (await res.json()) as { ok?: boolean; devices?: DeviceInfo[] };
+        const data = (await res.json()) as {
+          ok?: boolean;
+          devices?: DeviceInfo[];
+          sharedStore?: boolean;
+        };
+        if (typeof data.sharedStore === 'boolean') {
+          setSharedStore(data.sharedStore);
+        }
         if (data.ok && Array.isArray(data.devices)) {
           setDevices(data.devices);
           if (!selectedDeviceId && data.devices.length > 0) {
@@ -302,9 +316,18 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
 
   const originUrl =
     typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001';
-  const bridgeCommand = pairCode
-    ? `node companion/adam-device-bridge.mjs --server ${originUrl} --pair ${pairCode} --platform ${pairPlatform}`
-    : '';
+  const isLocalHost =
+    typeof window !== 'undefined' &&
+    /^(localhost|127\.0\.0\.1|0\.0\.0\.0)$/i.test(window.location.hostname);
+  const needsSharedStoreWarning = sharedStore === false && !isLocalHost;
+  const bridgeDownloadUrl = `${originUrl}/api/device?action=bridge-script`;
+  const bridgeCommand = !pairCode
+    ? ''
+    : shellKind === 'powershell'
+      ? `irm "${bridgeDownloadUrl}" -OutFile adam-device-bridge.mjs; node adam-device-bridge.mjs --server ${originUrl} --pair ${pairCode} --platform ${pairPlatform}`
+      : shellKind === 'bash'
+        ? `curl -fsSL "${bridgeDownloadUrl}" -o adam-device-bridge.mjs && node adam-device-bridge.mjs --server ${originUrl} --pair ${pairCode} --platform ${pairPlatform}`
+        : `node companion/adam-device-bridge.mjs --server ${originUrl} --pair ${pairCode} --platform ${pairPlatform}`;
 
   const copyCommand = async () => {
     if (!bridgeCommand) return;
@@ -600,6 +623,25 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
                 </button>
               </div>
 
+              {needsSharedStoreWarning && (
+                <div className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] leading-relaxed text-amber-200">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
+                  <div>
+                    <strong>Serverless Tanpa Redis Terdeteksi:</strong> Agar pairing bridge &amp;
+                    frame layar sinkron lintas-instance di Vercel, set{' '}
+                    <code className="rounded bg-black/40 px-1 font-mono text-[10px]">
+                      UPSTASH_REDIS_REST_URL
+                    </code>{' '}
+                    &amp;{' '}
+                    <code className="rounded bg-black/40 px-1 font-mono text-[10px]">
+                      UPSTASH_REDIS_REST_TOKEN
+                    </code>{' '}
+                    di Environment Variables Vercel, atau jalankan secara lokal dengan{' '}
+                    <code className="rounded bg-black/40 px-1 font-mono text-[10px]">pnpm dev</code>.
+                  </div>
+                </div>
+              )}
+
               {creatingPair ? (
                 <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
                   <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
@@ -609,21 +651,53 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
                 <div className="space-y-2 rounded-xl border bg-background/80 p-3">
                   <div className="flex items-center justify-between text-[11px]">
                     <span className="text-muted-foreground">Kode Pairing:</span>
-                    <span className="font-mono font-bold tracking-widest text-primary">
-                      {pairCode}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={bridgeDownloadUrl}
+                        download="adam-device-bridge.mjs"
+                        className="inline-flex items-center gap-1 rounded-md border border-border/80 bg-card px-2 py-0.5 text-[10px] font-medium text-foreground hover:bg-accent"
+                        title="Unduh file bridge standalone agar bisa dijalankan dari folder mana saja"
+                      >
+                        <Download className="h-3 w-3 text-primary" />
+                        Unduh .mjs
+                      </a>
+                      <span className="font-mono font-bold tracking-widest text-primary">
+                        {pairCode}
+                      </span>
+                    </div>
                   </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                  <div className="space-y-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] text-muted-foreground">
                       <span className="flex items-center gap-1">
                         <Terminal className="h-3 w-3" />
-                        Jalankan di terminal device lokal:
+                        Jalankan di terminal:
                       </span>
-                      {pairExpiresAt && (
-                        <span>
-                          Berlaku {Math.max(1, Math.round((pairExpiresAt - Date.now()) / 60_000))}m
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1">
+                        {(['powershell', 'bash', 'repo'] as const).map((kind) => (
+                          <button
+                            key={kind}
+                            type="button"
+                            onClick={() => setShellKind(kind)}
+                            className={cn(
+                              'rounded px-1.5 py-0.5 font-medium transition-colors',
+                              shellKind === kind
+                                ? 'bg-primary/20 text-primary'
+                                : 'hover:bg-muted hover:text-foreground'
+                            )}
+                          >
+                            {kind === 'powershell'
+                              ? 'PowerShell'
+                              : kind === 'bash'
+                                ? 'Bash/Mac'
+                                : 'Folder Repo'}
+                          </button>
+                        ))}
+                        {pairExpiresAt && (
+                          <span className="ml-1">
+                            ({Math.max(1, Math.round((pairExpiresAt - Date.now()) / 60_000))}m)
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center gap-1.5 rounded-lg border bg-zinc-950 p-2">
                       <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[11px] text-emerald-300">
@@ -645,9 +719,11 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
                     </div>
                   </div>
                   <p className="text-[10px] leading-relaxed text-muted-foreground">
-                    {pairPlatform === 'android'
-                      ? 'Pastikan HP Android terhubung ADB (`adb devices`) atau ADB Wireless (`adb pair` + `adb connect`) di PC yang menjalankan bridge.'
-                      : 'Bridge otomatis memakai kontrol OS native (PowerShell/AppleScript/xdotool) untuk screenshot, klik, ketik, dan shortcut.'}
+                    {shellKind === 'repo'
+                      ? 'Mode Folder Repo wajib dijalankan dari dalam direktori root proyek Adam-studio. Gunakan tab PowerShell / Bash agar skrip terunduh otomatis dan bisa jalan dari folder mana saja.'
+                      : pairPlatform === 'android'
+                        ? 'Perintah di atas otomatis mengunduh adam-device-bridge.mjs lalu menyambungkan HP Android via ADB (`adb devices` / `adb connect`).'
+                        : 'Perintah di atas otomatis mengunduh adam-device-bridge.mjs ke folder aktif dan langsung menyambungkan Desktop PC kamu.'}
                   </p>
                 </div>
               ) : null}

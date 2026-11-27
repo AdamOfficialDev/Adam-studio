@@ -119,6 +119,10 @@ async function updateDeviceIndex(deviceId, remove = false) {
   await kvSetJson('index', next, 3600);
 }
 
+export function isDeviceSharedStoreEnabled() {
+  return Boolean(getRedisCredentials());
+}
+
 export async function registerDevice(payload = {}) {
   const now = Date.now();
   const pairCode = String(payload.pairCode || '').trim().toUpperCase();
@@ -130,7 +134,7 @@ export async function registerDevice(payload = {}) {
     }
   }
 
-  const id = String(payload.id || `dev-${now}-${Math.random().toString(36).slice(2, 7)}`).trim();
+  const id = String(payload.id || payload.deviceId || `dev-${now}-${Math.random().toString(36).slice(2, 7)}`).trim();
   const device = {
     id,
     name: String(payload.name || (payload.platform === 'android' ? 'Android Device' : 'Desktop PC')).slice(0, 64),

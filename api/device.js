@@ -1,6 +1,8 @@
+import { ADAM_BRIDGE_SCRIPT } from './_bridgeScript.js';
 import {
   createPairingSession,
   getDeviceFrame,
+  isDeviceSharedStoreEnabled,
   listDevices,
   pollBridgeCommands,
   pushDeviceFrame,
@@ -32,9 +34,19 @@ export default async function handler(request) {
       const action = url.searchParams.get('action') || 'list';
       const deviceId = url.searchParams.get('deviceId') || '';
 
+      if (action === 'bridge-script') {
+        return new Response(ADAM_BRIDGE_SCRIPT, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/javascript; charset=utf-8',
+            'Content-Disposition': 'attachment; filename="adam-device-bridge.mjs"',
+            'Cache-Control': 'no-store',
+          },
+        });
+      }
       if (action === 'list') {
         const devices = await listDevices();
-        return jsonRes({ ok: true, devices });
+        return jsonRes({ ok: true, devices, sharedStore: isDeviceSharedStoreEnabled() });
       }
       if (action === 'frame' && deviceId) {
         const frame = await getDeviceFrame(deviceId);
