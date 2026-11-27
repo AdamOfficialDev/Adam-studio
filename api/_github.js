@@ -413,7 +413,7 @@ async function pushWorkspaceToGitHub({
   let baseCommitSha = diff.baseCommitSha;
   let baseTreeSha = diff.baseTreeSha;
   let remainingFiles = diff.changedFiles;
-  const createdBranch = diff.createdBranch;
+  let createdBranch = diff.createdBranch;
 
   if (diff.isEmptyRepo) {
     const first = remainingFiles[0];
@@ -436,6 +436,7 @@ async function pushWorkspaceToGitHub({
 
     baseCommitSha = initRes.data?.commit?.sha || null;
     baseTreeSha = initRes.data?.commit?.tree?.sha || null;
+    createdBranch = false;
     remainingFiles = remainingFiles.slice(1);
 
     if (remainingFiles.length === 0 && baseCommitSha) {

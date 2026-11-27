@@ -1907,7 +1907,13 @@ export const WorkspacePanel = memo(function WorkspacePanel({
       <GitHubPushDialog
         open={pushDialogOpen}
         onOpenChange={setPushDialogOpen}
-        files={(Array.isArray(workspace?.files) ? workspace.files : Object.values(workspace?.files || {})).map((f) => ({ path: f.path, content: f.content }))}
+        files={
+          !workspace?.files || Object.keys(workspace.files).length === 0
+            ? []
+            : workspace.files['package.json']
+              ? Object.values(workspace.files).map((f) => ({ path: f.path, content: f.content }))
+              : scaffoldRunnableProjectFiles(workspace.files, workspace.plan?.title)
+        }
         githubToken={githubToken}
         defaultRepoSlug={githubProject?.owner && githubProject?.repo ? `${githubProject.owner}/${githubProject.repo}` : ""}
         defaultBranch={githubProject?.branch || "main"}
