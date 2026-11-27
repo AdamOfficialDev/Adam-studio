@@ -1,0 +1,67 @@
+name: Build Adam Android Companion APK
+
+on:
+  push:
+    paths:
+      - 'android-companion/**'
+      - '.github/workflows/build-android-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build APK (Kotlin Jetpack Compose)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build Debug APK (Signed & Ready to Install)
+        run: gradle -p android-companion assembleDebug --no-daemon
+
+      - name: Prepare APK Asset
+        run: |
+          mkdir -p release-assets
+          cp android-companion/app/build/outputs/apk/debug/app-debug.apk release-assets/adam-device-companion.apk
+
+      - name: Upload APK Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: adam-device-companion-apk
+          path: release-assets/adam-device-companion.apk
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release (android-companion-latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-companion-latest
+          name: Adam Android Companion APK (Latest)
+          body: |
+            Aplikasi pendamping Android native (**Adam Companion**) untuk mengendalikan HP Android langsung dari **Adam Studio** tanpa PC/ADB.
+
+            ### Cara Pakai:
+            1. Download & install `adam-device-companion.apk`.
+            2. Di web Adam Studio, buka **Device Control → Pair → Android HP → APK Android**.
+            3. Ketuk **Salin Config APK**, buka app Adam Companion di HP, ketuk **Paste Config**, aktifkan Accessibility, lalu tekan **Start AI Device Control**.
+          files: release-assets/adam-device-companion.apk
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -243,7 +243,15 @@ async function ghApiJson(url, token, options = {}) {
   } catch {
     json = { message: text };
   }
-  return { ok: resp.ok, status: resp.status, data: json };
+  const oauthScopesHeader = resp.headers?.get?.("x-oauth-scopes");
+  const oauthScopes =
+    typeof oauthScopesHeader === "string"
+      ? oauthScopesHeader
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : null;
+  return { ok: resp.ok, status: resp.status, data: json, oauthScopes };
 }
 
 function normalizePushFiles(files) {
@@ -359,6 +367,14 @@ async function analyzeWorkspaceDiff({ token, owner, repo, branch, files, createB
   }
 
   const changedFiles = [...added, ...modified];
+  const hasWorkflowChanges = changedFiles.some((f) =>
+    f.path.toLowerCase().startsWith(".github/workflows/")
+  );
+  const missingWorkflowScope = Boolean(
+    hasWorkflowChanges &&
+      Array.isArray(repoRes.oauthScopes) &&
+      !repoRes.oauthScopes.includes("workflow")
+  );
   return {
     ok: true,
     owner,
@@ -376,6 +392,8 @@ async function analyzeWorkspaceDiff({ token, owner, repo, branch, files, createB
     modifiedPaths: modified.map((f) => f.path),
     changedFiles,
     hasChanges: changedFiles.length > 0,
+    hasWorkflowChanges,
+    missingWorkflowScope,
   };
 }
 
@@ -536,7 +554,19 @@ async function pushWorkspaceToGitHub({
   });
 
   if (!updateRefRes.ok) {
-    throw new Error(updateRefRes.data?.message || `Gagal memperbarui branch ${targetBranch}`);
+    const rawMsg = updateRefRes.data?.message || "";
+    if (
+      diff.hasWorkflowChanges &&
+      (updateRefRes.status === 404 ||
+        updateRefRes.status === 403 ||
+        updateRefRes.status === 422 ||
+        /workflow/i.test(rawMsg))
+    ) {
+      throw new Error(
+        `GitHub menolak push karena commit menyertakan file ".github/workflows/*" sementara PAT belum memiliki izin "workflow" (${rawMsg || updateRefRes.status}). Buka GitHub Settings → Developer settings → Personal access tokens, centang scope "workflow" (atau "Workflows: Read & write"), atau kecualikan file workflow terlebih dahulu.`
+      );
+    }
+    throw new Error(rawMsg || `Gagal memperbarui branch ${targetBranch}`);
   }
 
   return {
@@ -576,6 +606,8 @@ export async function handleGitHubAction({ action, body, token }) {
           addedPaths: diff.addedPaths,
           modifiedPaths: diff.modifiedPaths,
           hasChanges: diff.hasChanges,
+          hasWorkflowChanges: diff.hasWorkflowChanges,
+          missingWorkflowScope: diff.missingWorkflowScope,
         },
       };
     } catch (err) {

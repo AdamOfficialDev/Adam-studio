@@ -85,6 +85,8 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
       ? 'powershell'
       : 'bash'
   );
+  const [androidMode, setAndroidMode] = useState<'apk' | 'adb'>('apk');
+  const [copiedApkConfig, setCopiedApkConfig] = useState(false);
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [showPairWizard, setShowPairWizard] = useState(false);
   const [pairPlatform, setPairPlatform] = useState<DevicePlatform>('desktop');
@@ -347,6 +349,28 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
       setTimeout(() => setCopiedCmd(false), 1800);
     } catch {
       toast.error('Gagal menyalin perintah');
+    }
+  };
+
+  const apkReleaseUrl =
+    'https://github.com/AdamOfficialDev/Adam-studio/releases/download/android-companion-latest/adam-device-companion.apk';
+  const apkActionsUrl =
+    'https://github.com/AdamOfficialDev/Adam-studio/actions/workflows/build-android-apk.yml';
+
+  const copyApkConfig = async () => {
+    if (!pairCode) return;
+    const payload: Record<string, string> = {
+      server: originUrl,
+      pair: pairCode,
+    };
+    if (cleanBypass) payload.bypass = cleanBypass;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload));
+      setCopiedApkConfig(true);
+      toast.success('Config APK disalin! Buka Adam Companion di HP lalu ketuk "Paste Config".');
+      setTimeout(() => setCopiedApkConfig(false), 2000);
+    } catch {
+      toast.error('Gagal menyalin konfigurasi APK');
     }
   };
 
@@ -694,83 +718,174 @@ export const DeviceControlPanel = memo(function DeviceControlPanel({
                   <span>Membuat pairing token...</span>
                 </div>
               ) : pairCode ? (
-                <div className="space-y-2 rounded-xl border bg-background/80 p-3">
+                <div className="space-y-2.5 rounded-xl border bg-background/80 p-3">
                   <div className="flex items-center justify-between text-[11px]">
                     <span className="text-muted-foreground">Kode Pairing:</span>
                     <div className="flex items-center gap-2">
-                      <a
-                        href={bridgeDownloadUrl}
-                        download="adam-device-bridge.mjs"
-                        className="inline-flex items-center gap-1 rounded-md border border-border/80 bg-card px-2 py-0.5 text-[10px] font-medium text-foreground hover:bg-accent"
-                        title="Unduh file bridge standalone agar bisa dijalankan dari folder mana saja"
-                      >
-                        <Download className="h-3 w-3 text-primary" />
-                        Unduh .mjs
-                      </a>
+                      {pairPlatform === 'desktop' || androidMode === 'adb' ? (
+                        <a
+                          href={bridgeDownloadUrl}
+                          download="adam-device-bridge.mjs"
+                          className="inline-flex items-center gap-1 rounded-md border border-border/80 bg-card px-2 py-0.5 text-[10px] font-medium text-foreground hover:bg-accent"
+                          title="Unduh file bridge standalone agar bisa dijalankan dari folder mana saja"
+                        >
+                          <Download className="h-3 w-3 text-primary" />
+                          Unduh .mjs
+                        </a>
+                      ) : null}
                       <span className="font-mono font-bold tracking-widest text-primary">
                         {pairCode}
                       </span>
                     </div>
                   </div>
-                  <div className="space-y-1.5">
-                    <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] text-muted-foreground">
-                      <span className="flex items-center gap-1">
-                        <Terminal className="h-3 w-3" />
-                        Jalankan di terminal:
-                      </span>
-                      <div className="flex items-center gap-1">
-                        {(['powershell', 'bash', 'repo'] as const).map((kind) => (
-                          <button
-                            key={kind}
-                            type="button"
-                            onClick={() => setShellKind(kind)}
-                            className={cn(
-                              'rounded px-1.5 py-0.5 font-medium transition-colors',
-                              shellKind === kind
-                                ? 'bg-primary/20 text-primary'
-                                : 'hover:bg-muted hover:text-foreground'
-                            )}
-                          >
-                            {kind === 'powershell'
-                              ? 'PowerShell'
-                              : kind === 'bash'
-                                ? 'Bash/Mac'
-                                : 'Folder Repo'}
-                          </button>
-                        ))}
-                        {pairExpiresAt && (
-                          <span className="ml-1">
-                            ({Math.max(1, Math.round((pairExpiresAt - Date.now()) / 60_000))}m)
-                          </span>
+
+                  {pairPlatform === 'android' && (
+                    <div className="grid grid-cols-2 gap-1.5 rounded-lg bg-muted/60 p-1 text-[10px] font-semibold">
+                      <button
+                        type="button"
+                        onClick={() => setAndroidMode('apk')}
+                        className={cn(
+                          'rounded-md py-1 transition-colors',
+                          androidMode === 'apk'
+                            ? 'bg-primary text-primary-foreground shadow-sm'
+                            : 'text-muted-foreground hover:text-foreground'
                         )}
+                      >
+                        APK Android (Tanpa PC)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAndroidMode('adb')}
+                        className={cn(
+                          'rounded-md py-1 transition-colors',
+                          androidMode === 'adb'
+                            ? 'bg-primary text-primary-foreground shadow-sm'
+                            : 'text-muted-foreground hover:text-foreground'
+                        )}
+                      >
+                        Via ADB (PC / Termux)
+                      </button>
+                    </div>
+                  )}
+
+                  {pairPlatform === 'android' && androidMode === 'apk' ? (
+                    <div className="space-y-2.5">
+                      <div className="flex flex-wrap gap-1.5">
+                        <a
+                          href={apkReleaseUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          Download APK
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => void copyApkConfig()}
+                          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-2 text-[11px] font-semibold text-primary transition-colors hover:bg-primary/20"
+                        >
+                          {copiedApkConfig ? (
+                            <Check className="h-3.5 w-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5" />
+                          )}
+                          {copiedApkConfig ? 'Config Disalin!' : 'Salin Config APK'}
+                        </button>
+                      </div>
+
+                      <div className="space-y-1 rounded-lg border border-border/60 bg-card/60 p-2.5 text-[10px] leading-relaxed text-muted-foreground">
+                        <div>
+                          <strong className="text-foreground">1.</strong> Install{' '}
+                          <code className="font-mono text-foreground">adam-device-companion.apk</code>{' '}
+                          di HP Android (dibangun otomatis oleh GitHub Actions —{' '}
+                          <a
+                            href={apkActionsUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-primary underline"
+                          >
+                            cek status build
+                          </a>
+                          ).
+                        </div>
+                        <div>
+                          <strong className="text-foreground">2.</strong> Buka aplikasi{' '}
+                          <strong className="text-foreground">Adam Companion</strong>, ketuk{' '}
+                          <strong className="text-foreground">Paste Config</strong> untuk isi URL &amp;
+                          kode <code className="font-mono text-primary">{pairCode}</code> otomatis.
+                        </div>
+                        <div>
+                          <strong className="text-foreground">3.</strong> Aktifkan izin{' '}
+                          <strong className="text-foreground">Accessibility Control</strong> (Android
+                          13+: buka Info App → <code className="font-mono">⋮</code> → Allow restricted
+                          settings), lalu tekan <strong className="text-foreground">Start AI Device Control</strong>.
+                        </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5 rounded-lg border bg-zinc-950 p-2">
-                      <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[11px] text-emerald-300">
-                        {bridgeCommand}
-                      </code>
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        onClick={() => void copyCommand()}
-                        className="h-7 w-7 shrink-0 text-zinc-300 hover:bg-zinc-800"
-                      >
-                        {copiedCmd ? (
-                          <Check className="h-3.5 w-3.5 text-emerald-400" />
-                        ) : (
-                          <Copy className="h-3.5 w-3.5" />
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-                  <p className="text-[10px] leading-relaxed text-muted-foreground">
-                    {shellKind === 'repo'
-                      ? 'Mode Folder Repo wajib dijalankan dari dalam direktori root proyek Adam-studio. Gunakan tab PowerShell / Bash agar skrip terunduh otomatis dan bisa jalan dari folder mana saja.'
-                      : pairPlatform === 'android'
-                        ? 'Perintah di atas otomatis mengunduh adam-device-bridge.mjs lalu menyambungkan HP Android via ADB (`adb devices` / `adb connect`).'
-                        : 'Perintah di atas otomatis mengunduh adam-device-bridge.mjs ke folder aktif dan langsung menyambungkan Desktop PC kamu.'}
-                  </p>
+                  ) : (
+                    <>
+                      <div className="space-y-1.5">
+                        <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] text-muted-foreground">
+                          <span className="flex items-center gap-1">
+                            <Terminal className="h-3 w-3" />
+                            Jalankan di terminal:
+                          </span>
+                          <div className="flex items-center gap-1">
+                            {(['powershell', 'bash', 'repo'] as const).map((kind) => (
+                              <button
+                                key={kind}
+                                type="button"
+                                onClick={() => setShellKind(kind)}
+                                className={cn(
+                                  'rounded px-1.5 py-0.5 font-medium transition-colors',
+                                  shellKind === kind
+                                    ? 'bg-primary/20 text-primary'
+                                    : 'hover:bg-muted hover:text-foreground'
+                                )}
+                              >
+                                {kind === 'powershell'
+                                  ? 'PowerShell'
+                                  : kind === 'bash'
+                                    ? 'Bash/Mac'
+                                    : 'Folder Repo'}
+                              </button>
+                            ))}
+                            {pairExpiresAt && (
+                              <span className="ml-1">
+                                ({Math.max(1, Math.round((pairExpiresAt - Date.now()) / 60_000))}m)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 rounded-lg border bg-zinc-950 p-2">
+                          <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[11px] text-emerald-300">
+                            {bridgeCommand}
+                          </code>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => void copyCommand()}
+                            className="h-7 w-7 shrink-0 text-zinc-300 hover:bg-zinc-800"
+                          >
+                            {copiedCmd ? (
+                              <Check className="h-3.5 w-3.5 text-emerald-400" />
+                            ) : (
+                              <Copy className="h-3.5 w-3.5" />
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                      <p className="text-[10px] leading-relaxed text-muted-foreground">
+                        {shellKind === 'repo'
+                          ? 'Mode Folder Repo wajib dijalankan dari dalam direktori root proyek Adam-studio. Gunakan tab PowerShell / Bash agar skrip terunduh otomatis dan bisa jalan dari folder mana saja.'
+                          : pairPlatform === 'android'
+                            ? 'Perintah di atas otomatis mengunduh adam-device-bridge.mjs lalu menyambungkan HP Android via ADB (`adb devices` / `adb connect`).'
+                            : 'Perintah di atas otomatis mengunduh adam-device-bridge.mjs ke folder aktif dan langsung menyambungkan Desktop PC kamu.'}
+                      </p>
+                    </>
+                  )}
                 </div>
               ) : null}
 
