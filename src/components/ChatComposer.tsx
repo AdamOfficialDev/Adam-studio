@@ -1584,32 +1584,55 @@ const handleEnhancePrompt = async () => {
               </Button>
             )}
 
-            {isStreaming ? (
-              <button
-                type="button"
-                onClick={onStop}
-                className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-rose-500/45 bg-rose-500/15 px-3 text-xs font-semibold text-rose-400"
-                aria-label="Hentikan respon AI"
-              >
-                <Square className="h-2.5 w-2.5 fill-current" />
-                <span>Stop</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={submit}
-                disabled={(!input.trim() && attachments.length === 0) || isRecording || isTranscribing}
-                className={cn(
-                  'inline-flex h-8 w-8 items-center justify-center rounded-xl transition-all',
-                  (input.trim() || attachments.length > 0) && !isRecording && !isTranscribing
-                    ? 'bg-primary text-primary-foreground shadow-[0_4px_14px_-3px_hsl(var(--primary)/0.65)]'
-                    : 'cursor-not-allowed bg-muted/70 text-muted-foreground/45'
-                )}
-                aria-label="Kirim pesan"
-              >
-                <ArrowUp className="h-4 w-4" />
-              </button>
-            )}
+            <AnimatePresence mode="wait" initial={false}>
+              {isStreaming ? (
+                <motion.button
+                  key="mobile-stop-btn"
+                  type="button"
+                  onClick={onStop}
+                  initial={{ scale: 0.85, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.85, opacity: 0 }}
+                  whileTap={{ scale: 0.94 }}
+                  transition={{ type: 'spring', stiffness: 450, damping: 28 }}
+                  className="group relative inline-flex h-8 items-center gap-1.5 rounded-xl border border-rose-500/45 bg-rose-500/15 px-3 text-xs font-semibold text-rose-400 shadow-[0_0_20px_-5px_rgba(244,63,94,0.5)] transition-colors hover:border-rose-500/80 hover:bg-rose-500/25 hover:text-rose-700 dark:text-rose-300"
+                  aria-label="Hentikan respon AI"
+                >
+                  <span className="relative flex h-4 w-4 items-center justify-center">
+                    <span className="absolute inset-0 animate-ping rounded-full bg-rose-500/45" />
+                    <span className="relative flex h-3.5 w-3.5 items-center justify-center rounded-full border border-rose-400/70">
+                      <Square className="h-2 w-2 fill-current" />
+                    </span>
+                  </span>
+                  <span>Stop</span>
+                </motion.button>
+              ) : (
+                <motion.button
+                  key="mobile-send-btn"
+                  type="button"
+                  onClick={submit}
+                  disabled={(!input.trim() && attachments.length === 0) || isRecording || isTranscribing}
+                  initial={{ scale: 0.85, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.85, opacity: 0 }}
+                  whileTap={
+                    (input.trim() || attachments.length > 0) && !isRecording && !isTranscribing
+                      ? { scale: 0.92 }
+                      : undefined
+                  }
+                  transition={{ type: 'spring', stiffness: 450, damping: 26 }}
+                  className={cn(
+                    'inline-flex h-8 w-8 items-center justify-center rounded-xl transition-all',
+                    (input.trim() || attachments.length > 0) && !isRecording && !isTranscribing
+                      ? 'bg-primary text-primary-foreground shadow-[0_4px_14px_-3px_hsl(var(--primary)/0.65)]'
+                      : 'cursor-not-allowed bg-muted/70 text-muted-foreground/45'
+                  )}
+                  aria-label="Kirim pesan"
+                >
+                  <ArrowUp className="h-4 w-4" />
+                </motion.button>
+              )}
+            </AnimatePresence>
           </div>
         </div>
 
