@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  ArrowUp, Brain, Globe, Link2, Check, Crosshair, FileAudio, FileCode2, FileText, FileVideo, Loader2, MessageSquare, Mic, MonitorSmartphone, Paperclip, Slash, SlidersHorizontal, Rocket, Sparkles, Square, Terminal, Wand2, X, Undo2 } from 'lucide-react';
+  ArrowUp, Brain, ChevronDown, Globe, Link2, Check, Crosshair, FileAudio, FileCode2, FileText, FileVideo, Loader2, MessageSquare, Mic, MonitorSmartphone, Paperclip, Slash, SlidersHorizontal, Rocket, Sparkles, Square, Terminal, Wand2, X, Undo2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -263,6 +263,8 @@ export const ChatComposer = memo(function ChatComposer({
   const [recordSeconds, setRecordSeconds] = useState(0);
   const [interimText, setInterimText] = useState('');
   const [slashIndex, setSlashIndex] = useState(0);
+  const [mobileModeOpen, setMobileModeOpen] = useState(false);
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -852,7 +854,7 @@ const handleEnhancePrompt = async () => {
 
   return (
     <div
-      className="chat-composer-region relative mx-auto w-full max-w-3xl px-3 pb-3 pt-1.5 sm:px-4 sm:pb-4"
+      className="chat-composer-region relative mx-auto w-full max-w-3xl px-2.5 pb-2.5 pt-1 sm:px-4 sm:pb-4 sm:pt-1.5"
       onDragOver={(e) => {
         if (!e.dataTransfer?.types?.includes('Files')) return;
         e.preventDefault();
@@ -911,8 +913,9 @@ const handleEnhancePrompt = async () => {
       </AnimatePresence>
 
       <div
-        className={cn('chat-composer-dock', 
-          'rounded-2xl border border-border/90 bg-card/95 p-2.5 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.45)] transition-all focus-within:border-primary/60 focus-within:ring-2 focus-within:ring-primary/20 sm:p-3',
+        className={cn(
+          'chat-composer-dock',
+          'rounded-2xl border border-border/90 bg-card/95 p-2 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.45)] transition-all focus-within:border-primary/60 focus-within:ring-2 focus-within:ring-primary/20 sm:p-3',
           isDragging && 'border-primary ring-2 ring-primary/30'
         )}
       >
@@ -1154,16 +1157,464 @@ const handleEnhancePrompt = async () => {
               visualTarget
                 ? `Instruksi edit untuk <${visualTarget.selector}>...`
                 : builderMode === 'emergent'
-                  ? 'Deskripsikan aplikasi yang ingin dibangun Emergent Agent...'
+                  ? 'Deskripsikan aplikasi yang ingin dibangun...'
                   : builderMode === 'device'
-                    ? 'Perintahkan AI mengendalikan Desktop / HP Anda (mis: buka browser, cari X, klik Y)...'
+                    ? 'Perintahkan AI mengendalikan perangkat...'
                     : `Tanya ${model}...`
             }
-            className="chat-composer-textarea min-h-[42px] w-full resize-none overflow-hidden border-0 bg-transparent px-2 py-2 text-[15px] leading-relaxed shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+            className="chat-composer-textarea min-h-[38px] w-full resize-none overflow-hidden border-0 bg-transparent px-2 py-1.5 text-[14.5px] leading-relaxed shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 sm:min-h-[42px] sm:py-2 sm:text-[15px]"
           />
         </StudioScroll>
 
-        <div className="mt-1.5 flex items-center justify-between gap-1.5 border-t border-border/40 pt-2">
+        {/* Mobile Toolbar — 1 baris rapi tanpa sesak */}
+        <div className="mt-1 flex items-center justify-between gap-1.5 border-t border-border/40 pt-1.5 sm:hidden">
+          <div className="flex min-w-0 items-center gap-1">
+            {onToggleBuilderMode && (
+              <Popover open={mobileModeOpen} onOpenChange={setMobileModeOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    disabled={isStreaming}
+                    className={cn(
+                      'inline-flex h-8 items-center gap-1.5 rounded-xl border px-2.5 text-[11px] font-semibold transition-colors',
+                      builderMode === 'chat'
+                        ? 'border-border/75 bg-background/70 text-foreground'
+                        : 'border-primary/40 bg-primary/15 text-primary'
+                    )}
+                    aria-label="Pilih mode workspace"
+                  >
+                    {builderMode === 'emergent' ? (
+                      <Rocket className="h-3.5 w-3.5 shrink-0" />
+                    ) : builderMode === 'device' ? (
+                      <MonitorSmartphone className="h-3.5 w-3.5 shrink-0" />
+                    ) : (
+                      <MessageSquare className="h-3.5 w-3.5 shrink-0" />
+                    )}
+                    <span>
+                      {builderMode === 'emergent'
+                        ? 'Emergent'
+                        : builderMode === 'device'
+                          ? 'Device'
+                          : 'Chat'}
+                    </span>
+                    <ChevronDown className="h-3 w-3 opacity-60" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-64 space-y-1.5 p-2">
+                  <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Mode Workspace
+                  </div>
+                  {(
+                    [
+                      {
+                        id: 'chat',
+                        label: 'Chat Mode',
+                        desc: 'Diskusi cepat & Canvas artifact',
+                        icon: MessageSquare,
+                      },
+                      {
+                        id: 'emergent',
+                        label: 'Emergent Builder',
+                        desc: 'Plan → Build → Verify multi-file',
+                        icon: Rocket,
+                      },
+                      {
+                        id: 'device',
+                        label: 'Device Control',
+                        desc: 'Kendalikan Desktop / HP Android',
+                        icon: MonitorSmartphone,
+                      },
+                    ] as const
+                  ).map((item) => {
+                    const ModeIcon = item.icon;
+                    const active = builderMode === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          onToggleBuilderMode(item.id);
+                          setMobileModeOpen(false);
+                        }}
+                        className={cn(
+                          'flex w-full items-center gap-2.5 rounded-xl border px-2.5 py-2 text-left transition-colors',
+                          active
+                            ? 'border-primary/50 bg-primary/10 text-primary'
+                            : 'border-transparent hover:bg-accent'
+                        )}
+                      >
+                        <ModeIcon className="h-4 w-4 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-semibold">{item.label}</div>
+                          <div className="truncate text-[10px] text-muted-foreground">
+                            {item.desc}
+                          </div>
+                        </div>
+                        {active && <Check className="h-3.5 w-3.5 shrink-0" />}
+                      </button>
+                    );
+                  })}
+
+                  {((builderMode === 'device' || connectedDeviceName) && onOpenDevicePanel) ||
+                  (workspaceFileCount > 0 && onOpenWorkspace) ? (
+                    <div className="space-y-1 border-t border-border/50 pt-1.5">
+                      {(builderMode === 'device' || connectedDeviceName) && onOpenDevicePanel && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onOpenDevicePanel();
+                            setMobileModeOpen(false);
+                          }}
+                          className="flex w-full items-center justify-between rounded-xl bg-primary/10 px-2.5 py-2 text-xs font-semibold text-primary"
+                        >
+                          <span className="flex items-center gap-2">
+                            <MonitorSmartphone className="h-3.5 w-3.5" />
+                            Buka Device Panel
+                          </span>
+                          <span className="font-mono text-[10px]">
+                            {connectedDeviceName || 'Control'}
+                          </span>
+                        </button>
+                      )}
+                      {workspaceFileCount > 0 && onOpenWorkspace && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onOpenWorkspace();
+                            setMobileModeOpen(false);
+                          }}
+                          className="flex w-full items-center justify-between rounded-xl bg-emerald-500/10 px-2.5 py-2 text-xs font-semibold text-emerald-400"
+                        >
+                          <span className="flex items-center gap-2">
+                            <FileCode2 className="h-3.5 w-3.5" />
+                            Buka Emergent IDE
+                          </span>
+                          <span className="font-mono text-[10px]">{workspaceFileCount} files</span>
+                        </button>
+                      )}
+                    </div>
+                  ) : null}
+                </PopoverContent>
+              </Popover>
+            )}
+
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isStreaming}
+              className="h-8 w-8 rounded-xl text-muted-foreground hover:text-foreground"
+              aria-label="Lampirkan file"
+            >
+              <Paperclip className="h-4 w-4" />
+            </Button>
+
+            <Button
+              type="button"
+              variant={thinkingOn ? 'secondary' : 'ghost'}
+              size="icon"
+              disabled={isStreaming || !thinkingCaps.supported}
+              onClick={() => {
+                const next = !thinkingOn;
+                const nextLevel = next
+                  ? effectiveThinkingLevel === 'off'
+                    ? thinkingCaps.defaultLevel
+                    : effectiveThinkingLevel
+                  : thinkingCaps.canDisable
+                    ? 'off'
+                    : effectiveThinkingLevel;
+                onUpdateSettings({
+                  ...settings,
+                  includeThoughts: next,
+                  thinkingLevel: nextLevel,
+                });
+                toast.success(
+                  next
+                    ? `Thinking: ${THINKING_LEVEL_META[nextLevel].label}`
+                    : 'Thinking Process: Nonaktif'
+                );
+              }}
+              className={cn(
+                'h-8 w-8 rounded-xl',
+                thinkingOn
+                  ? 'border border-primary/35 bg-primary/10 text-primary'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+              aria-label="Toggle Thinking"
+            >
+              <Brain className="h-4 w-4" />
+            </Button>
+
+            <Popover open={mobileToolsOpen} onOpenChange={setMobileToolsOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant={
+                    settings.enableGoogleSearch || settings.enableUrlContext ? 'secondary' : 'ghost'
+                  }
+                  size="icon"
+                  className={cn(
+                    'relative h-8 w-8 rounded-xl',
+                    settings.enableGoogleSearch || settings.enableUrlContext
+                      ? 'border border-primary/35 bg-primary/10 text-primary'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                  aria-label="Tools & Tuning"
+                >
+                  <SlidersHorizontal className="h-4 w-4" />
+                  {(settings.enableGoogleSearch || settings.enableUrlContext) && (
+                    <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-sky-400" />
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-[calc(100vw-2rem)] max-w-xs space-y-3.5">
+                <div className="space-y-1.5">
+                  <div className="text-xs font-semibold">Alat Cepat</div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      disabled={isStreaming}
+                      onClick={() => {
+                        const next = !settings.enableGoogleSearch;
+                        onUpdateSettings({ ...settings, enableGoogleSearch: next });
+                        toast.success(
+                          next
+                            ? 'Google Search Grounding: Aktif'
+                            : 'Google Search Grounding: Nonaktif'
+                        );
+                      }}
+                      className={cn(
+                        'flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-left text-xs transition-colors',
+                        settings.enableGoogleSearch
+                          ? 'border-sky-500/45 bg-sky-500/10 font-medium text-sky-400'
+                          : 'hover:bg-accent'
+                      )}
+                    >
+                      <Globe className="h-3.5 w-3.5 shrink-0" />
+                      <span>Search Web</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isStreaming}
+                      onClick={() => {
+                        const next = !settings.enableUrlContext;
+                        onUpdateSettings({ ...settings, enableUrlContext: next });
+                        toast.success(next ? 'URL Context: Aktif' : 'URL Context: Nonaktif');
+                      }}
+                      className={cn(
+                        'flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-left text-xs transition-colors',
+                        settings.enableUrlContext
+                          ? 'border-emerald-500/45 bg-emerald-500/10 font-medium text-emerald-400'
+                          : 'hover:bg-accent'
+                      )}
+                    >
+                      <Link2 className="h-3.5 w-3.5 shrink-0" />
+                      <span>URL Context</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isStreaming}
+                      onClick={() => {
+                        setMobileToolsOpen(false);
+                        setInput('/');
+                        setTimeout(() => textareaRef.current?.focus(), 40);
+                      }}
+                      className="flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-left text-xs transition-colors hover:bg-accent"
+                    >
+                      <Slash className="h-3.5 w-3.5 shrink-0 text-primary" />
+                      <span>Templates</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isStreaming || input.trim().length <= 4}
+                      onClick={() => {
+                        setMobileToolsOpen(false);
+                        void handleEnhancePrompt();
+                      }}
+                      className={cn(
+                        'flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-left text-xs transition-colors',
+                        input.trim().length > 4
+                          ? 'text-primary hover:bg-primary/10'
+                          : 'opacity-45'
+                      )}
+                    >
+                      <Wand2 className="h-3.5 w-3.5 shrink-0" />
+                      <span>Enhance</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="text-xs font-semibold">Quick Persona</div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {PERSONA_PRESETS.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => {
+                          const recLevel = resolveValidThinkingLevel(
+                            model,
+                            p.recommendedThinkingLevel
+                          );
+                          onUpdateSettings({
+                            ...settings,
+                            activePersonaId: p.id,
+                            systemInstruction: p.systemInstruction,
+                            thinkingLevel: recLevel,
+                            includeThoughts: recLevel !== 'off',
+                          });
+                        }}
+                        className={cn(
+                          'rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors',
+                          settings.activePersonaId === p.id
+                            ? 'border-primary bg-primary/10 font-medium text-primary'
+                            : 'hover:bg-accent'
+                        )}
+                      >
+                        {p.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="flex items-center gap-1.5 font-medium">
+                      <Brain className="h-3.5 w-3.5 text-primary" />
+                      Thinking Level
+                    </span>
+                    <Switch
+                      checked={thinkingOn}
+                      disabled={!thinkingCaps.supported}
+                      onCheckedChange={(checked) =>
+                        onUpdateSettings({
+                          ...settings,
+                          includeThoughts: checked,
+                          thinkingLevel: checked
+                            ? effectiveThinkingLevel === 'off'
+                              ? thinkingCaps.defaultLevel
+                              : effectiveThinkingLevel
+                            : thinkingCaps.canDisable
+                              ? 'off'
+                              : effectiveThinkingLevel,
+                        })
+                      }
+                    />
+                  </div>
+                  {thinkingCaps.supported && (
+                    <div
+                      className="grid gap-1"
+                      style={{
+                        gridTemplateColumns: `repeat(${thinkingCaps.supportedLevels.length}, minmax(0, 1fr))`,
+                      }}
+                    >
+                      {thinkingCaps.supportedLevels.map((lvl) => (
+                        <button
+                          key={lvl}
+                          type="button"
+                          onClick={() =>
+                            onUpdateSettings({
+                              ...settings,
+                              includeThoughts: lvl !== 'off',
+                              thinkingLevel: lvl,
+                            })
+                          }
+                          className={cn(
+                            'rounded-md border py-1 font-mono text-[10px] transition-colors',
+                            effectiveThinkingLevel === lvl
+                              ? 'border-primary bg-primary/15 font-semibold text-primary'
+                              : 'hover:bg-accent'
+                          )}
+                        >
+                          {THINKING_LEVEL_META[lvl].label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border bg-muted/40 px-3 py-2">
+                  <span className="text-xs font-medium">Demo SSE Mode</span>
+                  <Switch
+                    checked={settings.demoMode}
+                    onCheckedChange={(checked) =>
+                      onUpdateSettings({ ...settings, demoMode: checked })
+                    }
+                  />
+                </div>
+              </PopoverContent>
+            </Popover>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1.5">
+            {input.trim().length > 4 && !isStreaming && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={handleEnhancePrompt}
+                className="h-8 w-8 rounded-xl text-primary hover:bg-primary/10"
+                aria-label="Enhance prompt"
+              >
+                <Wand2 className="h-4 w-4" />
+              </Button>
+            )}
+
+            {micAvailable && (
+              <Button
+                type="button"
+                variant={isRecording ? 'destructive' : 'ghost'}
+                size="icon"
+                onClick={handleToggleMic}
+                disabled={isStreaming || isTranscribing}
+                className="h-8 w-8 rounded-xl"
+                aria-label="Voice input"
+              >
+                {isTranscribing ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                ) : (
+                  <Mic
+                    className={cn(
+                      'h-4 w-4',
+                      isRecording ? 'animate-pulse text-white' : 'text-muted-foreground'
+                    )}
+                  />
+                )}
+              </Button>
+            )}
+
+            {isStreaming ? (
+              <button
+                type="button"
+                onClick={onStop}
+                className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-rose-500/45 bg-rose-500/15 px-3 text-xs font-semibold text-rose-400"
+                aria-label="Hentikan respon AI"
+              >
+                <Square className="h-2.5 w-2.5 fill-current" />
+                <span>Stop</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={submit}
+                disabled={(!input.trim() && attachments.length === 0) || isRecording || isTranscribing}
+                className={cn(
+                  'inline-flex h-8 w-8 items-center justify-center rounded-xl transition-all',
+                  (input.trim() || attachments.length > 0) && !isRecording && !isTranscribing
+                    ? 'bg-primary text-primary-foreground shadow-[0_4px_14px_-3px_hsl(var(--primary)/0.65)]'
+                    : 'cursor-not-allowed bg-muted/70 text-muted-foreground/45'
+                )}
+                aria-label="Kirim pesan"
+              >
+                <ArrowUp className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Desktop Toolbar */}
+        <div className="mt-1.5 hidden items-center justify-between gap-1.5 border-t border-border/40 pt-2 sm:flex">
           <div className="flex flex-wrap items-center gap-1">
             <input
               ref={fileInputRef}
@@ -1640,13 +2091,12 @@ const handleEnhancePrompt = async () => {
         </div>
       </div>
 
-      <div className="chat-composer-toolbar mt-1.5 flex items-center justify-between px-1 text-[10px] text-muted-foreground sm:text-[11px]">
+      <div className="chat-composer-toolbar mt-1.5 hidden items-center justify-between px-1 text-[10px] text-muted-foreground sm:flex sm:text-[11px]">
         <span className="inline-flex items-center gap-1 truncate">
           <Sparkles className="h-3 w-3 shrink-0 text-primary" />
           <span className="truncate font-mono">{model}</span>
         </span>
-        <span className="hidden sm:inline">Ctrl+K Palette • Ctrl+\ Zen Mode</span>
-        <span className="sm:hidden">Ketik / untuk template</span>
+        <span>Ctrl+K Palette • Ctrl+\ Zen Mode</span>
       </div>
       <SelectionQuotePopover onInsertQuote={handleInsertQuote} />
     </div>

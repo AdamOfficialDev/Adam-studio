@@ -18,6 +18,7 @@ import {
   Cpu,
   Download,
   Eye,
+  FileCode2,
   FileJson,
   FileText,
   FileUp,
@@ -1933,15 +1934,15 @@ export default function App() {
               activeArtifact && artifactFullscreen && 'hidden lg:hidden'
             )}
           >
-            <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-3 sm:px-4">
-              <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
+            <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-2.5 sm:h-14 sm:px-4">
+              <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:flex-initial sm:gap-2">
                 {!zenMode && (
                   <Button
                     type="button"
                     variant="ghost"
                     size="icon"
                     onClick={() => setMobileSidebarOpen(true)}
-                    className="shrink-0 md:hidden"
+                    className="h-9 w-9 shrink-0 md:hidden"
                     aria-label="Menu"
                   >
                     <Menu className="h-5 w-5" />
@@ -1952,10 +1953,10 @@ export default function App() {
                   type="button"
                   variant="ghost"
                   onClick={() => setModelDialogOpen(true)}
-                  className="h-9 min-w-0 gap-1.5 rounded-xl border border-border/50 bg-card/60 px-2.5 font-medium shadow-sm sm:gap-2 sm:px-3"
+                  className="h-9 min-w-0 max-w-[205px] gap-1.5 rounded-xl border border-border/50 bg-card/60 px-2.5 font-medium shadow-sm sm:max-w-none sm:gap-2 sm:px-3"
                 >
                   <Sparkles className="h-4 w-4 shrink-0 text-primary" />
-                  <span className="truncate text-xs sm:text-sm">{currentModelInfo.name}</span>
+                  <span className="truncate text-[13px] sm:text-sm">{currentModelInfo.name}</span>
                   {currentModelInfo.isNew && (
                     <Badge
                       variant="secondary"
@@ -1970,7 +1971,7 @@ export default function App() {
                 <HeaderStreamBadge />
               </div>
 
-              <div className="flex shrink-0 items-center gap-1">
+              <div className="flex shrink-0 items-center gap-1 sm:gap-1.5">
                 {!isOnline && (
                   <Badge variant="destructive" className="gap-1 px-2 py-0.5 text-[10px]">
                     <WifiOff className="h-3 w-3" />
@@ -1995,18 +1996,41 @@ export default function App() {
                         });
                       }}
                       className={cn(
-                        'h-8 gap-1.5 rounded-full border px-2.5 text-xs',
+                        'hidden h-8 gap-1.5 rounded-full border px-2.5 text-xs sm:inline-flex',
                         devicePanelOpen
                           ? 'border-primary/40 bg-primary/10 text-primary'
                           : 'border-border/60 bg-card/60 text-muted-foreground hover:text-foreground'
                       )}
                     >
                       <MonitorSmartphone className="h-3.5 w-3.5 text-primary" />
-                      <span className="hidden sm:inline">Device</span>
+                      <span>Device</span>
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>Device Control Center (Desktop & Android)</TooltipContent>
                 </Tooltip>
+
+                {Object.keys(activeConversation?.workspace?.files || {}).length > 0 && (
+                  <Button
+                    type="button"
+                    variant={workspaceOpen ? 'secondary' : 'outline'}
+                    size="sm"
+                    onClick={() => {
+                      setActiveArtifact(null);
+                      setDevicePanelOpen(false);
+                      setWorkspaceOpen((prev) => !prev);
+                    }}
+                    className={cn(
+                      'h-8 gap-1 rounded-full px-2 font-mono text-[11px] sm:px-2.5',
+                      workspaceOpen
+                        ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-400'
+                        : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-400'
+                    )}
+                    title="Buka Emergent Multi-File IDE"
+                  >
+                    <FileCode2 className="h-3.5 w-3.5" />
+                    <span>{Object.keys(activeConversation?.workspace?.files || {}).length}</span>
+                  </Button>
+                )}
 
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -2016,14 +2040,14 @@ export default function App() {
                       size="sm"
                       onClick={() => setGithubDialogOpen(true)}
                       className={cn(
-                        'h-8 gap-1.5 rounded-full border px-2.5 text-xs',
+                        'hidden h-8 gap-1.5 rounded-full border px-2.5 text-xs md:inline-flex',
                         activeConversation?.githubProject
                           ? 'border-primary/40 bg-primary/10 text-primary'
                           : 'border-border/60 bg-card/60 text-muted-foreground hover:text-foreground'
                       )}
                     >
                       <FolderGit2 className="h-3.5 w-3.5 text-primary" />
-                      <span className="hidden max-w-[100px] truncate sm:inline">
+                      <span className="max-w-[100px] truncate">
                         {activeConversation?.githubProject ? activeConversation.githubProject.repo : 'GitHub'}
                       </span>
                     </Button>
@@ -2038,10 +2062,10 @@ export default function App() {
                       variant="ghost"
                       size="sm"
                       onClick={() => setImportDialogOpen(true)}
-                      className="h-8 gap-1.5 rounded-full border border-border/60 bg-card/60 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+                      className="hidden h-8 gap-1.5 rounded-full border border-border/60 bg-card/60 px-2.5 text-xs text-muted-foreground hover:text-foreground lg:inline-flex"
                     >
                       <FileUp className="h-3.5 w-3.5 text-primary" />
-                      <span className="hidden sm:inline">Import Chat</span>
+                      <span>Import Chat</span>
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
@@ -2049,7 +2073,7 @@ export default function App() {
                   </TooltipContent>
                 </Tooltip>
 
-                {/* Context Meter Pill — Klik untuk buka Context Window Manager (Kompres <250k Free Tier) */}
+                {/* Context Meter Pill — Ringkas di mobile, lengkap di desktop */}
                 {activeConversation && (
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -2057,7 +2081,7 @@ export default function App() {
                         type="button"
                         onClick={() => setContextDialogOpen(true)}
                         className={cn(
-                          'flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] transition-colors',
+                          'flex h-8 items-center gap-1.5 rounded-full border px-2 text-[11px] transition-colors sm:gap-2 sm:px-2.5',
                           isContextOverFreeTier
                             ? 'border-amber-500/60 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25'
                             : activeConversation.compactedContext
@@ -2066,7 +2090,8 @@ export default function App() {
                         )}
                       >
                         <span className="font-mono">
-                          {(contextTokenEstimate / 1000).toFixed(1)}k ctx
+                          {(contextTokenEstimate / 1000).toFixed(1)}k
+                          <span className="hidden sm:inline"> ctx</span>
                         </span>
                         <div className="hidden h-1.5 w-10 overflow-hidden rounded-full bg-muted sm:block">
                           <div
@@ -2097,12 +2122,10 @@ export default function App() {
                     onClick={() =>
                       setActiveArtifact(conversationArtifacts[conversationArtifacts.length - 1])
                     }
-                    className="h-8 gap-1 rounded-full px-2.5 text-xs"
+                    className="hidden h-8 gap-1 rounded-full px-2.5 text-xs sm:inline-flex"
                   >
                     <Eye className="h-3.5 w-3.5 text-primary" />
-                    <span className="hidden sm:inline">
-                      Canvas ({conversationArtifacts.length})
-                    </span>
+                    <span>Canvas ({conversationArtifacts.length})</span>
                   </Button>
                 )}
 
@@ -2111,7 +2134,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setSettingsDialogOpen(true)}
-                      className="inline-flex items-center gap-1.5 rounded-full border bg-card/70 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:px-2.5"
+                      className="hidden items-center gap-1.5 rounded-full border bg-card/70 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:inline-flex"
                     >
                       <Radio
                         className={
@@ -2120,7 +2143,7 @@ export default function App() {
                             : 'h-3.5 w-3.5 text-emerald-500'
                         }
                       />
-                      <span className="hidden sm:inline">
+                      <span>
                         {settings.demoMode
                           ? 'Demo SSE'
                           : activeKeyPoolCount > 1
@@ -2159,11 +2182,67 @@ export default function App() {
 
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button type="button" variant="ghost" size="icon" aria-label="Menu studio">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 sm:h-9 sm:w-9"
+                      aria-label="Menu studio"
+                    >
                       <MoreVertical className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuContent align="end" className="w-56">
+                    <div className="sm:hidden">
+                      <DropdownMenuItem
+                        onClick={() => {
+                          setActiveArtifact(null);
+                          setWorkspaceOpen(false);
+                          setDevicePanelOpen((p) => !p);
+                        }}
+                      >
+                        <MonitorSmartphone className="h-3.5 w-3.5 text-primary" />
+                        Device Control Center
+                      </DropdownMenuItem>
+                      {conversationArtifacts.length > 0 && (
+                        <DropdownMenuItem
+                          onClick={() =>
+                            setActiveArtifact(conversationArtifacts[conversationArtifacts.length - 1])
+                          }
+                        >
+                          <Eye className="h-3.5 w-3.5 text-primary" />
+                          Buka Canvas ({conversationArtifacts.length})
+                        </DropdownMenuItem>
+                      )}
+                      <DropdownMenuItem onClick={() => setGithubDialogOpen(true)}>
+                        <FolderGit2 className="h-3.5 w-3.5 text-primary" />
+                        {activeConversation?.githubProject
+                          ? `GitHub: ${activeConversation.githubProject.repo}`
+                          : 'Hubungkan GitHub'}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setSettingsDialogOpen(true)}>
+                        <Radio
+                          className={cn(
+                            'h-3.5 w-3.5',
+                            settings.demoMode ? 'text-amber-500' : 'text-emerald-500'
+                          )}
+                        />
+                        {settings.demoMode
+                          ? 'Status: Demo SSE'
+                          : activeKeyPoolCount > 1
+                            ? `Status: ${activeKeyPoolCount} API Keys`
+                            : 'Status: Live SSE'}
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                    </div>
+                    <div className="hidden sm:block md:hidden">
+                      <DropdownMenuItem onClick={() => setGithubDialogOpen(true)}>
+                        <FolderGit2 className="h-3.5 w-3.5 text-primary" />
+                        {activeConversation?.githubProject
+                          ? `GitHub: ${activeConversation.githubProject.repo}`
+                          : 'Hubungkan GitHub'}
+                      </DropdownMenuItem>
+                    </div>
                     <DropdownMenuItem onClick={() => setImportDialogOpen(true)}>
                       <FileUp className="h-3.5 w-3.5 text-primary" />
                       Import Konteks (.json / .md)
