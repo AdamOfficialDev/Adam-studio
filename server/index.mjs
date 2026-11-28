@@ -326,7 +326,7 @@ async function fetchWithTimeout(url, options, parentSignal, timeoutMs = 10000) {
 }
 
 app.post('/api/compact', async (req, res) => {
-  const { model, chunks = [] } = req.body || {};
+  const { model, chunks = [], existingSummary = '' } = req.body || {};
 
   const headerKeys = parseKeyPool(
     typeof req.headers['x-gemini-api-keys'] === 'string' ? req.headers['x-gemini-api-keys'] : '',
@@ -360,28 +360,48 @@ app.post('/api/compact', async (req, res) => {
   const disabledModels = new Set();
 
   try {
-    const partSummaries = [];
+    let runningSummary =
+      typeof existingSummary === 'string' ? existingSummary.trim() : '';
 
     for (let i = 0; i < chunks.length; i++) {
       await hydrateKeyCooldowns(apiKeys, keyCooldownMap);
       const ordered = buildOrderedCandidateKeys(apiKeys);
       writeSseEvent(res, 'status', {
-        message: `Meringkas riwayat bagian ${i + 1}/${chunks.length} tanpa menghilangkan detail teknis...`,
+        message: runningSummary
+          ? `Memperbarui Rolling Memory dengan pesan baru (${i + 1}/${chunks.length})...`
+          : `Meringkas riwayat bagian ${i + 1}/${chunks.length} tanpa menghilangkan detail teknis...`,
       });
 
-      const prompt = [
-        'Kamu adalah sistem Lossless Technical Context Compactor.',
-        'Tugasmu merangkum potongan riwayat percakapan berikut agar sesi AI dapat dilanjutkan TANPA KEHILANGAN KONTEKS PENTING.',
-        'WAJIB pertahankan secara lengkap:',
-        '1. Semua permintaan, aturan UI/UX, preferensi gaya bahasa, tech stack, dan batasan dari User.',
-        '2. Semua nama file, path, komponen, variabel, API endpoint, dan keputusan arsitektur.',
-        '3. Semua bug yang ditemukan, penyebabnya, serta status perbaikannya (sudah fix / belum).',
-        '4. Jangan sertakan kode panjang ulang—cukup ringkas fungsi & kontrak perubahannya.',
-        '',
-        `--- MULAI BAGIAN ${i + 1}/${chunks.length} ---`,
-        chunks[i],
-        `--- AKHIR BAGIAN ${i + 1}/${chunks.length} ---`,
-      ].join('\n');
+      const prompt = runningSummary
+        ? [
+            'Kamu adalah sistem Incremental Rolling Memory Merger untuk Adam Studio.',
+            'Tugasmu menggabungkan MEMORI INTI SEBELUMNYA dengan POTONGAN PERCAKAPAN BARU menjadi SATU dokumen memori terpadu yang ringkas, padat, dan zero-duplikasi.',
+            'ATURAN WAJIB:',
+            '1. Pertahankan semua aturan UI/UX, preferensi gaya bahasa, tech stack, nama file/path, API endpoint, dan keputusan arsitektur yang masih berlaku.',
+            '2. Integrasikan fakta, fitur, atau bug baru dari potongan percakapan terbaru.',
+            '3. Jika status bug/task lama sudah selesai atau digantikan di percakapan baru, perbarui statusnya secara ringkas (jangan menumpuk riwayat usang).',
+            '4. Jangan menyalin blok kode panjang—cukup simpan kontrak fungsi, tipe data, nama simbol, dan lokasi file.',
+            '5. Outputkan langsung isi memori terpadu yang terstruktur rapi (maksimal ~1500 kata).',
+            '',
+            '--- MEMORI INTI SEBELUMNYA ---',
+            runningSummary,
+            '',
+            `--- POTONGAN PERCAKAPAN BARU (${i + 1}/${chunks.length}) ---`,
+            chunks[i],
+          ].join('\n')
+        : [
+            'Kamu adalah sistem Lossless Technical Context Compactor.',
+            'Tugasmu merangkum potongan riwayat percakapan berikut agar sesi AI dapat dilanjutkan TANPA KEHILANGAN KONTEKS PENTING.',
+            'WAJIB pertahankan secara lengkap:',
+            '1. Semua permintaan, aturan UI/UX, preferensi gaya bahasa, tech stack, dan batasan dari User.',
+            '2. Semua nama file, path, komponen, variabel, API endpoint, dan keputusan arsitektur.',
+            '3. Semua bug yang ditemukan, penyebabnya, serta status perbaikannya (sudah fix / belum).',
+            '4. Jangan sertakan kode panjang ulang—cukup ringkas fungsi & kontrak perubahannya.',
+            '',
+            `--- MULAI BAGIAN ${i + 1}/${chunks.length} ---`,
+            chunks[i],
+            `--- AKHIR BAGIAN ${i + 1}/${chunks.length} ---`,
+          ].join('\n');
 
       let chunkDone = false;
       let lastErr = 'Gagal meringkas bagian chat.';
@@ -431,7 +451,7 @@ app.post('/api/compact', async (req, res) => {
                   .join('')
                   .trim();
                 if (text) {
-                  partSummaries.push(`### Ringkasan Bagian ${i + 1}\n${text}`);
+                  runningSummary = text;
                   chunkDone = true;
                   break;
                 }
@@ -476,7 +496,7 @@ app.post('/api/compact', async (req, res) => {
       }
     }
 
-    writeSseEvent(res, 'result', { ok: true, summary: partSummaries.join('\n\n') });
+    writeSseEvent(res, 'result', { ok: true, summary: runningSummary });
   } finally {
     if (!res.writableEnded) res.end();
   }

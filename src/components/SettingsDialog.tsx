@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import {
   Brain,
+  Code2,
   Database,
   Download,
   Check,
@@ -8,9 +9,11 @@ import {
   EyeOff,
   History,
   KeyRound,
+  Layers,
   Palette,
   Radio,
   RotateCcw,
+  Search,
   Settings,
   ShieldAlert,
   Shuffle,
@@ -46,7 +49,14 @@ import {
   restoreConversationsBackup,
 } from '@/lib/db';
 import { countApiKeys, DEFAULT_SETTINGS } from '@/lib/storage';
-import type { AppSettings, Conversation, DeviceApprovalMode, ServerHealth, ThemeSkin } from '@/types/chat';
+import type {
+  AppSettings,
+  ContextMode,
+  Conversation,
+  DeviceApprovalMode,
+  ServerHealth,
+  ThemeSkin,
+} from '@/types/chat';
 import { cn } from '@/lib/utils';
 
 interface SettingsDialogProps {
@@ -101,12 +111,35 @@ const THEME_SKINS: Array<{
   },
 ];
 
-const HISTORY_LIMIT_OPTIONS = [
-  { label: 'Semua', value: 0 },
-  { label: '20 Pesan', value: 20 },
-  { label: '10 Pesan', value: 10 },
-  { label: '6 Pesan', value: 6 },
+const CONTEXT_MODES: Array<{
+  id: ContextMode;
+  label: string;
+  badge: string;
+  desc: string;
+}> = [
+  {
+    id: 'smart-rolling',
+    label: 'Smart Rolling Memory',
+    badge: 'Ribuan Chat',
+    desc: 'Semua chat disimpan utuh di IndexedDB. Pesan lama otomatis diringkas ke Memori Inti & hanya N chat terbaru yang dikirim.',
+  },
+  {
+    id: 'sliding-window',
+    label: 'Strict Sliding Window',
+    badge: 'Super Hemat',
+    desc: 'Hanya mengirim N chat paling baru saja ke API tanpa summary lama (cocok untuk hemat token maksimal).',
+  },
+  {
+    id: 'full',
+    label: 'Full History',
+    badge: 'Standar',
+    desc: 'Mengirim seluruh riwayat chat dari awal sesi (atau dibatasi manual di bawah).',
+  },
 ];
+
+const RECENT_MSG_PRESETS = [4, 10, 15, 25, 50];
+const BATCH_SIZE_PRESETS = [4, 6, 10, 20];
+const CODE_BLOCK_PRESETS = [0, 1, 2, 3, 5];
 
 export const SettingsDialog = memo(function SettingsDialog({
   open,
@@ -257,6 +290,10 @@ export const SettingsDialog = memo(function SettingsDialog({
   const handleSave = () => {
     onSave({
       ...draft,
+      contextRecentMessages: Math.max(1, Math.min(500, Number(draft.contextRecentMessages) || 15)),
+      contextCompactBatchSize: Math.max(2, Math.min(100, Number(draft.contextCompactBatchSize) || 6)),
+      contextKeepCodeBlocks: Math.max(0, Math.min(20, Number(draft.contextKeepCodeBlocks ?? 2))),
+      maxHistoryMessages: Math.max(0, Math.min(1000, Number(draft.maxHistoryMessages) || 0)),
       thinkingLevel: resolveValidThinkingLevel(effectiveModel, draft.thinkingLevel),
       maxOutputTokens: Math.min(65536, Math.max(128, Number(draft.maxOutputTokens) || 8192)),
     });
@@ -292,22 +329,32 @@ export const SettingsDialog = memo(function SettingsDialog({
             />
 
             <Tabs defaultValue="connection" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="shrink-0 border-b border-border/75 bg-card/85 px-5 py-2.5">
-                <TabsList className="grid h-10 w-full grid-cols-3 rounded-xl border border-border/75 bg-background/60 p-1">
+              <div className="shrink-0 border-b border-border/75 bg-card/85 px-4 py-2.5 sm:px-5">
+                <TabsList className="grid h-10 w-full grid-cols-4 rounded-xl border border-border/75 bg-background/60 p-1">
                   <TabsTrigger
                     value="connection"
-                    className="gap-1.5 rounded-lg text-[11px] sm:text-xs"
+                    className="gap-1 rounded-lg px-1.5 text-[11px] sm:gap-1.5 sm:text-xs"
                   >
                     <KeyRound className="h-3.5 w-3.5 shrink-0" />
                     <span>Koneksi</span>
                   </TabsTrigger>
-                  <TabsTrigger value="persona" className="gap-1.5 rounded-lg text-[11px] sm:text-xs">
+                  <TabsTrigger
+                    value="memory"
+                    className="gap-1 rounded-lg px-1.5 text-[11px] sm:gap-1.5 sm:text-xs"
+                  >
+                    <Layers className="h-3.5 w-3.5 shrink-0" />
+                    <span>Memori</span>
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="persona"
+                    className="gap-1 rounded-lg px-1.5 text-[11px] sm:gap-1.5 sm:text-xs"
+                  >
                     <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
                     <span>Persona</span>
                   </TabsTrigger>
                   <TabsTrigger
                     value="appearance"
-                    className="gap-1.5 rounded-lg text-[11px] sm:text-xs"
+                    className="gap-1 rounded-lg px-1.5 text-[11px] sm:gap-1.5 sm:text-xs"
                   >
                     <Palette className="h-3.5 w-3.5 shrink-0" />
                     <span>Tema</span>
@@ -566,34 +613,6 @@ export const SettingsDialog = memo(function SettingsDialog({
                     )}
                   </div>
 
-                  <div className="space-y-2.5 rounded-2xl border bg-card/60 p-4">
-                    <div className="flex items-center gap-2 text-sm font-semibold">
-                      <History className="h-4 w-4 text-primary" />
-                      Batas Riwayat Konteks Terkirim
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Membatasi jumlah pesan lama yang dikirim ulang agar chat panjang tidak memicu
-                      limit 250k TPM Free Tier.
-                    </p>
-                    <div className="grid grid-cols-4 gap-1.5">
-                      {HISTORY_LIMIT_OPTIONS.map((opt) => (
-                        <button
-                          key={opt.value}
-                          type="button"
-                          onClick={() => setDraft({ ...draft, maxHistoryMessages: opt.value })}
-                          className={cn(
-                            'rounded-lg border py-1.5 text-[11px] font-medium transition-colors',
-                            draft.maxHistoryMessages === opt.value
-                              ? 'border-primary bg-primary/15 text-primary'
-                              : 'bg-background/50 hover:bg-accent'
-                          )}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
                   <div className="flex items-center justify-between gap-4 rounded-2xl border bg-card/60 p-4">
                     <div className="space-y-1">
                       <div className="flex items-center gap-2 text-sm font-semibold">
@@ -658,6 +677,349 @@ export const SettingsDialog = memo(function SettingsDialog({
                 </div>
               </div>
 
+                </TabsContent>
+
+                <TabsContent value="memory" className="mt-0 space-y-4">
+                  {/* Mode Pengiriman Konteks */}
+                  <div className="space-y-2.5 rounded-2xl border bg-card/60 p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm font-semibold">
+                        <Layers className="h-4 w-4 text-primary" />
+                        Mode Konteks & Penghemat Token
+                      </div>
+                      <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-primary">
+                        {draft.contextMode}
+                      </span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-muted-foreground">
+                      Semua riwayat chat tetap tersimpan 100% utuh di IndexedDB browser untuk dibaca kapan saja. Pengaturan ini menentukan apa yang dikirim ke API tiap giliran chat.
+                    </p>
+                    <div className="space-y-2 pt-1">
+                      {CONTEXT_MODES.map((m) => {
+                        const active = draft.contextMode === m.id;
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => setDraft({ ...draft, contextMode: m.id })}
+                            className={cn(
+                              'w-full rounded-xl border p-3 text-left transition-all',
+                              active
+                                ? 'border-primary bg-primary/10 ring-1 ring-primary/30'
+                                : 'bg-background/60 hover:bg-accent/50'
+                            )}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-semibold text-foreground">{m.label}</span>
+                              <span
+                                className={cn(
+                                  'rounded-md px-1.5 py-0.5 font-mono text-[10px] font-medium',
+                                  active
+                                    ? 'bg-primary/20 text-primary'
+                                    : 'bg-muted text-muted-foreground'
+                                )}
+                              >
+                                {m.badge}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                              {m.desc}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Jumlah Chat Terbaru yang Selalu Dikirim */}
+                  {draft.contextMode !== 'full' ? (
+                    <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-2 text-sm font-semibold">
+                            <History className="h-4 w-4 text-primary" />
+                            Jumlah Chat Terbaru yang Dikirim (Window)
+                          </div>
+                          <p className="mt-0.5 text-[11px] text-muted-foreground">
+                            Isi angka bebas (1–500). Hanya sejumlah pesan paling akhir ini yang dikirim mentah ke AI.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            type="number"
+                            min={1}
+                            max={500}
+                            value={draft.contextRecentMessages}
+                            onChange={(e) => {
+                              const raw = parseInt(e.target.value, 10);
+                              setDraft({
+                                ...draft,
+                                contextRecentMessages: Number.isFinite(raw) ? Math.max(1, Math.min(500, raw)) : 1,
+                              });
+                            }}
+                            className="h-8 w-20 rounded-xl bg-background/80 text-center font-mono text-xs font-bold"
+                          />
+                          <span className="text-[11px] text-muted-foreground">pesan</span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-1.5">
+                        {RECENT_MSG_PRESETS.map((n) => (
+                          <button
+                            key={n}
+                            type="button"
+                            onClick={() => setDraft({ ...draft, contextRecentMessages: n })}
+                            className={cn(
+                              'rounded-lg border px-2.5 py-1 font-mono text-[11px] font-medium transition-colors',
+                              draft.contextRecentMessages === n
+                                ? 'border-primary bg-primary/15 font-semibold text-primary'
+                                : 'bg-background/50 hover:bg-accent'
+                            )}
+                          >
+                            {n} chat
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="rounded-xl border border-border/60 bg-background/50 px-3 py-2 text-[11px] text-muted-foreground">
+                        Saat ini diset ke <strong className="text-foreground">{draft.contextRecentMessages} pesan terbaru</strong>. Pesan sebelum itu tidak dikirim mentah sehingga token tetap stabil meski sesi mencapai ribuan chat.
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-2 text-sm font-semibold">
+                            <History className="h-4 w-4 text-primary" />
+                            Batas Maksimal Pesan (Full Mode)
+                          </div>
+                          <p className="mt-0.5 text-[11px] text-muted-foreground">
+                            Isi <code>0</code> untuk mengirim semua pesan, atau masukkan angka batas manual.
+                          </p>
+                        </div>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={1000}
+                          value={draft.maxHistoryMessages}
+                          onChange={(e) => {
+                            const raw = parseInt(e.target.value, 10);
+                            setDraft({
+                              ...draft,
+                              maxHistoryMessages: Number.isFinite(raw) ? Math.max(0, Math.min(1000, raw)) : 0,
+                            });
+                          }}
+                          className="h-8 w-20 rounded-xl bg-background/80 text-center font-mono text-xs font-bold"
+                        />
+                      </div>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {[
+                          { label: 'Semua', value: 0 },
+                          { label: '30 Pesan', value: 30 },
+                          { label: '15 Pesan', value: 15 },
+                          { label: '10 Pesan', value: 10 },
+                        ].map((opt) => (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => setDraft({ ...draft, maxHistoryMessages: opt.value })}
+                            className={cn(
+                              'rounded-lg border py-1.5 text-[11px] font-medium transition-colors',
+                              draft.maxHistoryMessages === opt.value
+                                ? 'border-primary bg-primary/15 text-primary'
+                                : 'bg-background/50 hover:bg-accent'
+                            )}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Pengaturan Lanjutan Smart Rolling & Anti-Amnesia */}
+                  {draft.contextMode === 'smart-rolling' && (
+                    <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-1.5 text-xs font-semibold">
+                            <Brain className="h-3.5 w-3.5 text-primary" />
+                            Auto-Summarize Rolling Memory
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            Otomatis meringkas pesan lama yang keluar dari window di background lalu menggabungkannya ke Memori Inti.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={draft.contextAutoSummarize}
+                          onCheckedChange={(checked) =>
+                            setDraft({ ...draft, contextAutoSummarize: checked })
+                          }
+                        />
+                      </div>
+
+                      {draft.contextAutoSummarize && (
+                        <div className="space-y-2 border-t border-border/60 pt-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <div className="text-xs font-medium text-foreground">
+                                Batch Arsip Otomatis (Pesan Keluar Window)
+                              </div>
+                              <p className="text-[11px] text-muted-foreground">
+                                Setiap berapa pesan di luar window sebelum dirangkum ke Rolling Memory.
+                              </p>
+                            </div>
+                            <Input
+                              type="number"
+                              min={2}
+                              max={100}
+                              value={draft.contextCompactBatchSize}
+                              onChange={(e) => {
+                                const raw = parseInt(e.target.value, 10);
+                                setDraft({
+                                  ...draft,
+                                  contextCompactBatchSize: Number.isFinite(raw)
+                                    ? Math.max(2, Math.min(100, raw))
+                                    : 6,
+                                });
+                              }}
+                              className="h-8 w-20 rounded-xl bg-background/80 text-center font-mono text-xs font-bold"
+                            />
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {BATCH_SIZE_PRESETS.map((b) => (
+                              <button
+                                key={b}
+                                type="button"
+                                onClick={() => setDraft({ ...draft, contextCompactBatchSize: b })}
+                                className={cn(
+                                  'rounded-lg border px-2.5 py-1 font-mono text-[11px]',
+                                  draft.contextCompactBatchSize === b
+                                    ? 'border-primary bg-primary/15 font-semibold text-primary'
+                                    : 'bg-background/50 hover:bg-accent'
+                                )}
+                              >
+                                Tiap {b} pesan
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Smart Recall & Code Deduplication */}
+                  <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
+                    {draft.contextMode !== 'full' && (
+                      <div className="flex items-center justify-between gap-4 border-b border-border/60 pb-3">
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-1.5 text-xs font-semibold">
+                            <Search className="h-3.5 w-3.5 text-primary" />
+                            Smart Keyword Recall (Anti-Amnesia)
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            Jika prompt terbaru menyebut nama file/topik dari chat lama di luar window, otomatis tarik hingga 3 potongan relevan dari arsip lokal.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={draft.contextSmartRecall}
+                          onCheckedChange={(checked) =>
+                            setDraft({ ...draft, contextSmartRecall: checked })
+                          }
+                        />
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-1.5 text-xs font-semibold">
+                          <Code2 className="h-3.5 w-3.5 text-primary" />
+                          Deduplikasi Blok Kode Lama
+                        </div>
+                        <p className="text-[11px] text-muted-foreground">
+                          Ringkas blok kode panjang (&gt;25 baris) di pesan lama agar tidak mengirim ulang kode usang berkali-kali.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={draft.contextDedupeOldCode}
+                        onCheckedChange={(checked) =>
+                          setDraft({ ...draft, contextDedupeOldCode: checked })
+                        }
+                      />
+                    </div>
+
+                    {draft.contextDedupeOldCode && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
+                        <span className="text-[11px] text-muted-foreground">
+                          Pertahankan blok kode besar terbaru secara utuh:
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {CODE_BLOCK_PRESETS.map((k) => (
+                            <button
+                              key={k}
+                              type="button"
+                              onClick={() => setDraft({ ...draft, contextKeepCodeBlocks: k })}
+                              className={cn(
+                                'rounded-lg border px-2 py-1 font-mono text-[11px]',
+                                draft.contextKeepCodeBlocks === k
+                                  ? 'border-primary bg-primary/15 font-semibold text-primary'
+                                  : 'bg-background/50 hover:bg-accent'
+                              )}
+                            >
+                              {k}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* IndexedDB Storage & Backup */}
+                  <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <Database className="h-4 w-4 text-primary" />
+                        <span>IndexedDB Storage & Backup</span>
+                      </div>
+                      {idbStats && (
+                        <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 font-mono text-[11px] text-emerald-400">
+                          {idbStats.count} Sesi • {idbStats.usedLabel}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Seluruh histori chat disimpan lokal di IndexedDB (kapasitas ratusan MB+). Export backup jika ingin memindahkan riwayat ke perangkat lain.
+                    </p>
+                    <input
+                      ref={backupInputRef}
+                      type="file"
+                      accept=".json,application/json"
+                      className="hidden"
+                      onChange={(e) => void handleRestoreFile(e)}
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void handleExportBackup()}
+                        className="h-8 gap-1.5 rounded-xl text-xs"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        Export Backup (.json)
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => backupInputRef.current?.click()}
+                        className="h-8 gap-1.5 rounded-xl text-xs"
+                      >
+                        <Upload className="h-3.5 w-3.5" />
+                        Restore Backup
+                      </Button>
+                    </div>
+                  </div>
                 </TabsContent>
 
                 <TabsContent value="persona" className="mt-0 space-y-5">

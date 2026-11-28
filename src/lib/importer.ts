@@ -1,5 +1,46 @@
 import { estimateTokens, generateId } from '@/lib/utils';
-import type { ChatMessage, CompactedContextState } from '@/types/chat';
+import type {
+  AppSettings,
+  ChatMessage,
+  CompactedContextState,
+  ContextMode,
+  Conversation,
+} from '@/types/chat';
+
+export interface ResolvedContextConfig {
+  contextMode: ContextMode;
+  recentMessages: number;
+  autoSummarize: boolean;
+  compactBatchSize: number;
+  dedupeOldCode: boolean;
+  keepCodeBlocks: number;
+  smartRecall: boolean;
+}
+
+export function resolveEffectiveContextConfig(
+  settings: AppSettings,
+  conversation?: Conversation | null
+): ResolvedContextConfig {
+  const ov = conversation?.contextConfig;
+  return {
+    contextMode: ov?.contextMode ?? settings.contextMode ?? 'full',
+    recentMessages: Math.max(
+      1,
+      Math.min(500, Number(ov?.recentMessages ?? settings.contextRecentMessages ?? 15) || 15)
+    ),
+    autoSummarize: ov?.autoSummarize ?? settings.contextAutoSummarize ?? true,
+    compactBatchSize: Math.max(
+      2,
+      Math.min(100, Number(ov?.compactBatchSize ?? settings.contextCompactBatchSize ?? 6) || 6)
+    ),
+    dedupeOldCode: ov?.dedupeOldCode ?? settings.contextDedupeOldCode ?? true,
+    keepCodeBlocks: Math.max(
+      0,
+      Math.min(20, Number(ov?.keepCodeBlocks ?? settings.contextKeepCodeBlocks ?? 2))
+    ),
+    smartRecall: ov?.smartRecall ?? settings.contextSmartRecall ?? true,
+  };
+}
 
 export interface ParsedImportResult {
   ok: boolean;
@@ -98,19 +139,166 @@ export function estimateMessagesTokenTotal(messages: ChatMessage[]): number {
   }, 0);
 }
 
+const RECALL_STOPWORDS = new Set([
+  'yang', 'untuk', 'dengan', 'atau', 'dari', 'pada', 'dalam', 'bisa', 'akan', 'juga',
+  'sudah', 'belum', 'kalau', 'karena', 'agar', 'supaya', 'seperti', 'ini', 'itu',
+  'saya', 'kamu', 'kita', 'mereka', 'tolong', 'buat', 'buatin', 'kasih', 'ubah',
+  'ganti', 'coba', 'lihat', 'baca', 'tulis', 'kirim', 'pakai', 'pake', 'sama',
+  'what', 'when', 'where', 'which', 'with', 'from', 'that', 'this', 'have', 'will',
+  'your', 'please', 'make', 'create', 'update', 'change', 'check', 'file', 'code',
+]);
+
+export function findSmartRecallSnippets(
+  olderMessages: ChatMessage[],
+  latestUserPrompt: string,
+  maxSnippets = 3
+): string {
+  const query = latestUserPrompt.trim().toLowerCase();
+  if (!query || olderMessages.length === 0) return '';
+
+  const tokens = Array.from(
+    new Set(
+      query
+        .split(/[^a-z0-9_./-]+/i)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 4 && !RECALL_STOPWORDS.has(t))
+    )
+  ).slice(0, 14);
+
+  if (tokens.length === 0) return '';
+
+  const scored: Array<{ idx: number; score: number; msg: ChatMessage }> = [];
+  for (let i = 0; i < olderMessages.length; i++) {
+    const msg = olderMessages[i];
+    if (!msg.content) continue;
+    const hay = msg.content.toLowerCase();
+    let score = 0;
+    for (const kw of tokens) {
+      if (hay.includes(kw)) {
+        score += kw.includes('.') || kw.includes('_') || kw.includes('/') ? 3 : 1;
+      }
+    }
+    if (score >= 2 || (tokens.length === 1 && score >= 1)) {
+      scored.push({ idx: i, score, msg });
+    }
+  }
+
+  if (scored.length === 0) return '';
+
+  scored.sort((a, b) => b.score - a.score || b.idx - a.idx);
+  const picked = scored.slice(0, maxSnippets).sort((a, b) => a.idx - b.idx);
+
+  let totalChars = 0;
+  const blocks: string[] = [];
+  for (const item of picked) {
+    const speaker = item.msg.role === 'user' ? 'USER' : 'ASSISTANT';
+    const raw = item.msg.content.trim();
+    const snippet = raw.length > 1500 ? `${raw.slice(0, 1500)}\n...[dipotong]` : raw;
+    if (totalChars + snippet.length > 4200 && blocks.length > 0) break;
+    totalChars += snippet.length;
+    blocks.push(`[Pesan Arsip #${item.idx + 1} - ${speaker}]\n${snippet}`);
+  }
+
+  return blocks.join('\n\n');
+}
+
 export function buildEffectiveApiHistory(
   messages: ChatMessage[],
-  compacted?: CompactedContextState
+  compacted?: CompactedContextState,
+  options?: {
+    contextConfig?: ResolvedContextConfig;
+    latestUserPrompt?: string;
+  }
 ): ChatMessage[] {
-  if (!compacted) return messages;
+  const cfg = options?.contextConfig;
+
+  // Mode Smart Rolling Memory atau Strict Sliding Window
+  if (cfg && (cfg.contextMode === 'smart-rolling' || cfg.contextMode === 'sliding-window')) {
+    const recentCount = Math.max(1, cfg.recentMessages);
+    const total = messages.length;
+    const windowStart = Math.max(0, total - recentCount);
+
+    let sliceStart = windowStart;
+    const archivedCount =
+      cfg.contextMode === 'smart-rolling'
+        ? Math.min(compacted?.archivedCount ?? 0, total)
+        : 0;
+
+    if (cfg.contextMode === 'smart-rolling' && cfg.autoSummarize) {
+      const unarchivedGap = Math.max(0, windowStart - archivedCount);
+      if (unarchivedGap > 0 && unarchivedGap <= cfg.compactBatchSize * 2) {
+        sliceStart = archivedCount;
+      } else if (archivedCount > 0 && archivedCount <= windowStart) {
+        sliceStart = windowStart;
+      }
+    }
+
+    const recentRaw = messages.slice(sliceStart);
+    const recentClean = cfg.dedupeOldCode
+      ? applyKeepLatestCodeToMessages(recentRaw, cfg.keepCodeBlocks)
+      : recentRaw;
+
+    const olderMessages = sliceStart > 0 ? messages.slice(0, sliceStart) : [];
+    const recallText =
+      cfg.smartRecall && olderMessages.length > 0 && options?.latestUserPrompt
+        ? findSmartRecallSnippets(olderMessages, options.latestUserPrompt)
+        : '';
+
+    const hasSummary =
+      cfg.contextMode === 'smart-rolling' && Boolean(compacted?.summaryPrefix?.trim());
+
+    if (!hasSummary && !recallText) {
+      return recentClean;
+    }
+
+    const memorySections: string[] = [];
+    if (hasSummary && compacted?.summaryPrefix) {
+      const rangeLabel =
+        archivedCount > 0 ? `Pesan #1–#${archivedCount}` : 'Percakapan Terdahulu';
+      memorySections.push(
+        `[Memori Inti Rolling (${rangeLabel} — Tersimpan Otomatis di Lokal)]\n\n${compacted.summaryPrefix.trim()}`
+      );
+    }
+    if (recallText) {
+      memorySections.push(
+        `[Smart Recall — Cuplikan Relevan dari Riwayat Lama]\n\n${recallText}`
+      );
+    }
+
+    const prefixMessages: ChatMessage[] = [
+      {
+        id: 'rolling-memory-user',
+        role: 'user',
+        content: memorySections.join('\n\n---\n\n'),
+        createdAt: messages[0]?.createdAt ?? Date.now(),
+      },
+      {
+        id: 'rolling-memory-assistant',
+        role: 'assistant',
+        content:
+          'Memori inti dan konteks relevan di atas sudah saya muat. Saya lanjutkan dari jendela percakapan terbaru di bawah.',
+        createdAt: messages[0]?.createdAt ?? Date.now(),
+      },
+    ];
+
+    return [...prefixMessages, ...recentClean];
+  }
+
+  // Mode Full History (atau manual compaction di mode Full)
+  if (!compacted) {
+    if (cfg?.dedupeOldCode && messages.length > 6) {
+      return applyKeepLatestCodeToMessages(messages, cfg.keepCodeBlocks);
+    }
+    return messages;
+  }
 
   if (compacted.mode === 'keep-latest-code') {
-    return applyKeepLatestCodeToMessages(messages, 2);
+    return applyKeepLatestCodeToMessages(messages, cfg?.keepCodeBlocks ?? 2);
   }
 
   const keepCount = Math.max(2, compacted.keepRecentCount);
   const recentRaw = messages.slice(-keepCount);
-  const recentClean = applyKeepLatestCodeToMessages(recentRaw, 2);
+  const recentClean = applyKeepLatestCodeToMessages(recentRaw, cfg?.keepCodeBlocks ?? 2);
 
   if (!compacted.summaryPrefix) {
     return recentClean;
@@ -188,6 +376,7 @@ export function buildCompactionChunks(messages: ChatMessage[], maxChunkTokens = 
 async function runCompactBatchRequest(params: {
   model: string;
   chunks: string[];
+  existingSummary?: string;
   headers: Record<string, string>;
   signal?: AbortSignal;
   batchLabel?: string;
@@ -199,6 +388,7 @@ async function runCompactBatchRequest(params: {
     body: JSON.stringify({
       model: params.model,
       chunks: params.chunks,
+      existingSummary: params.existingSummary || undefined,
     }),
     signal: params.signal,
   });
@@ -259,25 +449,25 @@ async function runCompactBatchRequest(params: {
 export async function runLosslessContextCompaction(params: {
   messages: ChatMessage[];
   keepRecentCount: number;
+  messagesToCompact?: ChatMessage[];
   model: string;
   apiKey?: string;
   existingSummary?: string;
   signal?: AbortSignal;
   onStatus?: (msg: string) => void;
 }): Promise<{ ok: boolean; summary?: string; error?: string }> {
-  const olderMessages =
-    params.messages.length > params.keepRecentCount
+  const olderMessages = params.messagesToCompact
+    ? params.messagesToCompact
+    : params.messages.length > params.keepRecentCount
       ? params.messages.slice(0, -params.keepRecentCount)
       : params.messages;
 
   const chunks = buildCompactionChunks(olderMessages, 95_000);
-  if (params.existingSummary?.trim()) {
-    chunks.unshift(
-      `[RINGKASAN KONTEKS HISTORIS SEBELUMNYA DARI AWAL SESI — WAJIB DIPERTAHANKAN UTUH]\n\n${params.existingSummary.trim()}`
-    );
-  }
 
   if (chunks.length === 0) {
+    if (params.existingSummary?.trim()) {
+      return { ok: true, summary: params.existingSummary.trim() };
+    }
     return { ok: false, error: 'Tidak ada pesan lama untuk dirangkum.' };
   }
 
@@ -295,7 +485,9 @@ export async function runLosslessContextCompaction(params: {
   const encoder = new TextEncoder();
   const batches: string[][] = [];
   let currentBatch: string[] = [];
-  let currentBytes = 0;
+  let currentBytes = params.existingSummary
+    ? encoder.encode(params.existingSummary).length + 256
+    : 0;
 
   for (const chunk of chunks) {
     const chunkBytes = encoder.encode(chunk).length + 64;
@@ -312,12 +504,13 @@ export async function runLosslessContextCompaction(params: {
     batches.push(currentBatch);
   }
 
-  const summaries: string[] = [];
+  let runningSummary = params.existingSummary?.trim() || '';
   for (let b = 0; b < batches.length; b++) {
     const label = batches.length > 1 ? `[Batch ${b + 1}/${batches.length}]` : undefined;
     const result = await runCompactBatchRequest({
       model: params.model,
       chunks: batches[b],
+      existingSummary: runningSummary || undefined,
       headers,
       signal: params.signal,
       batchLabel: label,
@@ -326,10 +519,10 @@ export async function runLosslessContextCompaction(params: {
     if (!result.ok || !result.summary) {
       return result;
     }
-    summaries.push(result.summary);
+    runningSummary = result.summary;
   }
 
-  return { ok: true, summary: summaries.join('\n\n') };
+  return { ok: true, summary: runningSummary };
 }
 
 function parseGoogleAiStudioJson(

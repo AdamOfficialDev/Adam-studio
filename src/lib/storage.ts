@@ -18,6 +18,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoFallbackOnOverload: true,
   fallbackModel: 'gemini-3.8-flash',
   maxHistoryMessages: 0,
+  contextMode: 'full',
+  contextRecentMessages: 15,
+  contextAutoSummarize: true,
+  contextCompactBatchSize: 6,
+  contextDedupeOldCode: true,
+  contextKeepCodeBlocks: 2,
+  contextSmartRecall: true,
   sttMode: 'ai',
   soundChime: true,
   demoMode: false,
@@ -111,6 +118,37 @@ export function loadSettings(): AppSettings {
     const merged: AppSettings & { thinkingBudget?: number; temperature?: number } = {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      contextMode: parsed.contextMode ?? DEFAULT_SETTINGS.contextMode,
+      contextRecentMessages: Math.max(
+        1,
+        Math.min(
+          500,
+          Number(parsed.contextRecentMessages) ||
+            (parsed.maxHistoryMessages && parsed.maxHistoryMessages > 0
+              ? parsed.maxHistoryMessages
+              : DEFAULT_SETTINGS.contextRecentMessages)
+        )
+      ),
+      contextAutoSummarize:
+        typeof parsed.contextAutoSummarize === 'boolean'
+          ? parsed.contextAutoSummarize
+          : DEFAULT_SETTINGS.contextAutoSummarize,
+      contextCompactBatchSize: Math.max(
+        2,
+        Math.min(100, Number(parsed.contextCompactBatchSize) || DEFAULT_SETTINGS.contextCompactBatchSize)
+      ),
+      contextDedupeOldCode:
+        typeof parsed.contextDedupeOldCode === 'boolean'
+          ? parsed.contextDedupeOldCode
+          : DEFAULT_SETTINGS.contextDedupeOldCode,
+      contextKeepCodeBlocks: Math.max(
+        0,
+        Math.min(20, Number(parsed.contextKeepCodeBlocks ?? DEFAULT_SETTINGS.contextKeepCodeBlocks))
+      ),
+      contextSmartRecall:
+        typeof parsed.contextSmartRecall === 'boolean'
+          ? parsed.contextSmartRecall
+          : DEFAULT_SETTINGS.contextSmartRecall,
       thinkingLevel,
       skin,
     };

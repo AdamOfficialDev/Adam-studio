@@ -82,8 +82,10 @@ import { Sidebar } from '@/components/Sidebar';
 import { usePwaInstall } from '@/hooks/usePwaInstall';
 import { extractArtifactsFromMarkdown } from '@/lib/artifacts';
 import {
+  applyKeepLatestCodeToMessages,
   buildEffectiveApiHistory,
   estimateMessagesTokenTotal,
+  resolveEffectiveContextConfig,
   runLosslessContextCompaction,
 } from '@/lib/importer';
 import { DEFAULT_MODEL_ID, getModelInfo, getModelThinkingCapabilities, resolveValidThinkingLevel } from '@/lib/models';
@@ -113,6 +115,7 @@ import type {
   ChatMessage as ChatMessageType,
   CompactedContextState,
   Conversation,
+  ConversationContextConfig,
   GitHubProjectContext,
   ServerHealth,
   ThemeSkin,
@@ -434,11 +437,23 @@ export default function App() {
     return list;
   }, [activeConversation]);
 
+  const activeContextConfig = useMemo(
+    () => resolveEffectiveContextConfig(settings, activeConversation),
+    [settings, activeConversation]
+  );
+
   const contextTokenEstimate = useMemo(() => {
     if (!activeConversation) return estimateTokens(settings.systemInstruction);
+    const lastUserMsg = [...activeConversation.messages]
+      .reverse()
+      .find((m) => m.role === 'user');
     const effective = buildEffectiveApiHistory(
       activeConversation.messages,
-      activeConversation.compactedContext
+      activeConversation.compactedContext,
+      {
+        contextConfig: activeContextConfig,
+        latestUserPrompt: lastUserMsg?.content,
+      }
     );
     const ghTokens = (activeConversation.githubProject?.pinnedFiles || []).reduce((s, f) => s + f.tokens, 0);
     return (
@@ -446,7 +461,7 @@ export default function App() {
       ghTokens +
       estimateTokens(activeConversation.sessionSystemInstruction || settings.systemInstruction)
     );
-  }, [activeConversation, settings.systemInstruction]);
+  }, [activeConversation, activeContextConfig, settings.systemInstruction]);
 
   const contextUsagePct = Math.min(
     100,
@@ -695,18 +710,20 @@ export default function App() {
       githubProject?: GitHubProjectContext,
       continueMessage?: ChatMessageType,
       builderMode?: BuilderMode,
-      workspace?: VirtualWorkspace
+      workspace?: VirtualWorkspace,
+      convContextConfig?: ConversationContextConfig
     ) => {
       abortControllerRef.current?.abort();
       const controller = new AbortController();
       abortControllerRef.current = controller;
       autoScrollEnabledRef.current = true;
 
-      const effectiveHistory = buildEffectiveApiHistory(historyMessages, compactedContext);
-      const trimmedHistory =
-        settings.maxHistoryMessages > 0 && effectiveHistory.length > settings.maxHistoryMessages
-          ? effectiveHistory.slice(-settings.maxHistoryMessages)
-          : effectiveHistory;
+      const resolvedCtxConfig = resolveEffectiveContextConfig(
+        settings,
+        convContextConfig ? ({ contextConfig: convContextConfig } as Conversation) : undefined
+      );
+      const lastUserMsg = [...historyMessages].reverse().find((m) => m.role === 'user');
+      const latestUserPrompt = lastUserMsg?.content || '';
 
       const effectiveSystemInstruction = [
         settings.systemInstruction,
@@ -790,6 +807,92 @@ export default function App() {
       };
 
       try {
+        let activeCompactedContext = compactedContext;
+        const rollingWindowStart = Math.max(
+          0,
+          historyMessages.length - resolvedCtxConfig.recentMessages
+        );
+        const currentArchivedCount = Math.min(
+          activeCompactedContext?.archivedCount ?? 0,
+          historyMessages.length
+        );
+        const unarchivedGap = Math.max(0, rollingWindowStart - currentArchivedCount);
+
+        if (
+          !settings.demoMode &&
+          !continueMessage &&
+          resolvedCtxConfig.contextMode === 'smart-rolling' &&
+          resolvedCtxConfig.autoSummarize &&
+          unarchivedGap >= resolvedCtxConfig.compactBatchSize
+        ) {
+          const messagesToCompact = historyMessages.slice(currentArchivedCount, rollingWindowStart);
+          if (messagesToCompact.length > 0) {
+            currentStatus = `Mengarsipkan pesan #${currentArchivedCount + 1}–#${rollingWindowStart} ke Rolling Memory...`;
+            commitStreamSnapshot();
+
+            try {
+              const compactRes = await runLosslessContextCompaction({
+                messages: historyMessages,
+                keepRecentCount: resolvedCtxConfig.recentMessages,
+                messagesToCompact,
+                model: modelId,
+                apiKey: settings.apiKey,
+                existingSummary: activeCompactedContext?.summaryPrefix,
+                signal: controller.signal,
+                onStatus: (msg) => {
+                  currentStatus = msg;
+                  commitStreamSnapshot();
+                },
+              });
+
+              if (compactRes.ok && compactRes.summary) {
+                const recentSlice = applyKeepLatestCodeToMessages(
+                  historyMessages.slice(rollingWindowStart),
+                  resolvedCtxConfig.keepCodeBlocks
+                );
+                const nextCompacted: CompactedContextState = {
+                  mode: 'ai-summary',
+                  summaryPrefix: compactRes.summary,
+                  keepRecentCount: resolvedCtxConfig.recentMessages,
+                  archivedCount: rollingWindowStart,
+                  estimatedTokens:
+                    estimateTokens(compactRes.summary) +
+                    estimateMessagesTokenTotal(recentSlice) +
+                    80,
+                  updatedAt: Date.now(),
+                };
+                activeCompactedContext = nextCompacted;
+                setConversations((prev) =>
+                  prev.map((conv) =>
+                    conv.id !== convId ? conv : { ...conv, compactedContext: nextCompacted }
+                  )
+                );
+              }
+            } catch (rollingErr) {
+              if (rollingErr instanceof Error && rollingErr.name === 'AbortError') {
+                throw rollingErr;
+              }
+            } finally {
+              currentStatus = undefined;
+              commitStreamSnapshot();
+            }
+          }
+        }
+
+        const effectiveHistory = buildEffectiveApiHistory(
+          historyMessages,
+          activeCompactedContext,
+          {
+            contextConfig: resolvedCtxConfig,
+            latestUserPrompt,
+          }
+        );
+        const trimmedHistory =
+          resolvedCtxConfig.contextMode === 'full' &&
+          settings.maxHistoryMessages > 0 &&
+          effectiveHistory.length > settings.maxHistoryMessages
+            ? effectiveHistory.slice(-settings.maxHistoryMessages)
+            : effectiveHistory;
         let activeGithubProject = githubProject;
         if (activeGithubProject && !settings.demoMode) {
           currentStatus = `Mengecek commit terbaru ${activeGithubProject.owner}/${activeGithubProject.repo}...`;
@@ -881,11 +984,11 @@ export default function App() {
         ) {
           const keepRecent = 6;
           const prevKept =
-            compactedContext?.mode === 'ai-summary'
-              ? Math.max(keepRecent, compactedContext.keepRecentCount)
+            activeCompactedContext?.mode === 'ai-summary'
+              ? Math.max(keepRecent, activeCompactedContext.keepRecentCount)
               : historyMessages.length;
           const messagesToDistill =
-            compactedContext?.mode === 'ai-summary' && historyMessages.length > prevKept
+            activeCompactedContext?.mode === 'ai-summary' && historyMessages.length > prevKept
               ? historyMessages.slice(-prevKept)
               : historyMessages;
 
@@ -900,8 +1003,8 @@ export default function App() {
               model: modelId,
               apiKey: settings.apiKey,
               existingSummary:
-                compactedContext?.mode === 'ai-summary'
-                  ? compactedContext.summaryPrefix
+                activeCompactedContext?.mode === 'ai-summary'
+                  ? activeCompactedContext.summaryPrefix
                   : undefined,
               signal: controller.signal,
               onStatus: (msg) => {
@@ -915,11 +1018,13 @@ export default function App() {
                 mode: 'ai-summary',
                 summaryPrefix: compactRes.summary,
                 keepRecentCount: keepRecent,
+                archivedCount: Math.max(0, historyMessages.length - keepRecent),
                 estimatedTokens: estimateMessagesTokenTotal(
                   buildEffectiveApiHistory(historyMessages, {
                     mode: 'ai-summary',
                     summaryPrefix: compactRes.summary,
                     keepRecentCount: keepRecent,
+                    archivedCount: Math.max(0, historyMessages.length - keepRecent),
                     estimatedTokens: 0,
                     updatedAt: Date.now(),
                   })
@@ -937,7 +1042,8 @@ export default function App() {
 
               finalHistoryForApi = buildEffectiveApiHistory(
                 historyMessages,
-                nextCompactedState
+                nextCompactedState,
+                { contextConfig: resolvedCtxConfig, latestUserPrompt }
               );
               toast.success('Konteks awal sesi diringkas lossless agar muat batas server.');
             }
@@ -1383,8 +1489,10 @@ export default function App() {
         );
       } else {
         const historyForModel = [...activeConversation.messages, userMessage];
+        const resolvedCfg = resolveEffectiveContextConfig(settings, activeConversation);
         const nextCompacted: CompactedContextState | undefined = activeConversation.compactedContext
-          ? activeConversation.compactedContext.mode === 'ai-summary'
+          ? resolvedCfg.contextMode === 'full' &&
+            activeConversation.compactedContext.mode === 'ai-summary'
             ? {
                 ...activeConversation.compactedContext,
                 keepRecentCount: activeConversation.compactedContext.keepRecentCount + 2,
@@ -1414,11 +1522,12 @@ export default function App() {
           activeConversation.githubProject,
           undefined,
           activeConversation.builderMode || 'chat',
-          activeConversation.workspace
+          activeConversation.workspace,
+          activeConversation.contextConfig
         );
       }
     },
-    [activeConversation, currentModelId, isStreamingActive, runStreamForConversation, visualTarget]
+    [activeConversation, currentModelId, draftBuilderMode, isStreamingActive, runStreamForConversation, settings, visualTarget]
   );
 
   const handleContinue = useCallback(() => {
@@ -1467,7 +1576,8 @@ export default function App() {
       activeConversation.githubProject,
       resumableSnapshot,
       activeConversation.builderMode || 'chat',
-      activeConversation.workspace
+      activeConversation.workspace,
+      activeConversation.contextConfig
     );
   }, [activeConversation, isStreamingActive, runStreamForConversation]);
 
@@ -1515,7 +1625,8 @@ export default function App() {
         activeConversation.githubProject,
         undefined,
         activeConversation.builderMode || 'chat',
-        activeConversation.workspace
+        activeConversation.workspace,
+        activeConversation.contextConfig
       );
     },
     [activeConversation, isStreamingActive, runStreamForConversation]
@@ -1562,7 +1673,11 @@ export default function App() {
         assistantMessageId,
         activeConversation.sessionSystemInstruction,
         activeConversation.compactedContext,
-        activeConversation.githubProject
+        activeConversation.githubProject,
+        undefined,
+        activeConversation.builderMode || 'chat',
+        activeConversation.workspace,
+        activeConversation.contextConfig
       );
     },
     [activeConversation, isStreamingActive, runStreamForConversation]
@@ -1582,6 +1697,7 @@ export default function App() {
         sessionSystemInstruction: activeConversation.sessionSystemInstruction,
         githubProject: activeConversation.githubProject,
         compactedContext: activeConversation.compactedContext,
+        contextConfig: activeConversation.contextConfig,
         messages: activeConversation.messages.slice(0, idx + 1).map((m) => ({
           ...m,
           id: generateId(),
@@ -1704,6 +1820,15 @@ export default function App() {
     (convId: string, compacted?: CompactedContextState) => {
       setConversations((prev) =>
         prev.map((c) => (c.id === convId ? { ...c, compactedContext: compacted } : c))
+      );
+    },
+    []
+  );
+
+  const handleUpdateContextConfig = useCallback(
+    (convId: string, config?: ConversationContextConfig) => {
+      setConversations((prev) =>
+        prev.map((c) => (c.id === convId ? { ...c, contextConfig: config } : c))
       );
     },
     []
@@ -2107,9 +2232,11 @@ export default function App() {
                     <TooltipContent>
                       {isContextOverFreeTier
                         ? 'Melebihi batas Free Tier 250k TPM! Klik untuk ringkas / kompres konteks.'
-                        : activeConversation.compactedContext
-                          ? 'Konteks dioptimalkan untuk API. Klik untuk kelola.'
-                          : `Estimasi context (~${contextTokenEstimate.toLocaleString()} tok). Klik untuk kelola.`}
+                        : activeContextConfig.contextMode !== 'full'
+                          ? `${activeContextConfig.contextMode === 'smart-rolling' ? 'Smart Rolling Memory' : 'Sliding Window'} (${activeContextConfig.recentMessages} pesan terbaru) • ~${contextTokenEstimate.toLocaleString()} tok. Klik untuk atur.`
+                          : activeConversation.compactedContext
+                            ? 'Konteks dioptimalkan untuk API. Klik untuk kelola.'
+                            : `Estimasi context (~${contextTokenEstimate.toLocaleString()} tok). Klik untuk kelola.`}
                     </TooltipContent>
                   </Tooltip>
                 )}
@@ -2843,9 +2970,11 @@ export default function App() {
             open={contextDialogOpen}
             onOpenChange={setContextDialogOpen}
             conversation={activeConversation}
+            settings={settings}
             apiKey={settings.apiKey}
             hasApiKey={activeKeyPoolCount > 0}
             onApplyCompaction={handleApplyCompaction}
+            onUpdateContextConfig={handleUpdateContextConfig}
           />
 
           <CommandPalette

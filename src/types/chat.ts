@@ -3,6 +3,7 @@ export type BuilderMode = 'chat' | 'emergent' | 'device';
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high';
 export type DeviceApprovalMode = 'always' | 'high-risk' | 'autonomous';
 export type DevicePlatform = 'desktop' | 'android';
+export type ContextMode = 'full' | 'smart-rolling' | 'sliding-window';
 
 export interface DeviceInfo {
   id: string;
@@ -226,8 +227,19 @@ export interface CompactedContextState {
   mode: 'keep-latest-code' | 'ai-summary';
   summaryPrefix?: string;
   keepRecentCount: number;
+  archivedCount?: number;
   estimatedTokens: number;
   updatedAt: number;
+}
+
+export interface ConversationContextConfig {
+  contextMode?: ContextMode;
+  recentMessages?: number;
+  autoSummarize?: boolean;
+  compactBatchSize?: number;
+  smartRecall?: boolean;
+  dedupeOldCode?: boolean;
+  keepCodeBlocks?: number;
 }
 
 export interface Conversation {
@@ -242,6 +254,7 @@ export interface Conversation {
   builderMode?: BuilderMode;
   workspace?: VirtualWorkspace;
   compactedContext?: CompactedContextState;
+  contextConfig?: ConversationContextConfig;
   messages: ChatMessage[];
   createdAt: number;
   updatedAt: number;
@@ -261,6 +274,13 @@ export interface AppSettings {
   autoFallbackOnOverload: boolean;
   fallbackModel: string;
   maxHistoryMessages: number;
+  contextMode: ContextMode;
+  contextRecentMessages: number;
+  contextAutoSummarize: boolean;
+  contextCompactBatchSize: number;
+  contextDedupeOldCode: boolean;
+  contextKeepCodeBlocks: number;
+  contextSmartRecall: boolean;
   sttMode: 'ai' | 'browser';
   soundChime: boolean;
   demoMode: boolean;
