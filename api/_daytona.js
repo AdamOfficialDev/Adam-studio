@@ -88,7 +88,7 @@ async function daytonaFetch(url, { method = 'GET', apiKey, body, signal, timeout
   }
 }
 
-export async function ensureDaytonaSandbox({ sandboxId, apiKey, apiUrl, signal }) {
+export async function ensureDaytonaSandbox({ sandboxId, projectId, apiKey, apiUrl, signal }) {
   let sb = null;
   if (sandboxId) {
     try {
@@ -112,6 +112,11 @@ export async function ensureDaytonaSandbox({ sandboxId, apiKey, apiUrl, signal }
         language: 'typescript',
         public: true,
         autoStopInterval: 15,
+        labels: {
+          app: 'adam-studio',
+          source: 'adam-studio',
+          ...(projectId ? { adamProjectId: String(projectId) } : {}),
+        },
       },
     });
   } else if (sb.state === 'stopped' || sb.state === 'archived') {
@@ -211,6 +216,7 @@ export async function syncFilesToDaytona({
   files,
   appDir = '$HOME/adam-app',
   cleanSrc = false,
+  projectId = '',
   apiKey,
   apiUrl,
   signal,
@@ -223,8 +229,21 @@ export async function syncFilesToDaytona({
     throw new Error('Tidak ada file untuk disinkronkan ke Daytona.');
   }
 
-  // Buat folder target; bersihkan src/ hanya jika diminta (aman untuk repo hasil git clone)
-  const cmds = [cleanSrc ? `mkdir -p ${appDir} && rm -rf ${appDir}/src` : `mkdir -p ${appDir}`];
+  let prepCmd = `mkdir -p ${appDir}`;
+  if (projectId) {
+    const pidB64 = utf8ToBase64(String(projectId));
+    prepCmd = [
+      `mkdir -p ${appDir}`,
+      `NEW_PID="$(printf '%s' '${pidB64}' | base64 -d)"`,
+      `OLD_PID="$(cat ${appDir}/.adam-project-id 2>/dev/null || echo '')"`,
+      `if [ -n "$OLD_PID" ] && [ "$OLD_PID" != "$NEW_PID" ]; then find ${appDir} -mindepth 1 -maxdepth 1 ! -name 'node_modules' -exec rm -rf {} +; elif [ "${cleanSrc ? '1' : '0'}" = "1" ]; then rm -rf ${appDir}/src; fi`,
+      `printf '%s' "$NEW_PID" > ${appDir}/.adam-project-id`,
+    ].join(' && ');
+  } else if (cleanSrc) {
+    prepCmd = `mkdir -p ${appDir} && rm -rf ${appDir}/src`;
+  }
+
+  const cmds = [prepCmd];
   for (const entry of entries) {
     const cleanPath = String(entry.path || '')
       .replace(/\\/g, '/')
@@ -233,7 +252,17 @@ export async function syncFilesToDaytona({
     const b64 = utf8ToBase64(entry.content || '');
     const target = `${appDir}/${cleanPath}`;
     const dir = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : appDir;
-    cmds.push(`mkdir -p "${dir}" && printf '%s' '${b64}' | base64 -d > "${target}"`);
+    if (b64.length <= 22000) {
+      cmds.push(`mkdir -p "${dir}" && printf '%s' '${b64}' | base64 -d > "${target}"`);
+    } else {
+      const tmpB64 = '/tmp/adam-up-' + Math.random().toString(36).slice(2, 8) + '.b64';
+      cmds.push(`mkdir -p "${dir}" && rm -f ${tmpB64}`);
+      for (let off = 0; off < b64.length; off += 20000) {
+        const chunk = b64.slice(off, off + 20000);
+        cmds.push(`printf '%s' '${chunk}' >> ${tmpB64}`);
+      }
+      cmds.push(`base64 -d ${tmpB64} > "${target}" && rm -f ${tmpB64}`);
+    }
   }
 
   let currentBatch = '';
@@ -574,15 +603,176 @@ export async function startDaytonaDevServer({
   };
 }
 
+function normalizeSafeRelPath(rawPath) {
+  const clean = String(rawPath || '').trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+  if (!clean || clean.includes('..')) {
+    throw new Error('Path file tidak valid.');
+  }
+  return clean;
+}
+
+export async function readDaytonaFile({
+  sandboxId,
+  filePath,
+  appDir = '$HOME/adam-app',
+  startLine,
+  endLine,
+  maxBytes = 1_500_000,
+  apiKey,
+  apiUrl,
+  signal,
+}) {
+  const cleanPath = normalizeSafeRelPath(filePath);
+  const sb = await ensureDaytonaSandbox({ sandboxId, apiKey, apiUrl, signal });
+  const script = [
+    "const fs=require('fs'),path=require('path');",
+    `const rel=${JSON.stringify(cleanPath)};`,
+    "const fp=path.resolve(process.cwd(),rel);",
+    "if(!fs.existsSync(fp)) { console.log(JSON.stringify({ok:false,error:'File tidak ditemukan di Daytona VM: '+rel})); process.exit(0); }",
+    "const st=fs.statSync(fp);",
+    "if(!st.isFile()) { console.log(JSON.stringify({ok:false,error:'Target bukan file: '+rel})); process.exit(0); }",
+    `if(st.size>${maxBytes}) { console.log(JSON.stringify({ok:false,size:st.size,error:'File terlalu besar ('+Math.round(st.size/1024)+' KB). Gunakan startLine/endLine atau terminal.'})); process.exit(0); }`,
+    "const buf=fs.readFileSync(fp);",
+    "const sample=buf.subarray(0,Math.min(buf.length,4096));",
+    "if(sample.includes(0)) { console.log(JSON.stringify({ok:false,size:st.size,error:'File biner tidak dapat ditampilkan di editor teks.'})); process.exit(0); }",
+    "let content=buf.toString('utf8');",
+    `const sLine=${Number.isFinite(Number(startLine)) ? Math.max(1, Number(startLine)) : 'null'};`,
+    `const eLine=${Number.isFinite(Number(endLine)) ? Math.max(1, Number(endLine)) : 'null'};`,
+    "const lines=content.split('\n');",
+    "const totalLines=lines.length;",
+    "if(sLine!==null||eLine!==null){const a=(sLine||1)-1;const b=eLine||totalLines;content=lines.slice(a,b).join('\n');}",
+    "console.log(JSON.stringify({ok:true,path:rel,content,size:st.size,totalLines}));",
+  ].join('');
+
+  const res = await execDaytonaCommand({
+    sandboxId: sb.id,
+    command: `mkdir -p ${appDir} && cd ${appDir} && printf '%s' '${utf8ToBase64(script)}' | base64 -d > /tmp/adam-readfile.cjs && node /tmp/adam-readfile.cjs`,
+    timeoutSec: 30,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+
+  const lastLine = res.output.trim().split('\n').pop() || '{}';
+  const parsed = JSON.parse(lastLine);
+  return { sandboxId: sb.id, ...parsed };
+}
+
+export async function writeDaytonaFile({
+  sandboxId,
+  filePath,
+  content,
+  appDir = '$HOME/adam-app',
+  projectId = '',
+  apiKey,
+  apiUrl,
+  signal,
+}) {
+  const cleanPath = normalizeSafeRelPath(filePath);
+  const sb = await ensureDaytonaSandbox({ sandboxId, projectId, apiKey, apiUrl, signal });
+  await syncFilesToDaytona({
+    sandboxId: sb.id,
+    files: [{ path: cleanPath, content: String(content ?? '') }],
+    appDir,
+    cleanSrc: false,
+    projectId,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+  return { ok: true, sandboxId: sb.id, path: cleanPath };
+}
+
+export async function listDaytonaTree({
+  sandboxId,
+  appDir = '$HOME/adam-app',
+  dir = '',
+  query = '',
+  maxResults = 5000,
+  apiKey,
+  apiUrl,
+  signal,
+}) {
+  const sb = await ensureDaytonaSandbox({ sandboxId, apiKey, apiUrl, signal });
+  const script = [
+    "const fs=require('fs'),path=require('path');",
+    "const root=process.cwd();",
+    "const ignoreDir=new Set(['node_modules','.git','dist','build','.next','.vercel','coverage','.turbo']);",
+    `const subDir=${JSON.stringify(String(dir || '').replace(/^\/+|\/+$/g, ''))};`,
+    `const q=${JSON.stringify(String(query || '').toLowerCase())};`,
+    "const paths=[];",
+    "function walk(d){if(!fs.existsSync(d))return;for(const ent of fs.readdirSync(d,{withFileTypes:true})){if(ent.isDirectory()){if(!ignoreDir.has(ent.name))walk(path.join(d,ent.name));}else if(ent.isFile()){const rel=path.relative(root,path.join(d,ent.name)).replace(/\\\\/g,'/');if(rel==='.adam-pkg-hash'||rel==='.adam-project-id')continue;if(q&&!rel.toLowerCase().includes(q))continue;paths.push(rel);}}}",
+    "const startDir=subDir?path.resolve(root,subDir):root;",
+    "walk(startDir);",
+    "paths.sort((a,b)=>a.localeCompare(b));",
+    `console.log(JSON.stringify({ok:true,totalFiles:paths.length,paths:paths.slice(0,${Math.min(10000, Math.max(100, Number(maxResults) || 5000))})}));`,
+  ].join('');
+
+  const res = await execDaytonaCommand({
+    sandboxId: sb.id,
+    command: `mkdir -p ${appDir} && cd ${appDir} && printf '%s' '${utf8ToBase64(script)}' | base64 -d > /tmp/adam-listtree.cjs && node /tmp/adam-listtree.cjs`,
+    timeoutSec: 30,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+  const lastLine = res.output.trim().split('\n').pop() || '{}';
+  const parsed = JSON.parse(lastLine);
+  return { sandboxId: sb.id, ...parsed };
+}
+
+export async function searchDaytonaFiles({
+  sandboxId,
+  appDir = '$HOME/adam-app',
+  pattern,
+  dir = '',
+  isRegex = false,
+  maxMatches = 80,
+  apiKey,
+  apiUrl,
+  signal,
+}) {
+  const sb = await ensureDaytonaSandbox({ sandboxId, apiKey, apiUrl, signal });
+  const script = [
+    "const fs=require('fs'),path=require('path');",
+    "const root=process.cwd();",
+    "const ignoreDir=new Set(['node_modules','.git','dist','build','.next','.vercel','coverage','.turbo']);",
+    "const ignoreExt=/\\.(png|jpe?g|gif|webp|ico|woff2?|ttf|eot|pdf|zip|gz|tar|mp4|webm|mp3|wav|exe|dll|so|dylib|lock)$/i;",
+    `const pat=${JSON.stringify(String(pattern || ''))};`,
+    `const isRe=${Boolean(isRegex)};`,
+    `const subDir=${JSON.stringify(String(dir || '').replace(/^\/+|\/+$/g, ''))};`,
+    `const limit=${Math.min(200, Math.max(1, Number(maxMatches) || 80))};`,
+    "const re=isRe?new RegExp(pat,'i'):null;",
+    "const q=pat.toLowerCase();",
+    "const matches=[];let filesScanned=0;",
+    "function walk(d){if(matches.length>=limit||!fs.existsSync(d))return;for(const ent of fs.readdirSync(d,{withFileTypes:true})){if(matches.length>=limit)break;if(ent.isDirectory()){if(!ignoreDir.has(ent.name))walk(path.join(d,ent.name));}else if(ent.isFile()){if(ignoreExt.test(ent.name))continue;const fp=path.join(d,ent.name);const st=fs.statSync(fp);if(st.size>500000)continue;filesScanned++;const txt=fs.readFileSync(fp,'utf8');const rel=path.relative(root,fp).replace(/\\\\/g,'/');const lines=txt.split('\n');for(let i=0;i<lines.length;i++){const line=lines[i];const hit=re?re.test(line):line.toLowerCase().includes(q);if(hit){matches.push({path:rel,line:i+1,text:line.trim().slice(0,220)});if(matches.length>=limit)break;}}}}}",
+    "walk(subDir?path.resolve(root,subDir):root);",
+    "console.log(JSON.stringify({ok:true,filesScanned,matchCount:matches.length,matches}));",
+  ].join('');
+
+  const res = await execDaytonaCommand({
+    sandboxId: sb.id,
+    command: `mkdir -p ${appDir} && cd ${appDir} && printf '%s' '${utf8ToBase64(script)}' | base64 -d > /tmp/adam-search.cjs && node /tmp/adam-search.cjs`,
+    timeoutSec: 30,
+    apiKey,
+    apiUrl,
+    signal,
+  });
+  const lastLine = res.output.trim().split('\n').pop() || '{}';
+  const parsed = JSON.parse(lastLine);
+  return { sandboxId: sb.id, ...parsed };
+}
+
 export async function cloneGitHubIntoDaytona({
   sandboxId,
+  projectId = '',
   owner,
   repo,
   branch = 'main',
   githubToken = '',
   autoStart = false,
   port = 5173,
-  maxWorkspaceFiles = 120,
+  maxWorkspaceFiles = 200,
   apiKey,
   apiUrl,
   signal,
@@ -594,18 +784,20 @@ export async function cloneGitHubIntoDaytona({
     throw new Error('Owner dan nama repo GitHub wajib diisi.');
   }
 
-  const sb = await ensureDaytonaSandbox({ sandboxId, apiKey, apiUrl, signal });
+  const sb = await ensureDaytonaSandbox({ sandboxId, projectId, apiKey, apiUrl, signal });
   const appDir = '$HOME/adam-app';
   const safeToken = String(githubToken || '').trim();
   const repoUrl = safeToken
     ? `https://x-access-token:${safeToken}@github.com/${cleanOwner}/${cleanRepo}.git`
     : `https://github.com/${cleanOwner}/${cleanRepo}.git`;
 
+  const pidMark = projectId ? `printf '%s' '${utf8ToBase64(String(projectId))}' | base64 -d > ${appDir}/.adam-project-id` : 'true';
   const cloneCmd = [
     `rm -rf ${appDir} && mkdir -p ${appDir}`,
     `if ! git clone --depth 1 --branch ${shellQuote(cleanBranch)} ${shellQuote(repoUrl)} ${appDir} 2>&1; then`,
     `  rm -rf ${appDir} && git clone --depth 1 ${shellQuote(repoUrl)} ${appDir} 2>&1`,
     `fi`,
+    pidMark,
   ].join('\n');
 
   const cloneRes = await execDaytonaCommand({
@@ -628,19 +820,23 @@ export async function cloneGitHubIntoDaytona({
     };
   }
 
+  const eagerLimit = Math.min(120, Math.max(10, Number(maxWorkspaceFiles) || 40));
+  const eagerLimit = Math.min(120, Math.max(10, Number(maxWorkspaceFiles) || 40));
   const extractScript = [
     "const fs=require('fs'),path=require('path');",
     "const root=process.cwd();",
-    "const ignoreDir=new Set(['node_modules','.git','dist','build','.next','.vercel','coverage']);",
+    "const ignoreDir=new Set(['node_modules','.git','dist','build','.next','.vercel','coverage','.turbo']);",
     "const ignoreExt=/\\.(png|jpe?g|gif|webp|ico|woff2?|ttf|eot|pdf|zip|gz|tar|mp4|webm|mp3|wav|exe|dll|so|dylib|lock)$/i;",
-    "const ignoreFile=new Set(['package-lock.json','pnpm-lock.yaml','yarn.lock','bun.lockb']);",
-    "const found=[];",
-    "function walk(dir){for(const ent of fs.readdirSync(dir,{withFileTypes:true})){if(ent.isDirectory()){if(!ignoreDir.has(ent.name))walk(path.join(dir,ent.name));}else if(ent.isFile()){if(ignoreFile.has(ent.name)||ignoreExt.test(ent.name))continue;const fp=path.join(dir,ent.name);const st=fs.statSync(fp);if(st.size<=120000){found.push(path.relative(root,fp).replace(/\\\\/g,'/'));}}}}",
+    "const ignoreFile=new Set(['package-lock.json','pnpm-lock.yaml','yarn.lock','bun.lockb','.adam-project-id','.adam-pkg-hash']);",
+    "const allPaths=[];const textCandidates=[];",
+    "function walk(dir){for(const ent of fs.readdirSync(dir,{withFileTypes:true})){if(ent.isDirectory()){if(!ignoreDir.has(ent.name))walk(path.join(dir,ent.name));}else if(ent.isFile()){if(ent.name==='.adam-project-id'||ent.name==='.adam-pkg-hash')continue;const fp=path.join(dir,ent.name);const rel=path.relative(root,fp).replace(/\\\\/g,'/');allPaths.push(rel);if(ignoreFile.has(ent.name)||ignoreExt.test(ent.name))continue;const st=fs.statSync(fp);if(st.size<=180000)textCandidates.push(rel);}}}",
     "walk(root);",
-    "const prio=/^(package\\.json|tsconfig|vite\\.config|next\\.config|index\\.html|src\\/|app\\/|api\\/|server\\/)/i;",
-    "found.sort((a,b)=>((prio.test(a)?0:1)-(prio.test(b)?0:1))||a.localeCompare(b));",
-    `const out=found.slice(0,${Math.min(180, Math.max(1, Number(maxWorkspaceFiles) || 120))}).map(p=>({path:p,content:fs.readFileSync(path.join(root,p),'utf8')}));`,
-    "console.log(JSON.stringify({totalFiles:found.length,files:out}));",
+    "allPaths.sort((a,b)=>a.localeCompare(b));",
+    "const prio=/^(package\\.json|README\\.md|tsconfig|vite\\.config|next\\.config|index\\.html|src\\/App\\.|src\\/main\\.|src\\/index\\.|app\\/)/i;",
+    "textCandidates.sort((a,b)=>((prio.test(a)?0:1)-(prio.test(b)?0:1))||a.localeCompare(b));",
+    `const eager=${eagerLimit};`,
+    "const out=textCandidates.slice(0,eager).map(p=>({path:p,content:fs.readFileSync(path.join(root,p),'utf8')}));",
+    "console.log(JSON.stringify({totalFiles:allPaths.length,allPaths:allPaths.slice(0,8000),files:out}));",
   ].join('');
 
   const extractRes = await execDaytonaCommand({
@@ -654,11 +850,13 @@ export async function cloneGitHubIntoDaytona({
   });
 
   let extractedFiles = [];
+  let allPaths = [];
   let totalFiles = 0;
   try {
     const lastLine = extractRes.output.trim().split('\n').pop() || '{}';
     const parsed = JSON.parse(lastLine);
     if (Array.isArray(parsed.files)) extractedFiles = parsed.files;
+    if (Array.isArray(parsed.allPaths)) allPaths = parsed.allPaths;
     if (typeof parsed.totalFiles === 'number') totalFiles = parsed.totalFiles;
   } catch {
     extractedFiles = [];
@@ -679,6 +877,7 @@ export async function cloneGitHubIntoDaytona({
       return {
         ...previewResult,
         files: extractedFiles,
+        allPaths,
         totalFiles,
         cloneOutput: safeCloneOut,
       };
@@ -692,6 +891,7 @@ export async function cloneGitHubIntoDaytona({
     repo: cleanRepo,
     branch: cleanBranch,
     totalFiles,
+    allPaths,
     files: extractedFiles,
     cloneOutput: safeCloneOut,
     previewUrl: previewResult?.previewUrl,
@@ -703,19 +903,25 @@ export async function cloneGitHubIntoDaytona({
 
 export async function deployAndPreviewDaytona({
   sandboxId,
+  projectId = '',
   files,
   port = 5173,
   apiKey,
   apiUrl,
   signal,
 }) {
-  const sb = await ensureDaytonaSandbox({ sandboxId, apiKey, apiUrl, signal });
+  const sb = await ensureDaytonaSandbox({ sandboxId, projectId, apiKey, apiUrl, signal });
   const appDir = '$HOME/adam-app';
+  const entries = Array.isArray(files)
+    ? files
+    : Object.values(files || {}).map((f) => ({ path: f.path, content: f.content }));
+  const hasGitDirHint = entries.some((e) => String(e.path || '').startsWith('.git/'));
   const syncRes = await syncFilesToDaytona({
     sandboxId: sb.id,
-    files,
+    files: entries,
     appDir,
-    cleanSrc: false,
+    cleanSrc: !hasGitDirHint,
+    projectId,
     apiKey,
     apiUrl,
     signal,
@@ -755,7 +961,7 @@ async function listDaytonaSandboxes({ apiKey, apiUrl, signal }) {
   return [];
 }
 
-async function findReusableDaytonaSandbox({ apiKey, apiUrl, signal }) {
+async function findReusableDaytonaSandbox({ projectId = '', apiKey, apiUrl, signal }) {
   try {
     const list = await listDaytonaSandboxes({ apiKey, apiUrl, signal });
     if (!list.length) return '';
@@ -770,6 +976,16 @@ async function findReusableDaytonaSandbox({ apiKey, apiUrl, signal }) {
         updatedAt: Date.parse(s.updatedAt || s.createdAt || '') || 0,
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
+
+    if (projectId) {
+      const matched = normalized.filter((s) => s.labels?.adamProjectId === String(projectId));
+      if (matched.length === 0) return '';
+      const runningMatch = matched.find((s) => s.state === 'started' || s.state === 'running');
+      if (runningMatch) return runningMatch.id;
+      const stoppedMatch = matched.find((s) => s.state === 'stopped' || s.state === 'archived');
+      if (stoppedMatch) return stoppedMatch.id;
+      return matched[0]?.id || '';
+    }
 
     const isAdamSandbox = (s) =>
       s.labels?.app === 'adam-studio' ||
@@ -833,6 +1049,84 @@ function sanitizeSecretOutput(text, secret) {
   }
   out = out.replace(/https:\/\/x-access-token:[^@\s]+@github\.com/gi, "https://x-access-token:***@github.com");
   return out;
+}
+
+function detectDevServerInvocation(rawCommand, fallbackPort = 5173) {
+  const cmd = String(rawCommand || '').trim();
+  const isDevServer =
+    /^(npm\s+(run\s+dev|start|run\s+preview)|pnpm(\s+run)?\s+(dev|start|preview)|yarn\s+(dev|start|preview)|bun\s+(run\s+)?(dev|start|preview)|npx\s+(vite|next\s+dev|next\s+start|serve)|vite(\s+preview)?|next\s+(dev|start)|node\s+\S+|python3?\s+-m\s+http\.server)(\s|$)/i.test(
+      cmd
+    );
+  if (!isDevServer) return { isDevServer: false, port: Number(fallbackPort) || 5173 };
+
+  let port = Number(fallbackPort) || 5173;
+  const flagMatch = cmd.match(/(?:--port|-p)\s*=?:?\s*(\d{2,5})/i);
+  const envMatch = cmd.match(/(?:^|\s)PORT=(\d{2,5})(?:\s|$)/i);
+  const pyMatch = cmd.match(/http\.server\s+(\d{2,5})/i);
+  const serveMatch = cmd.match(/\bserve\b.*?(?:-l|--listen)\s+(\d{2,5})/i);
+  const rawPort = Number((flagMatch || envMatch || pyMatch || serveMatch)?.[1]);
+  if (Number.isFinite(rawPort) && rawPort >= 80 && rawPort <= 65535) {
+    port = rawPort;
+  } else if (/\b(next\s+start|npm\s+start|node\s+)/i.test(cmd) && !flagMatch && !envMatch) {
+    port = Number(fallbackPort) || 3000;
+  }
+  return { isDevServer: true, port };
+}
+
+function shouldSyncBackAfterCommand(rawCommand) {
+  const cmd = String(rawCommand || '').trim();
+  if (!cmd) return false;
+  return /\b(npm|pnpm|yarn|bun|npx|git|touch|rm|mv|cp|mkdir|rmdir|sed|awk|tee|cat|echo|printf|chmod|node|python3?|tsc|eslint|prettier|shadcn)\b|[>|]/i.test(
+    cmd
+  );
+}
+
+async function extractWorkspaceDiffFromDaytona({
+  sandboxId,
+  toolboxBaseUrl,
+  appDir = '$HOME/adam-app',
+  knownPaths = [],
+  maxFiles = 180,
+  apiKey,
+  apiUrl,
+  signal,
+}) {
+  const extractScript = [
+    "const fs=require('fs'),path=require('path');",
+    "const root=process.cwd();",
+    "const ignoreDir=new Set(['node_modules','.git','dist','build','.next','.vercel','coverage','.turbo']);",
+    "const ignoreExt=/\.(png|jpe?g|gif|webp|ico|woff2?|ttf|eot|pdf|zip|gz|tar|mp4|webm|mp3|wav|exe|dll|so|dylib|lock)$/i;",
+    "const ignoreFile=new Set(['package-lock.json','pnpm-lock.yaml','yarn.lock','bun.lockb','.adam-pkg-hash','.adam-project-id']);",
+    "const found=[];",
+    "function walk(dir){for(const ent of fs.readdirSync(dir,{withFileTypes:true})){if(ent.isDirectory()){if(!ignoreDir.has(ent.name))walk(path.join(dir,ent.name));}else if(ent.isFile()){if(ignoreFile.has(ent.name)||ignoreExt.test(ent.name))continue;const fp=path.join(dir,ent.name);const st=fs.statSync(fp);if(st.size<=180000){found.push(path.relative(root,fp).replace(/\\/g,'/'));}}}}",
+    "if(fs.existsSync(root))walk(root);",
+    "const prio=/^(package\.json|tsconfig|vite\.config|next\.config|index\.html|src\/|app\/|api\/|server\/)/i;",
+    "found.sort((a,b)=>((prio.test(a)?0:1)-(prio.test(b)?0:1))||a.localeCompare(b));",
+    "const files=found.slice(0," + maxFiles + ").map(p=>({path:p,content:fs.readFileSync(path.join(root,p),'utf8')}));",
+    "console.log(JSON.stringify({allPaths:found,files}));",
+  ].join('');
+
+  try {
+    const res = await execDaytonaCommand({
+      sandboxId,
+      toolboxBaseUrl,
+      command: `mkdir -p ${appDir} && cd ${appDir} && printf '%s' '${utf8ToBase64(extractScript)}' | base64 -d > /tmp/adam-syncback.cjs && node /tmp/adam-syncback.cjs`,
+      timeoutSec: 30,
+      apiKey,
+      apiUrl,
+      signal,
+    });
+    const lastLine = res.output.trim().split('\n').pop() || '{}';
+    const parsed = JSON.parse(lastLine);
+    const files = Array.isArray(parsed.files) ? parsed.files : [];
+    const presentSet = new Set(Array.isArray(parsed.allPaths) ? parsed.allPaths : files.map((f) => f.path));
+    const deletedPaths = Array.isArray(knownPaths)
+      ? knownPaths.filter((p) => p && !presentSet.has(p) && !String(p).startsWith('node_modules/'))
+      : [];
+    return { syncedFiles: files, deletedPaths };
+  } catch {
+    return { syncedFiles: [], deletedPaths: [] };
+  }
 }
 
 function buildGitAuthExecCommand(rawCommand, githubToken) {
@@ -935,13 +1229,14 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
   if (action === 'clone-github') {
     const out = await cloneGitHubIntoDaytona({
       sandboxId: safeBody?.sandboxId,
+      projectId: body?.projectId,
       owner: body?.owner,
       repo: body?.repo,
       branch: body?.branch || 'main',
       githubToken: githubToken || body?.githubToken || '',
       autoStart: body?.autoStart !== false,
       port: body?.port || 5173,
-      maxWorkspaceFiles: body?.maxWorkspaceFiles || 120,
+      maxWorkspaceFiles: body?.maxWorkspaceFiles || 200,
       apiKey: cfg.apiKey,
       apiUrl: cfg.apiUrl,
       signal,
@@ -951,6 +1246,7 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
   if (action === 'deploy-preview') {
     const out = await deployAndPreviewDaytona({
       sandboxId: safeBody?.sandboxId,
+      projectId: body?.projectId,
       files: body?.files,
       port: body?.port || 5173,
       apiKey: cfg.apiKey,
@@ -964,28 +1260,44 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
     const rawCmd = String(body?.command || '').trim();
     const sb = await ensureDaytonaSandbox({
       sandboxId: safeBody?.sandboxId,
+      projectId: body?.projectId,
       apiKey: cfg.apiKey,
       apiUrl: cfg.apiUrl,
       signal,
     });
 
-    const isDevServerCmd =
-      /^(npm\s+run\s+dev|pnpm(\s+run)?\s+dev|yarn\s+dev|bun\s+run\s+dev|npx\s+vite|vite|npx\s+next\s+dev|next\s+dev)(\s|$)/i.test(
-        rawCmd
-      );
+    let lastToolbox;
+    if (Array.isArray(body?.files) && body.files.length > 0) {
+      const synced = await syncFilesToDaytona({
+        sandboxId: sb.id,
+        files: body.files,
+        appDir: '$HOME/adam-app',
+        cleanSrc: false,
+        projectId: body?.projectId,
+        apiKey: cfg.apiKey,
+        apiUrl: cfg.apiUrl,
+        signal,
+      });
+      lastToolbox = synced.toolboxBaseUrl;
+    }
 
-    if (isDevServerCmd) {
+    const devInfo = detectDevServerInvocation(rawCmd, body?.port || 5173);
+    if (devInfo.isDevServer) {
       const started = await startDaytonaDevServer({
         sandboxId: sb.id,
+        toolboxBaseUrl: lastToolbox,
         appDir: '$HOME/adam-app',
-        port: body?.port || 5173,
-        skipInstall: true,
+        port: devInfo.port,
+        skipInstall: !/\binstall\b/i.test(rawCmd),
+        customStartCmd: /^(npm\s+run\s+dev|pnpm(\s+run)?\s+dev|yarn\s+dev|bun\s+run\s+dev|npx\s+vite|vite|npx\s+next\s+dev|next\s+dev)(\s|$)/i.test(rawCmd)
+          ? ''
+          : rawCmd,
         apiKey: cfg.apiKey,
         apiUrl: cfg.apiUrl,
         signal,
       });
       return {
-        status: started.ok ? 200 : 200,
+        status: 200,
         payload: {
           ok: Boolean(started.ok),
           sandboxId: sb.id,
@@ -1001,19 +1313,94 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
       };
     }
 
+    const timeoutSec = Math.min(180, Math.max(15, Number(body?.timeoutSec) || 120));
     const out = await execDaytonaCommand({
       sandboxId: sb.id,
+      toolboxBaseUrl: lastToolbox,
       command: buildGitAuthExecCommand(rawCmd, githubToken),
       cwd: '$HOME/adam-app',
-      timeoutSec: Math.min(45, Number(body?.timeoutSec) || 45),
+      timeoutSec,
       apiKey: cfg.apiKey,
       apiUrl: cfg.apiUrl,
       signal,
     });
+
+    let syncedBack = { syncedFiles: [], deletedPaths: [] };
+    if (body?.syncBack !== false && shouldSyncBackAfterCommand(rawCmd)) {
+      syncedBack = await extractWorkspaceDiffFromDaytona({
+        sandboxId: sb.id,
+        toolboxBaseUrl: out.toolboxBaseUrl,
+        knownPaths: Array.isArray(body?.knownPaths) ? body.knownPaths : [],
+        apiKey: cfg.apiKey,
+        apiUrl: cfg.apiUrl,
+        signal,
+      });
+    }
+
     return {
       status: 200,
-      payload: { ok: out.exitCode === 0, sandboxId: sb.id, exitCode: out.exitCode, output: sanitizeSecretOutput(out.output, githubToken) },
+      payload: {
+        ok: out.exitCode === 0,
+        sandboxId: sb.id,
+        exitCode: out.exitCode,
+        output: sanitizeSecretOutput(out.output, githubToken),
+        syncedFiles: syncedBack.syncedFiles,
+        deletedPaths: syncedBack.deletedPaths,
+      },
     };
+  }
+
+  if (action === 'read-file') {
+    const out = await readDaytonaFile({
+      sandboxId: safeBody?.sandboxId,
+      filePath: body?.path,
+      startLine: body?.startLine,
+      endLine: body?.endLine,
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+    return { status: out.ok ? 200 : 404, payload: out };
+  }
+
+  if (action === 'write-file') {
+    const out = await writeDaytonaFile({
+      sandboxId: safeBody?.sandboxId,
+      filePath: body?.path,
+      content: body?.content,
+      projectId: body?.projectId,
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+    return { status: 200, payload: out };
+  }
+
+  if (action === 'list-tree') {
+    const out = await listDaytonaTree({
+      sandboxId: safeBody?.sandboxId,
+      dir: body?.dir,
+      query: body?.query,
+      maxResults: body?.maxResults,
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+    return { status: 200, payload: out };
+  }
+
+  if (action === 'search-files') {
+    const out = await searchDaytonaFiles({
+      sandboxId: safeBody?.sandboxId,
+      pattern: body?.pattern,
+      dir: body?.dir,
+      isRegex: Boolean(body?.isRegex),
+      maxMatches: body?.maxMatches,
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+    return { status: 200, payload: out };
   }
 
   if (action === 'stop' && safeBody?.sandboxId) {
@@ -1035,4 +1422,253 @@ export async function handleDaytonaAction({ action, body = {}, apiKey, apiUrl, g
   }
 
   return { status: 400, payload: { ok: false, message: 'Action sandbox tidak dikenal.' } };
+}
+
+
+export async function handleDaytonaExecStream({
+  body = {},
+  apiKey,
+  apiUrl,
+  githubToken = '',
+  signal,
+  sendEvent,
+}) {
+  const cfg = resolveDaytonaConfig({
+    apiKey: apiKey || body?.apiKey,
+    apiUrl: apiUrl || body?.apiUrl,
+  });
+  if (!cfg.apiKey) {
+    sendEvent('error', { ok: false, message: 'DAYTONA_API_KEY belum diisi di Settings → Koneksi atau Env.' });
+    return;
+  }
+
+  const rawCmd = String(body?.command || '').trim();
+  if (!rawCmd) {
+    sendEvent('error', { ok: false, message: 'Perintah terminal tidak boleh kosong.' });
+    return;
+  }
+
+  let effectiveSandboxId = String(body?.sandboxId || '').trim();
+  if (!effectiveSandboxId) {
+    effectiveSandboxId = await findReusableDaytonaSandbox({
+      projectId: body?.projectId,
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+  }
+
+  sendEvent('status', { message: 'Menyiapkan Daytona Sandbox...' });
+  const sb = await ensureDaytonaSandbox({
+    sandboxId: effectiveSandboxId,
+    projectId: body?.projectId,
+    apiKey: cfg.apiKey,
+    apiUrl: cfg.apiUrl,
+    signal,
+  });
+
+  let lastToolbox = await resolveToolboxBaseUrl({
+    sandboxId: sb.id,
+    apiKey: cfg.apiKey,
+    apiUrl: cfg.apiUrl,
+    signal,
+  });
+
+  if (Array.isArray(body?.files) && body.files.length > 0) {
+    sendEvent('status', { message: `Menyinkronkan ${body.files.length} file ke Daytona VM...` });
+    const synced = await syncFilesToDaytona({
+      sandboxId: sb.id,
+      toolboxBaseUrl: lastToolbox,
+      files: body.files,
+      appDir: '$HOME/adam-app',
+      cleanSrc: false,
+      projectId: body?.projectId,
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+    lastToolbox = synced.toolboxBaseUrl;
+  }
+
+  const devInfo = detectDevServerInvocation(rawCmd, body?.port || 5173);
+  if (devInfo.isDevServer) {
+    sendEvent('status', { message: `Menyalakan server di port ${devInfo.port}...` });
+    const started = await startDaytonaDevServer({
+      sandboxId: sb.id,
+      toolboxBaseUrl: lastToolbox,
+      appDir: '$HOME/adam-app',
+      port: devInfo.port,
+      skipInstall: !/\binstall\b/i.test(rawCmd),
+      customStartCmd: /^(npm\s+run\s+dev|pnpm(\s+run)?\s+dev|yarn\s+dev|bun\s+run\s+dev|npx\s+vite|vite|npx\s+next\s+dev|next\s+dev)(\s|$)/i.test(rawCmd)
+        ? ''
+        : rawCmd,
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+    const outText =
+      sanitizeSecretOutput(started.devLogs, githubToken) ||
+      started.output ||
+      started.message ||
+      'Dev server dijalankan di background.';
+    sendEvent('chunk', { text: outText });
+    sendEvent('done', {
+      ok: Boolean(started.ok),
+      sandboxId: sb.id,
+      exitCode: started.ok ? 0 : 1,
+      output: outText,
+      previewUrl: started.previewUrl,
+      previewToken: started.previewToken,
+      message: started.message,
+    });
+    return;
+  }
+
+  const runId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+  const logFile = `/tmp/adam-term-${runId}.log`;
+  const rcFile = `/tmp/adam-term-${runId}.rc`;
+  const scriptFile = `/tmp/adam-term-${runId}.sh`;
+  const authCmd = buildGitAuthExecCommand(rawCmd, githubToken);
+  const runner = [
+    '#!/usr/bin/env bash',
+    'mkdir -p $HOME/adam-app && cd $HOME/adam-app',
+    authCmd,
+    'RC=$?',
+    `printf '%s' "$RC" > ${rcFile}`,
+  ].join('\n');
+
+  let sessionStarted = false;
+  try {
+    await execDaytonaCommand({
+      sandboxId: sb.id,
+      toolboxBaseUrl: lastToolbox,
+      command: `rm -f ${logFile} ${rcFile} && printf '%s' '${utf8ToBase64(runner)}' | base64 -d > ${scriptFile} && chmod +x ${scriptFile}`,
+      timeoutSec: 15,
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+
+    const sessionId = 'adam-term-' + runId;
+    await daytonaFetch(`${lastToolbox}/process/session`, {
+      method: 'POST',
+      apiKey: cfg.apiKey,
+      signal,
+      body: { sessionId },
+    });
+    await daytonaFetch(`${lastToolbox}/process/session/${encodeURIComponent(sessionId)}/exec`, {
+      method: 'POST',
+      apiKey: cfg.apiKey,
+      signal,
+      body: {
+        command: `bash ${scriptFile} > ${logFile} 2>&1`,
+        runAsync: true,
+      },
+    });
+    sessionStarted = true;
+  } catch {
+    sessionStarted = false;
+  }
+
+  let fullOutput = '';
+  let exitCode = 0;
+
+  if (sessionStarted) {
+    let offset = 0;
+    const deadline = Date.now() + Math.min(240_000, Math.max(30_000, (Number(body?.timeoutSec) || 180) * 1000));
+    const readChunkCjs = [
+      "const fs=require('fs');",
+      `const logF=${JSON.stringify(logFile)}, rcF=${JSON.stringify(rcFile)};`,
+      "const off=Number(process.argv[2]||0);",
+      "let chunk=''; let nextOff=off;",
+      "if(fs.existsSync(logF)){const buf=fs.readFileSync(logF);if(buf.length>off){chunk=buf.subarray(off).toString('utf8');nextOff=buf.length;}}",
+      "const done=fs.existsSync(rcF);",
+      "const rc=done?Number(fs.readFileSync(rcF,'utf8').trim()||0):null;",
+      "console.log(JSON.stringify({nextOff,chunk,done,rc}));",
+    ].join('');
+
+    await execDaytonaCommand({
+      sandboxId: sb.id,
+      toolboxBaseUrl: lastToolbox,
+      command: `printf '%s' '${utf8ToBase64(readChunkCjs)}' | base64 -d > /tmp/adam-readchunk.cjs`,
+      timeoutSec: 10,
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+
+    while (Date.now() < deadline) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      const poll = await execDaytonaCommand({
+        sandboxId: sb.id,
+        toolboxBaseUrl: lastToolbox,
+        command: `node /tmp/adam-readchunk.cjs ${offset}`,
+        timeoutSec: 15,
+        apiKey: cfg.apiKey,
+        apiUrl: cfg.apiUrl,
+        signal,
+      });
+      try {
+        const parsed = JSON.parse(poll.output.trim().split('\n').pop() || '{}');
+        if (typeof parsed.nextOff === 'number') offset = parsed.nextOff;
+        if (parsed.chunk) {
+          const safeChunk = sanitizeSecretOutput(parsed.chunk, githubToken);
+          fullOutput += safeChunk;
+          sendEvent('chunk', { text: safeChunk });
+        }
+        if (parsed.done) {
+          exitCode = typeof parsed.rc === 'number' && !Number.isNaN(parsed.rc) ? parsed.rc : 0;
+          break;
+        }
+      } catch {
+        // lanjut polling
+      }
+      await sleep(700, signal);
+    }
+    await execDaytonaCommand({
+      sandboxId: sb.id,
+      toolboxBaseUrl: lastToolbox,
+      command: `rm -f ${logFile} ${rcFile} ${scriptFile}`,
+      timeoutSec: 10,
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    }).catch(() => {});
+  } else {
+    const out = await execDaytonaCommand({
+      sandboxId: sb.id,
+      toolboxBaseUrl: lastToolbox,
+      command: authCmd,
+      cwd: '$HOME/adam-app',
+      timeoutSec: Math.min(180, Math.max(15, Number(body?.timeoutSec) || 120)),
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+    exitCode = out.exitCode;
+    fullOutput = sanitizeSecretOutput(out.output, githubToken);
+    if (fullOutput) sendEvent('chunk', { text: fullOutput });
+  }
+
+  let syncedBack = { syncedFiles: [], deletedPaths: [] };
+  if (body?.syncBack !== false && shouldSyncBackAfterCommand(rawCmd)) {
+    sendEvent('status', { message: 'Menyinkronkan perubahan VM ke Workspace...' });
+    syncedBack = await extractWorkspaceDiffFromDaytona({
+      sandboxId: sb.id,
+      toolboxBaseUrl: lastToolbox,
+      knownPaths: Array.isArray(body?.knownPaths) ? body.knownPaths : [],
+      apiKey: cfg.apiKey,
+      apiUrl: cfg.apiUrl,
+      signal,
+    });
+  }
+
+  sendEvent('done', {
+    ok: exitCode === 0,
+    sandboxId: sb.id,
+    exitCode,
+    output: fullOutput,
+    syncedFiles: syncedBack.syncedFiles,
+    deletedPaths: syncedBack.deletedPaths,
+  });
 }

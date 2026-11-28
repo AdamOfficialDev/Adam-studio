@@ -154,6 +154,7 @@ export interface WorkspaceFile {
 }
 
 export interface VirtualWorkspace {
+  projectId?: string;
   files: Record<string, WorkspaceFile>;
   activePath: string;
   entryPath: string;
@@ -162,6 +163,8 @@ export interface VirtualWorkspace {
   daytonaSandboxId?: string;
   daytonaPreviewUrl?: string;
   daytonaPreviewToken?: string;
+  vmFileTree?: string[];
+  vmTotalFiles?: number;
   updatedAt: number;
 }
 

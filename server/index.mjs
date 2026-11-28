@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { handleGitHubAction } from '../api/_github.js';
-import { handleDaytonaAction } from '../api/_daytona.js';
+import { handleDaytonaAction, handleDaytonaExecStream } from '../api/_daytona.js';
 import { ADAM_BRIDGE_SCRIPT } from '../api/_bridgeScript.js';
 import {
   createPairingSession,
@@ -69,16 +69,52 @@ app.use(express.json({ limit: '50mb' }));
 app.post('/api/sandbox', async (req, res) => {
   const apiKey = typeof req.headers['x-daytona-api-key'] === 'string' ? req.headers['x-daytona-api-key'].trim() : '';
   const apiUrl = typeof req.headers['x-daytona-api-url'] === 'string' ? req.headers['x-daytona-api-url'].trim() : '';
+  const githubToken =
+    (typeof req.headers['x-github-token'] === 'string' ? req.headers['x-github-token'].trim() : '') ||
+    process.env.GITHUB_TOKEN?.trim() ||
+    '';
   const ac = new AbortController();
   res.on('close', () => {
     if (!res.writableEnded) ac.abort();
   });
+
+  if (req.body?.action === 'exec-stream') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    const sendEvent = (event, data) => {
+      if (res.writableEnded) return;
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+    try {
+      await handleDaytonaExecStream({
+        body: req.body || {},
+        apiKey,
+        apiUrl,
+        githubToken,
+        signal: ac.signal,
+        sendEvent,
+      });
+    } catch (err) {
+      if (!(err instanceof Error && err.name === 'AbortError')) {
+        sendEvent('error', { ok: false, message: err instanceof Error ? err.message : 'Daytona stream error' });
+      }
+    } finally {
+      if (!res.writableEnded) res.end();
+    }
+    return;
+  }
+
   try {
     const result = await handleDaytonaAction({
       action: req.body?.action,
       body: req.body || {},
       apiKey,
       apiUrl,
+      githubToken,
       signal: ac.signal,
     });
     res.status(result.status).json(result.payload);

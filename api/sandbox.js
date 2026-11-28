@@ -1,4 +1,4 @@
-import { handleDaytonaAction } from './_daytona.js';
+import { handleDaytonaAction, handleDaytonaExecStream } from './_daytona.js';
 
 export const config = {
   maxDuration: 60,
@@ -37,6 +37,36 @@ export default async function handler(req, res) {
   res.on?.('close', () => {
     if (!res.writableEnded) ac.abort();
   });
+
+  if (body?.action === 'exec-stream') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    const sendEvent = (event, data) => {
+      if (res.writableEnded) return;
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+    try {
+      await handleDaytonaExecStream({
+        body,
+        apiKey,
+        apiUrl,
+        githubToken,
+        signal: ac.signal,
+        sendEvent,
+      });
+    } catch (err) {
+      if (!(err instanceof Error && err.name === 'AbortError')) {
+        sendEvent('error', { ok: false, message: err instanceof Error ? err.message : 'Daytona stream error' });
+      }
+    } finally {
+      if (!res.writableEnded) res.end();
+    }
+    return;
+  }
 
   try {
     const result = await handleDaytonaAction({

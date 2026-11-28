@@ -10,7 +10,7 @@ import {
   hydrateKeyCooldowns,
   recordKeyCooldown,
 } from './_cooldown.js';
-import { ensureDaytonaSandbox, execDaytonaCommand, deployAndPreviewDaytona, syncFilesToDaytona, cloneGitHubIntoDaytona } from './_daytona.js';
+import { ensureDaytonaSandbox, execDaytonaCommand, deployAndPreviewDaytona, syncFilesToDaytona, cloneGitHubIntoDaytona, readDaytonaFile, searchDaytonaFiles, listDaytonaTree } from './_daytona.js';
 import {
   DEVICE_AGENT_SKILL,
   DEVICE_TOOL_DECLARATIONS,
@@ -93,13 +93,16 @@ async function executeDaytonaAgentTool({ name, args, workspaceState, daytonaConf
       if (!owner || !repo) {
         return { ok: false, summary: 'Repo belum ditentukan', response: { error: 'Hubungkan GitHub repo terlebih dahulu atau berikan owner & repo.' } };
       }
+      sendEvent('status', { message: `Meng-clone ${owner}/${repo} ke Daytona VM...` });
       const out = await cloneGitHubIntoDaytona({
         sandboxId: workspaceState.daytonaSandboxId,
+        projectId: workspaceState.projectId || '',
         owner,
         repo,
         branch,
         githubToken: githubToken || '',
         autoStart: Boolean(args?.autoStart),
+        maxWorkspaceFiles: 200,
         apiKey: daytonaConfig.apiKey,
         apiUrl: daytonaConfig.apiUrl,
         signal,
@@ -113,9 +116,16 @@ async function executeDaytonaAgentTool({ name, args, workspaceState, daytonaConf
         workspaceState.files[p] = { path: p, content: f.content, language: lang, updatedAt: Date.now() };
         sendEvent('workspace_file', { action: 'write', path: p, content: f.content, language: lang });
       }
+      if (Array.isArray(out.allPaths) && out.allPaths.length > 0) {
+        workspaceState.vmFileTree = out.allPaths;
+        workspaceState.vmTotalFiles = out.totalFiles || out.allPaths.length;
+      }
       if (out.sandboxId) {
         sendEvent('workspace_sandbox', {
           sandboxId: out.sandboxId,
+          ...(Array.isArray(out.allPaths) && out.allPaths.length > 0
+            ? { vmFileTree: out.allPaths, vmTotalFiles: out.totalFiles || out.allPaths.length }
+            : {}),
           ...(out.previewUrl ? { previewUrl: out.previewUrl } : {}),
           ...(out.previewToken ? { previewToken: out.previewToken } : {}),
         });
@@ -131,6 +141,7 @@ async function executeDaytonaAgentTool({ name, args, workspaceState, daytonaConf
           branch,
           totalFiles: out.totalFiles,
           importedToWorkspace: clonedFiles.length,
+          ...(Array.isArray(out.skippedFiles) && out.skippedFiles.length > 0 ? { skippedFiles: out.skippedFiles } : {}),
           previewUrl: out.previewUrl,
           message: out.message,
           output: out.output || out.cloneOutput,
@@ -140,8 +151,10 @@ async function executeDaytonaAgentTool({ name, args, workspaceState, daytonaConf
     if (name === 'sandbox_run_command') {
       const command = String(args?.command || '').trim();
       if (!command) return { ok: false, summary: 'Command kosong', response: { error: 'Command wajib diisi' } };
+      sendEvent('status', { message: `Menjalankan perintah di Daytona VM: ${command.slice(0, 60)}...` });
       const sb = await ensureDaytonaSandbox({
         sandboxId: workspaceState.daytonaSandboxId,
+        projectId: workspaceState.projectId || '',
         apiKey: daytonaConfig.apiKey,
         apiUrl: daytonaConfig.apiUrl,
         signal,
@@ -151,6 +164,7 @@ async function executeDaytonaAgentTool({ name, args, workspaceState, daytonaConf
         await syncFilesToDaytona({
           sandboxId: sb.id,
           files: fileEntries,
+          projectId: workspaceState.projectId || '',
           apiKey: daytonaConfig.apiKey,
           apiUrl: daytonaConfig.apiUrl,
           signal,
@@ -184,8 +198,10 @@ async function executeDaytonaAgentTool({ name, args, workspaceState, daytonaConf
 
     if (name === 'sandbox_start_preview') {
       const port = Number(args?.port) || 5173;
+      sendEvent('status', { message: `Menyiapkan Daytona VM & menjalankan dev server port ${port}...` });
       const out = await deployAndPreviewDaytona({
         sandboxId: workspaceState.daytonaSandboxId,
+        projectId: workspaceState.projectId || '',
         files: fileEntries,
         port,
         apiKey: daytonaConfig.apiKey,
@@ -361,6 +377,19 @@ const WORKSPACE_TOOL_DECLARATIONS = [
     description: 'Memvalidasi entry point, import lokal, dan kebersihan sintaks proyek di workspace.',
     parameters: { type: 'OBJECT', properties: {} },
   },
+  {
+    name: 'workspace_search',
+    description: 'Mencari teks atau pola regex di seluruh file proyek (termasuk proyek besar ribuan file di Daytona VM).',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        pattern: { type: 'STRING', description: 'Teks atau regex yang dicari' },
+        dir: { type: 'STRING', description: 'Subfolder opsional (misal src/components)' },
+        isRegex: { type: 'BOOLEAN', description: 'True jika pattern berupa regex' },
+      },
+      required: ['pattern'],
+    },
+  },
 ];
 
 function normWsPath(rawPath) {
@@ -379,7 +408,7 @@ function detectWsLang(p) {
   return 'text';
 }
 
-function executeWorkspaceTool({ name, args, workspaceState, sendEvent }) {
+async function await executeWorkspaceTool({ name, args, workspaceState, daytonaConfig, signal, sendEvent }) {
   const files = workspaceState.files;
   try {
     if (name === 'emergent_ask_clarification') {
@@ -467,16 +496,112 @@ function executeWorkspaceTool({ name, args, workspaceState, sendEvent }) {
     }
 
     if (name === 'workspace_list_files') {
-      const list = Object.keys(files).map((p) => ({ path: p, language: files[p].language, bytes: files[p].content.length }));
-      return { ok: true, summary: list.length + " file di workspace", response: { count: list.length, files: list } };
+      const filterDir = normWsPath(args?.dir || args?.directory || '');
+      const filterQuery = String(args?.query || '').toLowerCase();
+      let treePaths = Array.isArray(workspaceState.vmFileTree) ? [...workspaceState.vmFileTree] : [];
+      if (treePaths.length === 0 && daytonaConfig?.apiKey && workspaceState.daytonaSandboxId) {
+        const listed = await listDaytonaTree({
+          sandboxId: workspaceState.daytonaSandboxId,
+          apiKey: daytonaConfig.apiKey,
+          apiUrl: daytonaConfig.apiUrl,
+          signal,
+        }).catch(() => null);
+        if (listed?.ok && Array.isArray(listed.paths)) {
+          treePaths = listed.paths;
+          workspaceState.vmFileTree = treePaths;
+        }
+      }
+      const mergedSet = new Set([...treePaths, ...Object.keys(files)]);
+      let all = Array.from(mergedSet).sort();
+      if (filterDir) all = all.filter((p) => p.startsWith(filterDir + '/') || p === filterDir);
+      if (filterQuery) all = all.filter((p) => p.toLowerCase().includes(filterQuery));
+      const previewList = all.slice(0, 400).map((p) => ({
+        path: p,
+        loadedInEditor: Boolean(files[p]),
+        ...(files[p] ? { language: files[p].language, bytes: files[p].content.length } : {}),
+      }));
+      return {
+        ok: true,
+        summary: all.length + ' file terindeks (' + Object.keys(files).length + ' di editor)',
+        response: {
+          totalFiles: all.length,
+          truncated: all.length > 400,
+          files: previewList,
+        },
+      };
     }
 
     if (name === 'workspace_read_file') {
       const p = normWsPath(args?.path);
       if (!files[p]) {
-        return { ok: false, summary: "Tidak ditemukan: " + p, response: { error: "File tidak ditemukan: " + p } };
+        if (daytonaConfig?.apiKey && workspaceState.daytonaSandboxId) {
+          const vmRes = await readDaytonaFile({
+            sandboxId: workspaceState.daytonaSandboxId,
+            filePath: p,
+            startLine: args?.startLine,
+            endLine: args?.endLine,
+            apiKey: daytonaConfig.apiKey,
+            apiUrl: daytonaConfig.apiUrl,
+            signal,
+          }).catch((e) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+          if (vmRes?.ok && typeof vmRes.content === 'string') {
+            if (!args?.startLine && !args?.endLine) {
+              const lang = detectWsLang(p);
+              files[p] = { path: p, content: vmRes.content, language: lang, updatedAt: Date.now() };
+              sendEvent('workspace_file', { action: 'write', path: p, content: vmRes.content, language: lang });
+            }
+            return {
+              ok: true,
+              summary: 'Membaca dari Daytona VM: ' + p,
+              response: { path: p, content: vmRes.content, totalLines: vmRes.totalLines, source: 'daytona-vm' },
+            };
+          }
+          if (vmRes?.error) {
+            return { ok: false, summary: 'Gagal membaca ' + p, response: { error: vmRes.error } };
+          }
+        }
+        return { ok: false, summary: 'Tidak ditemukan: ' + p, response: { error: 'File tidak ditemukan: ' + p } };
       }
-      return { ok: true, summary: "Membaca " + p, response: { path: p, content: files[p].content } };
+      return { ok: true, summary: 'Membaca ' + p, response: { path: p, content: files[p].content } };
+    }
+
+    if (name === 'workspace_search') {
+      const pattern = String(args?.pattern || '').trim();
+      if (!pattern) return { ok: false, summary: 'Pattern kosong', response: { error: 'pattern wajib diisi' } };
+      if (daytonaConfig?.apiKey && workspaceState.daytonaSandboxId) {
+        const sRes = await searchDaytonaFiles({
+          sandboxId: workspaceState.daytonaSandboxId,
+          pattern,
+          dir: args?.dir,
+          isRegex: Boolean(args?.isRegex),
+          apiKey: daytonaConfig.apiKey,
+          apiUrl: daytonaConfig.apiUrl,
+          signal,
+        });
+        return {
+          ok: Boolean(sRes.ok),
+          summary: `Pencarian "${pattern}": ${sRes.matchCount || 0} hasil dari ${sRes.filesScanned || 0} file`,
+          response: sRes,
+        };
+      }
+      const q = pattern.toLowerCase();
+      const re = args?.isRegex ? new RegExp(pattern, 'i') : null;
+      const matches = [];
+      for (const [fp, fileObj] of Object.entries(files)) {
+        const lines = String(fileObj.content || '').split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (re ? re.test(lines[i]) : lines[i].toLowerCase().includes(q)) {
+            matches.push({ path: fp, line: i + 1, text: lines[i].trim().slice(0, 220) });
+            if (matches.length >= 80) break;
+          }
+        }
+        if (matches.length >= 80) break;
+      }
+      return {
+        ok: true,
+        summary: `Pencarian "${pattern}": ${matches.length} hasil`,
+        response: { ok: true, matchCount: matches.length, matches },
+      };
     }
 
     if (name === 'workspace_write_file') {
@@ -485,6 +610,9 @@ function executeWorkspaceTool({ name, args, workspaceState, sendEvent }) {
       if (!p) return { ok: false, summary: 'Path kosong', response: { error: 'Path wajib diisi' } };
       const language = detectWsLang(p);
       files[p] = { path: p, content, language, updatedAt: Date.now() };
+      if (Array.isArray(workspaceState.vmFileTree) && !workspaceState.vmFileTree.includes(p)) {
+        workspaceState.vmFileTree = [...workspaceState.vmFileTree, p].sort();
+      }
       sendEvent('workspace_file', { action: 'write', path: p, content, language });
       return {
         ok: true,
@@ -520,19 +648,47 @@ function executeWorkspaceTool({ name, args, workspaceState, sendEvent }) {
     if (name === 'workspace_verify_project') {
       const keys = Object.keys(files);
       const issues = [];
+      const warnings = [];
       if (keys.length === 0) issues.push('Workspace kosong. Buat src/App.tsx atau index.html.');
       const hasEntry =
         Boolean(files['src/App.tsx']) || Boolean(files['src/App.jsx']) || Boolean(files['App.tsx']) || Boolean(files['index.html']);
       if (keys.length > 0 && !hasEntry) issues.push('Entry file tidak ditemukan (butuh src/App.tsx, App.tsx, atau index.html).');
+
+      const browserSupportedPkgs = new Set([
+        'react',
+        'react-dom',
+        'react-dom/client',
+        'react/jsx-runtime',
+        'react/jsx-dev-runtime',
+        'lucide-react',
+        'clsx',
+        'tailwind-merge',
+      ]);
+
+      let declaredPkgDeps = null;
+      if (files['package.json']) {
+        try {
+          const pkgJson = JSON.parse(files['package.json'].content);
+          declaredPkgDeps = new Set([
+            ...Object.keys(pkgJson.dependencies || {}),
+            ...Object.keys(pkgJson.devDependencies || {}),
+          ]);
+        } catch {
+          issues.push('package.json tidak valid (JSON syntax error).');
+        }
+      }
+
       for (const p of keys) {
         const text = files[p].content;
-        if (/\/\/\s*TODO\b/i.test(text)) issues.push(p + ": masih mengandung komentar TODO.");
+        if (/\/\/\s*(TODO|FIXME)\b|\/\/\s*\.\.\.\s*(existing|rest|more)/i.test(text)) {
+          issues.push(p + ': masih mengandung komentar placeholder (TODO/FIXME/...existing).');
+        }
         if (/\.(tsx|ts|jsx|js)$/.test(p)) {
-          const importRegex = /(?:import|from)\s+['"]((?:\.|@\/)[^'"]+)['"]/g;
+          const relImportRegex = /(?:import|from)\s+['"]((?:\.|@\/)[^'"]+)['"]/g;
           let m;
-          while ((m = importRegex.exec(text)) !== null) {
+          while ((m = relImportRegex.exec(text)) !== null) {
             const req = m[1];
-            if (req.endsWith('.css')) continue;
+            if (/\.(css|scss|less|svg|png|jpe?g|json)$/i.test(req)) continue;
             const rawBase = req.startsWith('@/') ? 'src/' + req.slice(2) : normWsPath(p.split('/').slice(0, -1).concat(req).join('/'));
             const parts = [];
             for (const seg of rawBase.split('/')) {
@@ -542,10 +698,35 @@ function executeWorkspaceTool({ name, args, workspaceState, sendEvent }) {
             }
             const resolvedBase = parts.join('/');
             const exists = [
-              resolvedBase, resolvedBase + ".tsx", resolvedBase + ".ts", resolvedBase + ".jsx", resolvedBase + ".js",
-              resolvedBase + "/index.tsx", resolvedBase + "/index.ts"
+              resolvedBase, resolvedBase + '.tsx', resolvedBase + '.ts', resolvedBase + '.jsx', resolvedBase + '.js',
+              resolvedBase + '/index.tsx', resolvedBase + '/index.ts', resolvedBase + '/index.jsx', resolvedBase + '/index.js'
             ].some((c) => Boolean(files[c]));
-            if (!exists) issues.push(p + ": import \"" + req + "\" tidak ditemukan di workspace.");
+            if (!exists) issues.push(p + ': import "' + req + '" tidak ditemukan di workspace.');
+          }
+
+          const extImportRegex = /(?:import\s+[^'"]*?from|import)\s+['"]([^.'"][^'"]*)['"]/g;
+          let em;
+          while ((em = extImportRegex.exec(text)) !== null) {
+            const modName = em[1];
+            if (modName.startsWith('node:') || modName.startsWith('@/')) continue;
+            const basePkg = modName.startsWith('@')
+              ? modName.split('/').slice(0, 2).join('/')
+              : modName.split('/')[0];
+
+            if (!browserSupportedPkgs.has(modName) && !browserSupportedPkgs.has(basePkg)) {
+              if (!declaredPkgDeps) {
+                issues.push(
+                  p +
+                    ': import "' +
+                    modName +
+                    '" tidak didukung oleh Browser Live Preview (hanya react, react-dom, lucide-react, clsx, tailwind-merge) dan belum ada package.json untuk Daytona.'
+                );
+              } else if (!declaredPkgDeps.has(basePkg)) {
+                issues.push(p + ': package "' + basePkg + '" diimport tapi belum terdaftar di package.json.');
+              } else {
+                warnings.push(p + ': memakai package "' + basePkg + '" (butuh Daytona Sandbox agar berjalan).');
+              }
+            }
           }
         }
       }
@@ -559,8 +740,8 @@ function executeWorkspaceTool({ name, args, workspaceState, sendEvent }) {
       }
       return {
         ok: issues.length === 0,
-        summary: issues.length === 0 ? "Verifikasi lulus (" + keys.length + " file valid)" : issues.length + " masalah ditemukan",
-        response: { passed: issues.length === 0, fileCount: keys.length, issues },
+        summary: issues.length === 0 ? 'Verifikasi lulus (' + keys.length + ' file valid)' : issues.length + ' masalah ditemukan',
+        response: { passed: issues.length === 0, fileCount: keys.length, issues, warnings },
       };
     }
 
@@ -1340,6 +1521,8 @@ export async function runResilientGeminiChat({
         : {},
     plan: workspaceSnapshot && workspaceSnapshot.plan ? workspaceSnapshot.plan : null,
     daytonaSandboxId: workspaceSnapshot?.daytonaSandboxId || undefined,
+    vmFileTree: Array.isArray(workspaceSnapshot?.vmFileTree) ? [...workspaceSnapshot.vmFileTree] : undefined,
+    vmTotalFiles: typeof workspaceSnapshot?.vmTotalFiles === 'number' ? workspaceSnapshot.vmTotalFiles : undefined,
   };
   const projectSection = buildProjectSystemSection(githubProject);
   const daytonaSkillHint = isEmergentMode && daytonaConfig
@@ -1762,12 +1945,10 @@ export async function runResilientGeminiChat({
                 signal,
               })
             : isWorkspaceTool
-              ? executeWorkspaceTool({
-                  name: fc.name,
+              ? await executeWorkspaceTool({ name: fc.name,
                   args: fc.args || {},
                   workspaceState,
-                  sendEvent,
-                })
+                  sendEvent, daytonaConfig, signal })
             : await executeGitHubTool({
                 name: fc.name,
                 args: fc.args,

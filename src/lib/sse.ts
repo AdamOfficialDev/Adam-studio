@@ -49,7 +49,7 @@ export interface StreamHandlers {
   onWorkspacePlan?: (plan: EmergentPlan) => void;
   onWorkspaceClarification?: (clarification: EmergentClarification) => void;
   onWorkspaceFile?: (evt: { action: 'write' | 'delete'; path: string; content?: string; language?: string }) => void;
-  onWorkspaceSandbox?: (evt: { sandboxId?: string; previewUrl?: string; previewToken?: string }) => void;
+  onWorkspaceSandbox?: (evt: { sandboxId?: string; previewUrl?: string; previewToken?: string; vmFileTree?: string[]; vmTotalFiles?: number }) => void;
   onDeviceScreen?: (frame: DeviceScreenFrame) => void;
   onDeviceApproval?: (approval: DeviceApprovalRequest) => void;
   onStatus?: (message: string) => void;
@@ -69,6 +69,7 @@ function buildSafeChatPayloadJson(payload: StreamChatPayload): { json: string; b
       maxTreePaths?: number;
       maxPinnedChars?: number;
       maxMsgChars?: number;
+      workspaceMode?: 'full' | 'compact' | 'manifest' | 'stubs';
     } = {}
   ) => {
     const lastIdx = msgs.length - 1;
@@ -147,14 +148,78 @@ function buildSafeChatPayloadJson(payload: StreamChatPayload): { json: string; b
         }
       : undefined;
 
-    const wsSnapshot = payload.workspace
-      ? {
-          files: payload.workspace.files,
-          plan: payload.workspace.plan,
-          entryPath: payload.workspace.entryPath,
-          daytonaSandboxId: payload.workspace.daytonaSandboxId,
+    const buildWorkspaceSnapshot = () => {
+      const ws = payload.workspace;
+      if (!ws) return undefined;
+      const mode = opts.workspaceMode || 'full';
+      const rawFiles = ws.files || {};
+
+      const vmTree = Array.isArray(ws.vmFileTree) ? ws.vmFileTree.slice(0, 8000) : undefined;
+      if (mode === 'full') {
+        return {
+          projectId: ws.projectId,
+          files: rawFiles,
+          plan: ws.plan,
+          entryPath: ws.entryPath,
+          daytonaSandboxId: ws.daytonaSandboxId,
+          vmFileTree: vmTree,
+          vmTotalFiles: ws.vmTotalFiles,
+        };
+      }
+
+      const compactFiles: typeof rawFiles = {};
+      const entries = Object.entries(rawFiles);
+      const prioritySet = new Set(
+        [ws.activePath, ws.entryPath, 'package.json', 'index.html', 'tsconfig.json'].filter(Boolean)
+      );
+
+      for (const [p, file] of entries) {
+        if (mode === 'stubs') {
+          compactFiles[p] = {
+            ...file,
+            content:
+              prioritySet.has(p) && file.content.length <= 8_000
+                ? file.content
+                : '// [Dipangkas dari snapshot karena payload besar — gunakan workspace_read_file untuk membaca]',
+          };
+          continue;
         }
-      : undefined;
+
+        if (mode === 'manifest') {
+          const cap = prioritySet.has(p) ? 12_000 : 1_500;
+          compactFiles[p] =
+            file.content.length > cap
+              ? {
+                  ...file,
+                  content: `${file.content.slice(0, cap)}\n// ...[dipotong untuk hemat payload — baca penuh via workspace_read_file]`,
+                }
+              : file;
+          continue;
+        }
+
+        // compact
+        const cap = prioritySet.has(p) ? 24_000 : 10_000;
+        compactFiles[p] =
+          file.content.length > cap
+            ? {
+                ...file,
+                content: `${file.content.slice(0, cap)}\n// ...[dipotong — gunakan workspace_read_file untuk isi penuh]`,
+              }
+            : file;
+      }
+
+      return {
+        projectId: ws.projectId,
+        files: compactFiles,
+        plan: ws.plan,
+        entryPath: ws.entryPath,
+        daytonaSandboxId: ws.daytonaSandboxId,
+        vmFileTree: vmTree,
+        vmTotalFiles: ws.vmTotalFiles,
+      };
+    };
+
+    const wsSnapshot = buildWorkspaceSnapshot();
 
     return JSON.stringify({
       model: payload.model,
@@ -191,6 +256,18 @@ function buildSafeChatPayloadJson(payload: StreamChatPayload): { json: string; b
       maxTreePaths: 200,
       maxPinnedChars: 24_000,
       maxMsgChars: 24_000,
+      workspaceMode: 'compact',
+    })
+  );
+  if (candidate.bytes <= MAX_VERCEL_SAFE_BYTES) return candidate;
+
+  candidate = measure(
+    serialize(payload.messages, {
+      stripOlderAttachments: true,
+      maxTreePaths: 150,
+      maxPinnedChars: 12_000,
+      maxMsgChars: 16_000,
+      workspaceMode: 'manifest',
     })
   );
   if (candidate.bytes <= MAX_VERCEL_SAFE_BYTES) return candidate;
@@ -201,13 +278,24 @@ function buildSafeChatPayloadJson(payload: StreamChatPayload): { json: string; b
     candidate = measure(
       serialize(trimmed, {
         stripOlderAttachments: true,
-        maxTreePaths: 150,
-        maxPinnedChars: 12_000,
+        maxTreePaths: 120,
+        maxPinnedChars: 8_000,
         maxMsgChars: 12_000,
+        workspaceMode: 'manifest',
       })
     );
     if (candidate.bytes <= MAX_VERCEL_SAFE_BYTES) return candidate;
   }
+
+  candidate = measure(
+    serialize(trimmed, {
+      stripOlderAttachments: true,
+      maxTreePaths: 80,
+      maxPinnedChars: 4_000,
+      maxMsgChars: 8_000,
+      workspaceMode: 'stubs',
+    })
+  );
 
   return candidate;
 }
@@ -318,7 +406,7 @@ export async function streamChatCompletion(
     } else if (eventName === 'workspace_file' && typeof parsed.path === 'string') {
       handlers.onWorkspaceFile?.(parsed as unknown as { action: 'write' | 'delete'; path: string; content?: string; language?: string });
     } else if (eventName === 'workspace_sandbox') {
-      handlers.onWorkspaceSandbox?.(parsed as unknown as { sandboxId?: string; previewUrl?: string; previewToken?: string });
+      handlers.onWorkspaceSandbox?.(parsed as unknown as { sandboxId?: string; previewUrl?: string; previewToken?: string; vmFileTree?: string[]; vmTotalFiles?: number });
     } else if (eventName === 'device_screen' && parsed.frame) {
       handlers.onDeviceScreen?.(parsed.frame as unknown as DeviceScreenFrame);
     } else if (eventName === 'device_approval' && parsed.approval) {

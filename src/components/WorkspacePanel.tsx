@@ -32,6 +32,27 @@ function stripAnsiCodes(input: string): string {
     .replace(/\r/g, '\n');
 }
 
+function buildDaytonaPreviewUrl(url?: string, token?: string): string {
+  if (!url) return '';
+  if (!token) return url;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.searchParams.has('token') && !parsed.searchParams.has('previewToken')) {
+      parsed.searchParams.set('token', token);
+    }
+    return parsed.toString();
+  } catch {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}token=${encodeURIComponent(token)}`;
+  }
+}
+
+function isInfraOrAuthSandboxError(message: string): boolean {
+  return /\b(DAYTONA_API_KEY|401|403|unauthorized|forbidden|failed to fetch|network error|abort|econnrefused|timeout|timed out|502 bad gateway|503|504|rate limit|quota)\b/i.test(
+    message
+  );
+}
+
 function formatClockTime(ts: number): string {
   try {
     return new Date(ts).toLocaleTimeString('id-ID', {
@@ -133,8 +154,8 @@ function renderHighlightedText(text: string, query: string) {
 }
 const LazyCodeMirrorEditor = lazy(() => import('@/components/CodeMirrorEditor'));
 
-const TERMINAL_ENTRIES_STORAGE_KEY = 'adam_emergent_terminal_entries_v1';
-const TERMINAL_HISTORY_STORAGE_KEY = 'adam_emergent_cmd_history_v1';
+const TERMINAL_ENTRIES_STORAGE_PREFIX = 'adam_emergent_terminal_entries_v2_';
+const TERMINAL_HISTORY_STORAGE_PREFIX = 'adam_emergent_cmd_history_v2_';
 
 const DEFAULT_TERMINAL_WELCOME: TerminalEntry = {
   id: 'init-welcome',
@@ -143,9 +164,9 @@ const DEFAULT_TERMINAL_WELCOME: TerminalEntry = {
   timestamp: Date.now(),
 };
 
-function loadPersistedTerminalEntries(): TerminalEntry[] {
+function loadPersistedTerminalEntries(scopeId: string): TerminalEntry[] {
   try {
-    const raw = localStorage.getItem(TERMINAL_ENTRIES_STORAGE_KEY);
+    const raw = localStorage.getItem(TERMINAL_ENTRIES_STORAGE_PREFIX + scopeId);
     if (!raw) return [DEFAULT_TERMINAL_WELCOME];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
@@ -157,9 +178,9 @@ function loadPersistedTerminalEntries(): TerminalEntry[] {
   return [DEFAULT_TERMINAL_WELCOME];
 }
 
-function loadPersistedCmdHistory(): string[] {
+function loadPersistedCmdHistory(scopeId: string): string[] {
   try {
-    const raw = localStorage.getItem(TERMINAL_HISTORY_STORAGE_KEY);
+    const raw = localStorage.getItem(TERMINAL_HISTORY_STORAGE_PREFIX + scopeId);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.slice(0, 40) : [];
@@ -179,10 +200,18 @@ interface WorkspacePanelProps {
     sandboxId?: string;
     previewUrl?: string;
     previewToken?: string;
+    vmFileTree?: string[];
+    vmTotalFiles?: number;
   }) => void;
   onImportFiles?: (
     files: Array<{ path: string; content: string }>,
-    sandboxInfo?: { sandboxId?: string; previewUrl?: string; previewToken?: string }
+    sandboxInfo?: {
+      sandboxId?: string;
+      previewUrl?: string;
+      previewToken?: string;
+      vmFileTree?: string[];
+      vmTotalFiles?: number;
+    }
   ) => void;
   onOpenGitHubConnector?: () => void;
   onChangeActiveFile: (path: string) => void;
@@ -200,21 +229,23 @@ type ViewportSize = 'desktop' | 'tablet' | 'mobile';
 type WorkspaceTab = 'preview' | 'code' | 'terminal' | 'plan';
 type PreviewEngine = 'browser' | 'daytona';
 
-const DAYTONA_SANDBOX_STORAGE_KEY = 'adam_active_daytona_sandbox_id';
+const DAYTONA_SANDBOX_STORAGE_PREFIX = 'adam_daytona_sandbox_v2_';
 
-function readStoredSandboxId(): string | undefined {
+function readStoredSandboxId(scopeId: string): string | undefined {
+  if (!scopeId) return undefined;
   try {
-    const val = localStorage.getItem(DAYTONA_SANDBOX_STORAGE_KEY)?.trim();
+    const val = localStorage.getItem(DAYTONA_SANDBOX_STORAGE_PREFIX + scopeId)?.trim();
     return val || undefined;
   } catch {
     return undefined;
   }
 }
 
-function writeStoredSandboxId(id?: string) {
+function writeStoredSandboxId(scopeId: string, id?: string) {
+  if (!scopeId) return;
   try {
-    if (id?.trim()) localStorage.setItem(DAYTONA_SANDBOX_STORAGE_KEY, id.trim());
-    else localStorage.removeItem(DAYTONA_SANDBOX_STORAGE_KEY);
+    if (id?.trim()) localStorage.setItem(DAYTONA_SANDBOX_STORAGE_PREFIX + scopeId, id.trim());
+    else localStorage.removeItem(DAYTONA_SANDBOX_STORAGE_PREFIX + scopeId);
   } catch {
     // Abaikan error storage
   }
@@ -241,18 +272,24 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   const [tab, setTab] = useState<WorkspaceTab>('preview');
 
   const [cleaningSandboxes, setCleaningSandboxes] = useState(false);
-  const effectiveSandboxId = workspace.daytonaSandboxId || readStoredSandboxId();
+  const fallbackScopeRef = useRef<string>('ws-' + Math.random().toString(36).slice(2, 8));
+  const workspaceScopeId = useMemo(() => {
+    if (workspace.projectId?.trim()) return workspace.projectId.trim();
+    if (workspace.daytonaSandboxId?.trim()) return 'sb-' + workspace.daytonaSandboxId.trim();
+    if (workspace.plan?.title?.trim()) {
+      return 'plan-' + workspace.plan.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 32);
+    }
+    return fallbackScopeRef.current;
+  }, [workspace.projectId, workspace.daytonaSandboxId, workspace.plan?.title]);
+
+  const effectiveSandboxId =
+    workspace.daytonaSandboxId || (workspace.projectId ? readStoredSandboxId(workspaceScopeId) : undefined);
 
   useEffect(() => {
-    if (workspace.daytonaSandboxId) {
-      writeStoredSandboxId(workspace.daytonaSandboxId);
-    } else {
-      const savedId = readStoredSandboxId();
-      if (savedId) {
-        onUpdateSandbox?.({ sandboxId: savedId });
-      }
+    if (workspace.daytonaSandboxId && workspaceScopeId) {
+      writeStoredSandboxId(workspaceScopeId, workspace.daytonaSandboxId);
     }
-  }, [workspace.daytonaSandboxId]);
+  }, [workspace.daytonaSandboxId, workspaceScopeId]);
   const [engine, setEngine] = useState<PreviewEngine>(() =>
     workspace.daytonaPreviewUrl ? 'daytona' : 'browser'
   );
@@ -265,6 +302,9 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   const [copied, setCopied] = useState(false);
   const [creatingFile, setCreatingFile] = useState(false);
   const [newFileName, setNewFileName] = useState('');
+  const [vmExplorerOpen, setVmExplorerOpen] = useState(false);
+  const [vmSearchQuery, setVmSearchQuery] = useState('');
+  const [loadingVmFilePath, setLoadingVmFilePath] = useState<string | null>(null);
 
   // Daytona state
   const [deployingDaytona, setDeployingDaytona] = useState(false);
@@ -274,8 +314,12 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   const [cmdStartedAt, setCmdStartedAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [terminalCmd, setTerminalCmd] = useState('');
-  const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>(loadPersistedTerminalEntries);
-  const [cmdHistory, setCmdHistory] = useState<string[]>(loadPersistedCmdHistory);
+  const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>(() =>
+    loadPersistedTerminalEntries(workspaceScopeId)
+  );
+  const [cmdHistory, setCmdHistory] = useState<string[]>(() =>
+    loadPersistedCmdHistory(workspaceScopeId)
+  );
   const [historyIdx, setHistoryIdx] = useState<number>(-1);
   const [terminalSearch, setTerminalSearch] = useState('');
   const [showTerminalSearch, setShowTerminalSearch] = useState(false);
@@ -284,13 +328,23 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   const [copiedSandboxId, setCopiedSandboxId] = useState(false);
   const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
   const [terminalError, setTerminalError] = useState<{ command: string; output: string } | null>(null);
-  const [autoHealEnabled, setAutoHealEnabled] = useState(true);
+  const [autoHealEnabled, setAutoHealEnabled] = useState(false);
+  const lastSyncedSnapshotRef = useRef<Map<string, string>>(new Map());
   const terminalViewportRef = useRef<HTMLDivElement>(null);
   const terminalInputRef = useRef<HTMLInputElement>(null);
 
   const asideRef = useRef<HTMLElement>(null);
 
   const filePaths = useMemo(() => Object.keys(workspace.files).sort(), [workspace.files]);
+  const vmAllPaths = useMemo(() => {
+    const merged = new Set([...(workspace.vmFileTree || []), ...filePaths]);
+    return Array.from(merged).sort();
+  }, [workspace.vmFileTree, filePaths]);
+  const filteredVmPaths = useMemo(() => {
+    const q = vmSearchQuery.trim().toLowerCase();
+    const list = q ? vmAllPaths.filter((p) => p.toLowerCase().includes(q)) : vmAllPaths;
+    return list.slice(0, 120);
+  }, [vmAllPaths, vmSearchQuery]);
   const activePath =
     workspace.activePath && workspace.files[workspace.activePath]
       ? workspace.activePath
@@ -337,26 +391,33 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   }, [runningCmd, deployingDaytona, cmdStartedAt]);
 
   useEffect(() => {
+    lastSyncedSnapshotRef.current = new Map();
+    setTerminalEntries(loadPersistedTerminalEntries(workspaceScopeId));
+    setCmdHistory(loadPersistedCmdHistory(workspaceScopeId));
+    setTerminalError(null);
+  }, [workspaceScopeId]);
+
+  useEffect(() => {
     try {
       localStorage.setItem(
-        TERMINAL_ENTRIES_STORAGE_KEY,
+        TERMINAL_ENTRIES_STORAGE_PREFIX + workspaceScopeId,
         JSON.stringify(terminalEntries.slice(-80))
       );
     } catch {
       // Abaikan quota error
     }
-  }, [terminalEntries]);
+  }, [terminalEntries, workspaceScopeId]);
 
   useEffect(() => {
     try {
       localStorage.setItem(
-        TERMINAL_HISTORY_STORAGE_KEY,
+        TERMINAL_HISTORY_STORAGE_PREFIX + workspaceScopeId,
         JSON.stringify(cmdHistory.slice(0, 40))
       );
     } catch {
       // Abaikan quota error
     }
-  }, [cmdHistory]);
+  }, [cmdHistory, workspaceScopeId]);
 
   useEffect(() => {
     if (tab !== 'terminal') return;
@@ -455,6 +516,10 @@ export const WorkspacePanel = memo(function WorkspacePanel({
   };
 
   const triggerTerminalAutoFix = (commandLabel: string, errorOutput: string) => {
+    if (isInfraOrAuthSandboxError(errorOutput)) {
+      toast.warning('Error berasal dari jaringan/autentikasi Daytona — Auto-Fix kode dilewati.');
+      return;
+    }
     const cleanLog = errorOutput.trim().slice(-4500);
     toast.info('Mengirim error terminal ke Emergent Agent untuk Auto-Fix...');
     onAutoFixError(
@@ -462,6 +527,51 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         'Analisis error di bawah, perbaiki file yang bermasalah (package.json, src/*, atau config) di workspace, lalu verifikasi / jalankan ulang di Daytona:\n\n' +
         '\x60\x60\x60\n' + cleanLog + '\n\x60\x60\x60'
     );
+  };
+
+  const handleOpenVmFile = async (targetPath: string) => {
+    if (workspace.files[targetPath]) {
+      onChangeActiveFile(targetPath);
+      setTab('code');
+      return;
+    }
+    if (!effectiveSandboxId) {
+      toast.error('Daytona Sandbox belum aktif untuk membaca file on-demand.');
+      return;
+    }
+    setLoadingVmFilePath(targetPath);
+    try {
+      const res = await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: sandboxHeaders(),
+        body: JSON.stringify({
+          action: 'read-file',
+          sandboxId: effectiveSandboxId,
+          path: targetPath,
+        }),
+      });
+      const data = await safeParseSandboxJson<{
+        ok?: boolean;
+        path?: string;
+        content?: string;
+        error?: string;
+        message?: string;
+      }>(res);
+      if (!res.ok || !data.ok || typeof data.content !== 'string') {
+        toast.error(data.error || data.message || `Gagal membaca ${targetPath} dari Daytona VM`);
+        return;
+      }
+      onImportFiles?.([{ path: targetPath, content: data.content }], {
+        sandboxId: effectiveSandboxId,
+      });
+      onChangeActiveFile(targetPath);
+      setTab('code');
+      setVmExplorerOpen(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Gagal membaca file dari Daytona VM');
+    } finally {
+      setLoadingVmFilePath(null);
+    }
   };
 
   const handleDeployDaytona = async () => {
@@ -484,6 +594,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         body: JSON.stringify({
           action: 'deploy-preview',
           sandboxId: effectiveSandboxId,
+          projectId: workspaceScopeId,
           files: scaffolded,
           port: 5173,
         }),
@@ -503,7 +614,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
       if (data.output) appendLog(data.output);
 
       if (data.sandboxId) {
-        writeStoredSandboxId(data.sandboxId);
+        writeStoredSandboxId(workspaceScopeId, data.sandboxId);
         onUpdateSandbox?.({
           sandboxId: data.sandboxId,
           ...(data.previewUrl ? { previewUrl: data.previewUrl } : {}),
@@ -517,7 +628,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         setTerminalError({ command: 'Run in Daytona (npm install & Vite)', output: errLog });
         toast.error(data.message || 'Gagal menjalankan proyek di Daytona');
         if (data.sandboxId) onUpdateSandbox?.({ sandboxId: data.sandboxId });
-        if (autoHealEnabled) {
+        if (autoHealEnabled && !isInfraOrAuthSandboxError(errLog)) {
           triggerTerminalAutoFix('Run in Daytona (npm install & Vite)', errLog);
         } else {
           setTab('terminal');
@@ -525,6 +636,9 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         return;
       }
 
+      const syncedMap = new Map<string, string>();
+      for (const f of scaffolded) syncedMap.set(f.path, f.content);
+      lastSyncedSnapshotRef.current = syncedMap;
       onUpdateSandbox?.({
         sandboxId: data.sandboxId,
         previewUrl: data.previewUrl,
@@ -559,12 +673,13 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         body: JSON.stringify({
           action: 'clone-github',
           sandboxId: effectiveSandboxId,
+          projectId: workspaceScopeId,
           owner: githubProject.owner,
           repo: githubProject.repo,
           branch: githubProject.branch,
           autoStart,
           port: 5173,
-          maxWorkspaceFiles: 120,
+          maxWorkspaceFiles: 40,
         }),
       });
       const data = await safeParseSandboxJson<{
@@ -574,6 +689,8 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         previewToken?: string;
         files?: Array<{ path: string; content: string }>;
         totalFiles?: number;
+        allPaths?: string[];
+        skippedFiles?: string[];
         cloneOutput?: string;
         installOutput?: string;
         devLogs?: string;
@@ -581,15 +698,23 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         message?: string;
       }>(res);
       if (data.cloneOutput) appendLog(data.cloneOutput);
+      if (Array.isArray(data.skippedFiles) && data.skippedFiles.length > 0) {
+        appendLog(`[Info] ${data.skippedFiles.length} file dilewati ke Editor (tetap ada di Daytona VM): ${data.skippedFiles.slice(0, 8).join(', ')}`);
+      }
       if (data.installOutput) appendLog(data.installOutput);
       if (data.devLogs) appendLog(data.devLogs);
       if (data.output) appendLog(data.output);
 
       if (Array.isArray(data.files) && data.files.length > 0) {
+        const syncedMap = new Map<string, string>();
+        for (const f of data.files) syncedMap.set(f.path, f.content);
+        lastSyncedSnapshotRef.current = syncedMap;
         onImportFiles?.(data.files, {
           sandboxId: data.sandboxId,
           previewUrl: data.previewUrl,
           previewToken: data.previewToken,
+          vmFileTree: Array.isArray(data.allPaths) ? data.allPaths : undefined,
+          vmTotalFiles: typeof data.totalFiles === 'number' ? data.totalFiles : undefined,
         });
       } else if (data.sandboxId) {
         onUpdateSandbox?.({
@@ -608,7 +733,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
           output: errLog,
         });
         toast.error(data.message || 'Gagal clone / menjalankan repo di Daytona');
-        if (autoHealEnabled && errLog) {
+        if (autoHealEnabled && errLog && !isInfraOrAuthSandboxError(errLog)) {
           triggerTerminalAutoFix(`git clone & run ${githubProject.owner}/${githubProject.repo}`, errLog);
         } else {
           setTab('terminal');
@@ -618,7 +743,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
 
       setRefreshNonce((n) => n + 1);
       toast.success(
-        `${githubProject.owner}/${githubProject.repo} masuk ke Emergent (${data.files?.length || 0} file)!`
+        `${githubProject.owner}/${githubProject.repo} siap (${data.totalFiles || data.files?.length || 0} total file di VM, ${data.files?.length || 0} file dimuat ke editor)!`
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Gagal clone repo ke Daytona';
@@ -645,49 +770,179 @@ export const WorkspacePanel = memo(function WorkspacePanel({
     setCmdStartedAt(Date.now());
     setTerminalError(null);
     const startedAt = performance.now();
+
+    const dirtyFiles: Array<{ path: string; content: string }> = [];
+    const prevSnap = lastSyncedSnapshotRef.current;
+    for (const f of Object.values(workspace.files)) {
+      if (prevSnap.get(f.path) !== f.content) {
+        dirtyFiles.push({ path: f.path, content: f.content });
+      }
+    }
+
+    const liveEntryId = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setTerminalEntries((prev) => [
+      ...prev.slice(-119),
+      {
+        id: liveEntryId,
+        kind: 'info',
+        command: cmd,
+        output: dirtyFiles.length > 0 ? `[sync ${dirtyFiles.length} file ke VM...]\n` : '',
+        timestamp: Date.now(),
+      },
+    ]);
+
+    const updateLiveEntry = (patch: Partial<TerminalEntry>, appendText?: string) => {
+      setTerminalEntries((prev) =>
+        prev.map((item) => {
+          if (item.id !== liveEntryId) return item;
+          const nextOutput = appendText
+            ? stripAnsiCodes(item.output + appendText)
+            : patch.output !== undefined
+              ? stripAnsiCodes(patch.output)
+              : item.output;
+          return { ...item, ...patch, output: nextOutput };
+        })
+      );
+    };
+
     try {
       const res = await fetch('/api/sandbox', {
         method: 'POST',
         headers: sandboxHeaders(),
         body: JSON.stringify({
-          action: 'exec',
+          action: 'exec-stream',
           sandboxId: effectiveSandboxId,
+          projectId: workspace.projectId,
           command: cmd,
+          files: dirtyFiles.length > 0 ? dirtyFiles : undefined,
+          knownPaths: filePaths,
+          syncBack: true,
         }),
       });
-      const data = await safeParseSandboxJson<{
+
+      const contentType = res.headers.get('content-type') || '';
+      let finalData: {
         ok?: boolean;
         sandboxId?: string;
         exitCode?: number;
         output?: string;
         previewUrl?: string;
         previewToken?: string;
+        syncedFiles?: Array<{ path: string; content: string }>;
+        deletedPaths?: string[];
         message?: string;
-      }>(res);
-      const durationMs = performance.now() - startedAt;
-      if (data.previewUrl || (data.sandboxId && data.sandboxId !== workspace.daytonaSandboxId)) {
-        onUpdateSandbox?.({
-          sandboxId: data.sandboxId ?? workspace.daytonaSandboxId,
-          ...(data.previewUrl ? { previewUrl: data.previewUrl } : {}),
-          ...(data.previewToken ? { previewToken: data.previewToken } : {}),
-        });
-        if (data.previewUrl) setRefreshNonce((n) => n + 1);
+      } = {};
+
+      if (contentType.includes('text/event-stream') && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        let streamedText = '';
+
+        const handleSseBlock = (rawBlock: string) => {
+          if (!rawBlock.trim() || rawBlock.startsWith(':')) return;
+          let evName = 'message';
+          const lines: string[] = [];
+          for (const line of rawBlock.split('\n')) {
+            if (line.startsWith('event:')) evName = line.slice(6).trim();
+            else if (line.startsWith('data:')) lines.push(line.slice(5).trimStart());
+          }
+          if (lines.length === 0) return;
+          let parsed: Record<string, unknown>;
+          try {
+            parsed = JSON.parse(lines.join('\n'));
+          } catch {
+            return;
+          }
+          if (evName === 'status' && typeof parsed.message === 'string') {
+            updateLiveEntry({ output: (streamedText ? streamedText + '\n' : '') + `[${parsed.message}]\n` });
+          } else if (evName === 'chunk' && typeof parsed.text === 'string') {
+            streamedText += parsed.text;
+            updateLiveEntry({ output: streamedText });
+          } else if (evName === 'done') {
+            finalData = parsed as typeof finalData;
+          } else if (evName === 'error') {
+            finalData = {
+              ok: false,
+              exitCode: 1,
+              message: typeof parsed.message === 'string' ? parsed.message : 'Daytona stream error',
+              output: streamedText || (typeof parsed.message === 'string' ? parsed.message : ''),
+            };
+          }
+        };
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const blocks = buf.split('\n\n');
+          buf = blocks.pop() ?? '';
+          for (const b of blocks) handleSseBlock(b);
+        }
+        if (buf.trim()) handleSseBlock(buf);
+        if (!finalData.output && streamedText) finalData.output = streamedText;
+      } else {
+        finalData = await safeParseSandboxJson<typeof finalData>(res);
       }
-      const exitCode = typeof data.exitCode === 'number' ? data.exitCode : res.ok && data.ok ? 0 : 1;
-      const outText = data.output || data.message || `(selesai dengan exit ${exitCode})`;
-      const isOk = Boolean(res.ok && data.ok);
-      appendLog(outText, {
+
+      const durationMs = performance.now() - startedAt;
+      if (dirtyFiles.length > 0 && res.ok) {
+        const nextSnap = new Map(lastSyncedSnapshotRef.current);
+        for (const f of dirtyFiles) nextSnap.set(f.path, f.content);
+        lastSyncedSnapshotRef.current = nextSnap;
+      }
+
+      if (finalData.previewUrl || (finalData.sandboxId && finalData.sandboxId !== workspace.daytonaSandboxId)) {
+        onUpdateSandbox?.({
+          sandboxId: finalData.sandboxId ?? workspace.daytonaSandboxId,
+          ...(finalData.previewUrl ? { previewUrl: finalData.previewUrl } : {}),
+          ...(finalData.previewToken ? { previewToken: finalData.previewToken } : {}),
+        });
+        if (finalData.previewUrl) setRefreshNonce((n) => n + 1);
+      }
+
+      if (Array.isArray(finalData.syncedFiles) && finalData.syncedFiles.length > 0) {
+        const changedFromVm = finalData.syncedFiles.filter(
+          (f) => workspace.files[f.path]?.content !== f.content
+        );
+        if (changedFromVm.length > 0) {
+          onImportFiles?.(changedFromVm, {
+            sandboxId: finalData.sandboxId ?? workspace.daytonaSandboxId,
+          });
+        }
+        const nextSnap = new Map<string, string>();
+        for (const f of finalData.syncedFiles) nextSnap.set(f.path, f.content);
+        lastSyncedSnapshotRef.current = nextSnap;
+      }
+
+      if (Array.isArray(finalData.deletedPaths) && finalData.deletedPaths.length > 0) {
+        for (const delPath of finalData.deletedPaths) {
+          if (workspace.files[delPath]) onDeleteFile(delPath);
+        }
+      }
+
+      const exitCode =
+        typeof finalData.exitCode === 'number'
+          ? finalData.exitCode
+          : res.ok && finalData.ok
+            ? 0
+            : 1;
+      const outText = (finalData.output || finalData.message || `(selesai dengan exit ${exitCode})`).trimEnd();
+      const isOk = Boolean(res.ok && finalData.ok);
+      updateLiveEntry({
         kind: isOk ? 'success' : 'error',
-        command: cmd,
+        output: outText,
         durationMs,
         exitCode,
       });
+
       if (!isOk) {
-        const errOut = data.output || data.message || `Exit code ${exitCode}`;
+        const errOut = finalData.output || finalData.message || `Exit code ${exitCode}`;
         setTerminalError({ command: cmd, output: errOut });
-        toast.error(data.message || `Perintah gagal (exit ${exitCode})`);
+        toast.error(finalData.message || `Perintah gagal (exit ${exitCode})`);
         if (
           autoHealEnabled &&
+          !isInfraOrAuthSandboxError(errOut) &&
           (cmd.includes('npm') || cmd.includes('tsc') || cmd.includes('vite') || cmd.includes('build'))
         ) {
           triggerTerminalAutoFix(cmd, errOut);
@@ -696,9 +951,9 @@ export const WorkspacePanel = memo(function WorkspacePanel({
     } catch (err) {
       const durationMs = performance.now() - startedAt;
       const msg = err instanceof Error ? err.message : 'Network error';
-      appendLog(`Error: ${msg}`, {
+      updateLiveEntry({
         kind: 'error',
-        command: cmd,
+        output: `Error: ${msg}`,
         durationMs,
         exitCode: 1,
       });
@@ -717,6 +972,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         body: JSON.stringify({
           action: 'cleanup-sandboxes',
           sandboxId: effectiveSandboxId,
+          projectId: workspaceScopeId,
         }),
       });
       const data = await safeParseSandboxJson<{
@@ -725,7 +981,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         keptSandboxId?: string;
       }>(res);
       if (data.keptSandboxId) {
-        writeStoredSandboxId(data.keptSandboxId);
+        writeStoredSandboxId(workspaceScopeId, data.keptSandboxId);
         onUpdateSandbox?.({ sandboxId: data.keptSandboxId });
       }
       toast.success(
@@ -968,6 +1224,66 @@ export const WorkspacePanel = memo(function WorkspacePanel({
         </div>
       </div>
 
+      {vmAllPaths.length > filePaths.length && (
+        <div className="shrink-0 border-b border-border/70 bg-emerald-950/20 px-3.5 py-1.5">
+          <div className="flex items-center justify-between gap-2 text-[11px]">
+            <div className="flex min-w-0 items-center gap-1.5 text-emerald-300">
+              <FolderTree className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate font-medium">
+                Mode Proyek Besar: {workspace.vmTotalFiles || vmAllPaths.length} file di VM ({filePaths.length} dimuat di editor)
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setVmExplorerOpen((v) => !v)}
+              className="shrink-0 rounded-md border border-emerald-500/35 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-200 hover:bg-emerald-500/25"
+            >
+              {vmExplorerOpen ? 'Tutup Index VM' : 'Cari / Buka File VM'}
+            </button>
+          </div>
+
+          {vmExplorerOpen && (
+            <div className="mt-2 space-y-1.5 pb-1">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={vmSearchQuery}
+                  onChange={(e) => setVmSearchQuery(e.target.value)}
+                  placeholder={`Cari dari ${vmAllPaths.length} file di Daytona VM (misal: routes/api.ts)...`}
+                  className="h-7 pl-8 text-xs"
+                />
+              </div>
+              <div className="max-h-44 overflow-y-auto rounded-lg border border-border/70 bg-background/90 p-1">
+                {filteredVmPaths.length === 0 ? (
+                  <div className="px-2 py-3 text-center text-[11px] text-muted-foreground">
+                    Tidak ada file yang cocok dengan "{vmSearchQuery}".
+                  </div>
+                ) : (
+                  filteredVmPaths.map((p) => {
+                    const isLoaded = Boolean(workspace.files[p]);
+                    const isLoading = loadingVmFilePath === p;
+                    return (
+                      <button
+                        key={p}
+                        type="button"
+                        disabled={Boolean(loadingVmFilePath)}
+                        onClick={() => void handleOpenVmFile(p)}
+                        className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left font-mono text-[11px] hover:bg-muted/70"
+                      >
+                        <span className="truncate text-foreground">{p}</span>
+                        <span className="shrink-0 text-[10px] text-muted-foreground">
+                          {isLoading ? 'loading...' : isLoaded ? 'loaded' : 'VM lazy'}
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {tab === 'preview' && (
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-background/50 px-3.5 py-1.5">
           <div className="flex items-center gap-1.5">
@@ -1109,7 +1425,7 @@ export const WorkspacePanel = memo(function WorkspacePanel({
                 </Button>
                 {workspace.daytonaPreviewUrl && (
                   <a
-                    href={workspace.daytonaPreviewUrl}
+                    href={buildDaytonaPreviewUrl(workspace.daytonaPreviewUrl, workspace.daytonaPreviewToken)}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex h-7 items-center gap-1 rounded-lg border border-border/75 bg-card px-2 text-[11px] text-muted-foreground hover:text-foreground"
@@ -1187,9 +1503,9 @@ export const WorkspacePanel = memo(function WorkspacePanel({
                   </div>
                 ) : workspace.daytonaPreviewUrl ? (
                   <iframe
-                    key={workspace.daytonaPreviewUrl + '-' + refreshNonce}
+                    key={workspace.daytonaPreviewUrl + '-' + (workspace.daytonaPreviewToken || '') + '-' + refreshNonce}
                     title="Daytona Live Preview"
-                    src={workspace.daytonaPreviewUrl}
+                    src={buildDaytonaPreviewUrl(workspace.daytonaPreviewUrl, workspace.daytonaPreviewToken)}
                     className={cn('h-full w-full border-0 bg-zinc-950', isResizing && 'pointer-events-none')}
                   />
                 ) : (

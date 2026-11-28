@@ -598,7 +598,13 @@ export default function App() {
   const handleImportFilesToWorkspace = useCallback(
     (
       files: Array<{ path: string; content: string }>,
-      sandboxInfo?: { sandboxId?: string; previewUrl?: string; previewToken?: string },
+      sandboxInfo?: {
+        sandboxId?: string;
+        previewUrl?: string;
+        previewToken?: string;
+        vmFileTree?: string[];
+        vmTotalFiles?: number;
+      },
       projectOverride?: GitHubProjectContext
     ) => {
       const now = Date.now();
@@ -612,6 +618,10 @@ export default function App() {
         if (sandboxInfo?.sandboxId) nextWs.daytonaSandboxId = sandboxInfo.sandboxId;
         if (sandboxInfo?.previewUrl !== undefined) nextWs.daytonaPreviewUrl = sandboxInfo.previewUrl;
         if (sandboxInfo?.previewToken !== undefined) nextWs.daytonaPreviewToken = sandboxInfo.previewToken;
+        if (Array.isArray(sandboxInfo?.vmFileTree) && sandboxInfo.vmFileTree.length > 0) {
+          nextWs.vmFileTree = sandboxInfo.vmFileTree;
+          nextWs.vmTotalFiles = sandboxInfo.vmTotalFiles ?? sandboxInfo.vmFileTree.length;
+        }
         if (projectOverride && !nextWs.plan) {
           nextWs.plan = {
             title: `${projectOverride.owner}/${projectOverride.repo}`,
@@ -1149,6 +1159,8 @@ export default function App() {
                       daytonaSandboxId: evt.sandboxId || baseWs.daytonaSandboxId,
                       daytonaPreviewUrl: evt.previewUrl ?? baseWs.daytonaPreviewUrl,
                       daytonaPreviewToken: evt.previewToken ?? baseWs.daytonaPreviewToken,
+                      vmFileTree: evt.vmFileTree ?? baseWs.vmFileTree,
+                      vmTotalFiles: evt.vmTotalFiles ?? baseWs.vmTotalFiles,
                       updatedAt: Date.now(),
                     },
                     updatedAt: Date.now(),

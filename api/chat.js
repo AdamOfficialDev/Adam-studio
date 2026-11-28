@@ -66,6 +66,14 @@ export default async function handler(request) {
         }
       };
 
+      const heartbeatTimer = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(': keepalive\n\n'));
+        } catch {
+          clearInterval(heartbeatTimer);
+        }
+      }, 8_000);
+
       try {
         if (!Array.isArray(messages) || messages.length === 0) {
           sendEvent('error', { status: 400, message: 'Pesan tidak boleh kosong.' });
@@ -160,6 +168,7 @@ export default async function handler(request) {
           message: err instanceof Error ? err.message : 'Internal Edge Function Error',
         });
       } finally {
+        clearInterval(heartbeatTimer);
         try {
           controller.close();
         } catch {

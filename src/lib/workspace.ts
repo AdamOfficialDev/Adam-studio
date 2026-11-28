@@ -23,8 +23,13 @@ export function normalizeWorkspacePath(rawPath: string): string {
     .replace(/\/{2,}/g, '/');
 }
 
+export function generateWorkspaceProjectId(): string {
+  return 'ws-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+}
+
 export function createEmptyWorkspace(): VirtualWorkspace {
   return {
+    projectId: generateWorkspaceProjectId(),
     files: {},
     activePath: '',
     entryPath: '',
@@ -80,6 +85,7 @@ export function upsertWorkspaceFile(
 
   return {
     ...base,
+    projectId: base.projectId || generateWorkspaceProjectId(),
     files: nextFiles,
     activePath: base.activePath && nextFiles[base.activePath] ? base.activePath : cleanPath,
     entryPath: pickEntryPath(nextFiles, base.entryPath),
@@ -115,6 +121,7 @@ export function updateWorkspacePlan(
   const base = workspace || createEmptyWorkspace();
   return {
     ...base,
+    projectId: base.projectId || generateWorkspaceProjectId(),
     plan,
     updatedAt: Date.now(),
   };
@@ -445,8 +452,26 @@ export function compileWorkspaceToHtml(workspace: VirtualWorkspace): {
 
   const runtimeScript = '(' + __emergentSandboxBoot.toString() + ')(' + JSON.stringify(payloadB64) + ');';
 
+  const indexHtmlContent = files['index.html']?.content || '';
+  const customTitleMatch = indexHtmlContent.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const customTitleTag = customTitleMatch ? '<title>' + customTitleMatch[1] + '</title>' : '';
+  const extraHeadTags: string[] = [];
+  if (indexHtmlContent) {
+    const linkMatches = indexHtmlContent.match(/<link[^>]+href=["']https?:\/\/[^"']+["'][^>]*>/gi) || [];
+    for (const tag of linkMatches) extraHeadTags.push(tag);
+    const cdnScriptMatches =
+      indexHtmlContent.match(/<script[^>]+src=["']https?:\/\/[^"']+["'][^>]*><\/script>/gi) || [];
+    for (const tag of cdnScriptMatches) {
+      if (!/react|babel|tailwind|lucide/i.test(tag)) extraHeadTags.push(tag);
+    }
+    const styleMatches = indexHtmlContent.match(/<style[^>]*>[\s\S]*?<\/style>/gi) || [];
+    for (const tag of styleMatches) extraHeadTags.push(tag);
+  }
+
   const html = [
     '<!doctype html><html lang="id"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+    customTitleTag,
+    ...extraHeadTags,
     '<script src="https://cdn.tailwindcss.com"></script>',
     '<script crossorigin src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>',
     '<script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>',
@@ -455,7 +480,7 @@ export function compileWorkspaceToHtml(workspace: VirtualWorkspace): {
     '<style>html,body,#root{min-height:100%;height:100%;}body{margin:0;font-family:Inter,system-ui,-apple-system,sans-serif;}' + combinedCss + '</style></head>',
     '<body class="bg-zinc-950 text-zinc-100 antialiased"><div id="root"></div>',
     '<script>' + runtimeScript + '</script></body></html>',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   return { html, mode: 'react-tsx' };
 }
@@ -477,18 +502,35 @@ export function scaffoldRunnableProjectFiles(
       .replace(/^-|-$/g, '') || 'adam-emergent-app';
 
   if (hasReact) {
+    const REACT18_COMPAT_VERSIONS: Record<string, string> = {
+      'lucide-react': '^0.469.0',
+      'framer-motion': '^11.15.0',
+      clsx: '^2.1.1',
+      'tailwind-merge': '^2.6.0',
+      'class-variance-authority': '^0.7.1',
+      axios: '^1.7.9',
+      zustand: '^5.0.2',
+      zod: '^3.24.1',
+      'date-fns': '^4.1.0',
+      recharts: '^2.15.0',
+      'react-router-dom': '^6.28.0',
+      '@tanstack/react-query': '^5.62.7',
+      sonner: '^1.7.1',
+    };
     const detectedDeps: Record<string, string> = {
       react: '^18.3.1',
       'react-dom': '^18.3.1',
-      'lucide-react': 'latest',
+      'lucide-react': REACT18_COMPAT_VERSIONS['lucide-react'],
     };
-    const pkgRegex = /(?:import|from)\s+['"]([^.'"@][^'"]*?)(?:\/[^'"]*)?['"]/g;
+    const pkgRegex = /(?:import|from)\s+['"]((?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*)(?:\/[^'"]*)?['"]/gi;
     for (const f of Object.values(rawFiles)) {
+      if (!/\.(tsx|ts|jsx|js|mjs)$/i.test(f.path)) continue;
       let m: RegExpExecArray | null;
       while ((m = pkgRegex.exec(f.content)) !== null) {
         const pkg = m[1];
+        if (pkg.startsWith('node:') || pkg.startsWith('@/')) continue;
         if (!detectedDeps[pkg] && pkg !== 'react' && pkg !== 'react-dom') {
-          detectedDeps[pkg] = 'latest';
+          detectedDeps[pkg] = REACT18_COMPAT_VERSIONS[pkg] || 'latest';
         }
       }
     }
