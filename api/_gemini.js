@@ -408,7 +408,7 @@ function detectWsLang(p) {
   return 'text';
 }
 
-async function await executeWorkspaceTool({ name, args, workspaceState, daytonaConfig, signal, sendEvent }) {
+async function executeWorkspaceTool({ name, args, workspaceState, daytonaConfig, signal, sendEvent }) {
   const files = workspaceState.files;
   try {
     if (name === 'emergent_ask_clarification') {

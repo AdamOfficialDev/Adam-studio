@@ -821,7 +821,6 @@ export async function cloneGitHubIntoDaytona({
   }
 
   const eagerLimit = Math.min(120, Math.max(10, Number(maxWorkspaceFiles) || 40));
-  const eagerLimit = Math.min(120, Math.max(10, Number(maxWorkspaceFiles) || 40));
   const extractScript = [
     "const fs=require('fs'),path=require('path');",
     "const root=process.cwd();",
