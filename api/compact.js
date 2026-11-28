@@ -1,11 +1,16 @@
-import { hydrateKeyCooldowns, recordKeyCooldown } from './_cooldown.js';
+import {
+  getKeyCooldownState,
+  getSharedCooldownMap,
+  hydrateKeyCooldowns,
+  recordKeyCooldown,
+} from './_cooldown.js';
 
 export const config = {
   runtime: 'edge',
 };
 
 let roundRobinCursor = Math.floor(Math.random() * 1000);
-const compactCooldownMap = new Map();
+const compactCooldownMap = getSharedCooldownMap();
 
 function parseKeyPool(...sources) {
   const pool = [];
@@ -34,18 +39,20 @@ function extractGeminiError(rawText, status) {
   return msg;
 }
 
-function buildOrderedCompactKeys(apiKeys) {
-  const now = Date.now();
+function buildOrderedCompactKeys(apiKeys, targetModel = '') {
   const startOffset = roundRobinCursor % apiKeys.length;
   roundRobinCursor = (roundRobinCursor + 1) % apiKeys.length;
   const rotated = [...apiKeys.slice(startOffset), ...apiKeys.slice(0, startOffset)];
   const ready = [];
   const cooling = [];
+  const invalid = [];
   for (const key of rotated) {
-    if ((compactCooldownMap.get(key) || 0) > now) cooling.push(key);
+    const cd = getKeyCooldownState(key, targetModel, compactCooldownMap);
+    if (cd.isInvalid) invalid.push(key);
+    else if (cd.cooling) cooling.push(key);
     else ready.push(key);
   }
-  return [...ready, ...cooling];
+  return [...ready, ...cooling, ...invalid];
 }
 
 async function callGeminiSummary({ model, apiKeys, prompt, signal }) {
@@ -53,13 +60,13 @@ async function callGeminiSummary({ model, apiKeys, prompt, signal }) {
     new Set(['gemini-3.8-flash', model || 'gemini-4-hydrogen'].filter(Boolean))
   );
   await hydrateKeyCooldowns(apiKeys, compactCooldownMap);
-  const orderedKeys = buildOrderedCompactKeys(apiKeys);
   const disabledModels = new Set();
 
   let lastError = 'Gagal meringkas konteks.';
 
   for (const targetModel of candidates) {
     if (disabledModels.has(targetModel)) continue;
+    const orderedKeys = buildOrderedCompactKeys(apiKeys, targetModel);
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
       targetModel
     )}:generateContent`;
@@ -114,11 +121,22 @@ async function callGeminiSummary({ model, apiKeys, prompt, signal }) {
               disabledModels.add(targetModel);
               break;
             }
-            if (res.status === 429 || res.status === 401 || res.status === 403) {
+            const isBadKey =
+              res.status === 401 ||
+              res.status === 403 ||
+              (res.status === 400 && /api.?key|expired|invalid|quota/i.test(lastError));
+            if (res.status === 429 || isBadKey) {
               await recordKeyCooldown(
                 key,
-                res.status === 429 ? 60_000 : 120_000,
-                compactCooldownMap
+                res.status === 429 ? 60_000 : 900_000,
+                compactCooldownMap,
+                {
+                  reason: res.status === 429 ? 'rate_limit' : 'invalid_key',
+                  statusCode: res.status,
+                  model: targetModel,
+                  message: lastError,
+                  scope: res.status === 429 ? 'model' : 'global',
+                }
               );
             }
           }

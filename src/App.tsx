@@ -98,6 +98,7 @@ import {
 import {
   countApiKeys,
   loadSettings,
+  parseUniqueApiKeys,
   saveSettings,
 } from '@/lib/storage';
 import { cn, estimateTokens, generateId } from '@/lib/utils';
@@ -117,6 +118,8 @@ import type {
   Conversation,
   ConversationContextConfig,
   GitHubProjectContext,
+  KeyPoolStatusResponse,
+  KeyPoolSummary,
   ServerHealth,
   ThemeSkin,
   TokenUsage,
@@ -257,6 +260,7 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_ID);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [serverHealth, setServerHealth] = useState<ServerHealth | null>(null);
+  const [keyPoolSummary, setKeyPoolSummary] = useState<KeyPoolSummary | null>(null);
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -417,6 +421,41 @@ export default function App() {
     countApiKeys(settings.apiKey) ||
     serverHealth?.serverKeyCount ||
     (serverHealth?.hasServerApiKey ? 1 : 0);
+
+  const refreshKeyPoolSummary = useCallback(async () => {
+    if (settings.demoMode) {
+      setKeyPoolSummary(null);
+      return;
+    }
+    try {
+      const normalized = parseUniqueApiKeys(settings.apiKey).join(',');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (normalized) headers['x-gemini-api-keys'] = normalized;
+      const res = await fetch('/api/key-status', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ action: 'status', model: currentModelId }),
+      });
+      if (!res.ok) return;
+      const json = (await res.json()) as KeyPoolStatusResponse;
+      if (json?.summary) {
+        setKeyPoolSummary(json.summary);
+      } else if (Array.isArray(json?.keys)) {
+        setKeyPoolSummary({
+          total: json.keys.length,
+          ready: json.keys.filter((k) => k.status === 'ready').length,
+          cooldown: json.keys.filter((k) => k.status === 'cooldown').length,
+          invalid: json.keys.filter((k) => k.status === 'invalid').length,
+        });
+      }
+    } catch {
+      // Abaikan kegagalan jaringan saat polling pasif
+    }
+  }, [settings.apiKey, settings.demoMode, currentModelId]);
+
+  useEffect(() => {
+    void refreshKeyPoolSummary();
+  }, [refreshKeyPoolSummary]);
 
   const virtualizer = useVirtualizer({
     count: messageList.length,
@@ -1314,6 +1353,7 @@ export default function App() {
                 );
                 if (previewable) setActiveArtifact(previewable);
               }
+              void refreshKeyPoolSummary();
             },
             onError: (errorMessage) => {
               setPendingDeviceApproval(null);
@@ -1323,6 +1363,7 @@ export default function App() {
               }
               setStreamState(null);
               toast.error(errorMessage);
+              void refreshKeyPoolSummary();
               setConversations((prev) =>
                 prev.map((conv) =>
                   conv.id !== convId
@@ -1408,7 +1449,7 @@ export default function App() {
         }
       }
     },
-    [settings, selectedDeviceId]
+    [settings, selectedDeviceId, refreshKeyPoolSummary]
   );
 
   const handleResolveDeviceApproval = useCallback(
@@ -2256,37 +2297,65 @@ export default function App() {
                   </Button>
                 )}
 
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={() => setSettingsDialogOpen(true)}
-                      className="hidden items-center gap-1.5 rounded-full border bg-card/70 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:inline-flex"
-                    >
-                      <Radio
-                        className={
-                          settings.demoMode
-                            ? 'h-3.5 w-3.5 text-amber-500'
-                            : 'h-3.5 w-3.5 text-emerald-500'
-                        }
-                      />
-                      <span>
+                {(() => {
+                  const hasPoolIssues =
+                    !settings.demoMode &&
+                    Boolean(
+                      keyPoolSummary &&
+                        keyPoolSummary.total > 0 &&
+                        (keyPoolSummary.cooldown > 0 || keyPoolSummary.invalid > 0)
+                    );
+                  const hasInvalid = Boolean(keyPoolSummary && keyPoolSummary.invalid > 0);
+                  return (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() => setSettingsDialogOpen(true)}
+                          className={cn(
+                            'hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors sm:inline-flex',
+                            hasInvalid
+                              ? 'border-rose-500/45 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20'
+                              : hasPoolIssues
+                                ? 'border-amber-500/45 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
+                                : 'bg-card/70 text-muted-foreground hover:bg-accent hover:text-foreground'
+                          )}
+                        >
+                          <Radio
+                            className={cn(
+                              'h-3.5 w-3.5',
+                              settings.demoMode
+                                ? 'text-amber-500'
+                                : hasInvalid
+                                  ? 'text-rose-400'
+                                  : hasPoolIssues
+                                    ? 'text-amber-400'
+                                    : 'text-emerald-500'
+                            )}
+                          />
+                          <span className={cn(hasPoolIssues && 'font-mono text-[11px] font-semibold')}>
+                            {settings.demoMode
+                              ? 'Demo SSE'
+                              : hasPoolIssues && keyPoolSummary
+                                ? `Pool: ${keyPoolSummary.ready}/${keyPoolSummary.total}`
+                                : activeKeyPoolCount > 1
+                                  ? `${activeKeyPoolCount} Keys`
+                                  : 'Live SSE'}
+                          </span>
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>
                         {settings.demoMode
-                          ? 'Demo SSE'
-                          : activeKeyPoolCount > 1
-                            ? `${activeKeyPoolCount} Keys`
-                            : 'Live SSE'}
-                      </span>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {settings.demoMode
-                      ? 'Mode simulasi SSE lokal aktif'
-                      : activeKeyPoolCount > 1
-                        ? `Auto-Rotation Pool aktif (${activeKeyPoolCount} API keys)`
-                        : 'Streaming SSE ke /api/chat'}
-                  </TooltipContent>
-                </Tooltip>
+                          ? 'Mode simulasi SSE lokal aktif'
+                          : hasPoolIssues && keyPoolSummary
+                            ? `${keyPoolSummary.ready} Ready • ${keyPoolSummary.cooldown} Cooldown • ${keyPoolSummary.invalid} Invalid — Klik untuk kelola Key Pool`
+                            : activeKeyPoolCount > 1
+                              ? `Auto-Rotation Pool aktif (${activeKeyPoolCount} API keys)`
+                              : 'Streaming SSE ke /api/chat'}
+                      </TooltipContent>
+                    </Tooltip>
+                  );
+                })()}
 
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -2351,14 +2420,24 @@ export default function App() {
                         <Radio
                           className={cn(
                             'h-3.5 w-3.5',
-                            settings.demoMode ? 'text-amber-500' : 'text-emerald-500'
+                            settings.demoMode
+                              ? 'text-amber-500'
+                              : keyPoolSummary && keyPoolSummary.invalid > 0
+                                ? 'text-rose-400'
+                                : keyPoolSummary && keyPoolSummary.cooldown > 0
+                                  ? 'text-amber-400'
+                                  : 'text-emerald-500'
                           )}
                         />
                         {settings.demoMode
                           ? 'Status: Demo SSE'
-                          : activeKeyPoolCount > 1
-                            ? `Status: ${activeKeyPoolCount} API Keys`
-                            : 'Status: Live SSE'}
+                          : keyPoolSummary &&
+                              keyPoolSummary.total > 0 &&
+                              (keyPoolSummary.cooldown > 0 || keyPoolSummary.invalid > 0)
+                            ? `Pool: ${keyPoolSummary.ready}/${keyPoolSummary.total} Ready`
+                            : activeKeyPoolCount > 1
+                              ? `Status: ${activeKeyPoolCount} API Keys`
+                              : 'Status: Live SSE'}
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                     </div>
@@ -2934,12 +3013,13 @@ export default function App() {
           />
 
           <SettingsDialog
-        activeModel={currentModelId}
+            activeModel={currentModelId}
             open={settingsDialogOpen}
             onOpenChange={setSettingsDialogOpen}
             settings={settings}
             serverHealth={serverHealth}
             onSave={setSettings}
+            onKeyPoolSummaryChange={setKeyPoolSummary}
             onConversationsRestored={(restored) => {
               setConversations(restored);
               if (restored.length > 0) setActiveId(restored[0].id);

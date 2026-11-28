@@ -19,11 +19,13 @@ import {
   setDevicePaused,
   submitBridgeCommandResult,
 } from '../api/_device.js';
-import { getKeyPoolStatusAsync, runResilientGeminiChat } from '../api/_gemini.js';
+import { runResilientGeminiChat } from '../api/_gemini.js';
 import {
+  getKeyCooldownState,
+  getSharedCooldownMap,
   hydrateKeyCooldowns,
-  isSharedCooldownEnabled,
   recordKeyCooldown,
+  resolveKeyStatusReport,
 } from '../api/_cooldown.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -35,7 +37,7 @@ const PORT = Number(process.env.PORT || 3001);
 const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'gemini-4-hydrogen';
 
 let roundRobinCursor = 0;
-const keyCooldownMap = new Map();
+const keyCooldownMap = getSharedCooldownMap();
 
 function parseKeyPool(...sources) {
   const pool = [];
@@ -201,7 +203,7 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.post('/api/key-status', async (req, res) => {
+async function handleExpressKeyStatus(req, res) {
   const headerKeys = parseKeyPool(
     typeof req.headers['x-gemini-api-keys'] === 'string' ? req.headers['x-gemini-api-keys'] : '',
     typeof req.headers['x-gemini-api-key'] === 'string' ? req.headers['x-gemini-api-key'] : ''
@@ -209,30 +211,38 @@ app.post('/api/key-status', async (req, res) => {
   const envKeys = getServerEnvKeys();
   const usingBrowserKeys = headerKeys.length > 0;
   const activeKeys = usingBrowserKeys ? headerKeys : envKeys;
-  const now = Date.now();
+  const source = usingBrowserKeys ? 'browser' : envKeys.length > 0 ? 'server' : 'none';
 
-  await hydrateKeyCooldowns(activeKeys, keyCooldownMap);
-  const geminiStatuses = await getKeyPoolStatusAsync(activeKeys);
-  const merged = geminiStatuses.map((item, idx) => {
-    const rawKey = activeKeys[idx];
-    const localCool = keyCooldownMap.get(rawKey) || 0;
-    const localRemaining = localCool > now ? Math.ceil((localCool - now) / 1000) : 0;
-    const remaining = Math.max(item.cooldownRemainingSec || 0, localRemaining);
-    return {
-      label: item.label,
-      status: remaining > 0 ? 'cooldown' : 'ready',
-      cooldownRemainingSec: remaining,
-    };
+  const body = req.body || {};
+  const action = String(body?.action || req.query?.action || 'status').trim();
+  const targetModel = String(body?.model || req.query?.model || '').trim();
+  const probeModel = String(body?.probeModel || req.query?.probeModel || '').trim();
+  const keyIndex =
+    typeof body?.keyIndex === 'number' && Number.isInteger(body.keyIndex)
+      ? body.keyIndex
+      : undefined;
+
+  const ac = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) ac.abort();
   });
 
-  res.json({
-    ok: true,
-    source: usingBrowserKeys ? 'browser' : envKeys.length > 0 ? 'server' : 'none',
-    sharedStore: isSharedCooldownEnabled() ? 'upstash-redis' : 'memory',
-    totalKeys: activeKeys.length,
-    keys: merged,
+  const report = await resolveKeyStatusReport({
+    keys: activeKeys,
+    source,
+    targetModel,
+    action,
+    keyIndex,
+    probeModel,
+    signal: ac.signal,
   });
-});
+
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(report);
+}
+
+app.get('/api/key-status', handleExpressKeyStatus);
+app.post('/api/key-status', handleExpressKeyStatus);
 
 function buildAttachmentParts(att) {
   if (!att) return [];
@@ -283,7 +293,8 @@ app.post('/api/count-tokens', async (req, res) => {
     model
   )}:countTokens`;
 
-  const ordered = buildOrderedCandidateKeys(apiKeys);
+  await hydrateKeyCooldowns(apiKeys, keyCooldownMap);
+  const ordered = buildOrderedCandidateKeys(apiKeys, model);
   for (const candidate of ordered) {
     try {
       const upstream = await fetch(endpoint, {
@@ -302,6 +313,21 @@ app.post('/api/count-tokens', async (req, res) => {
           res.json({ ok: true, totalTokens: json.totalTokens });
           return;
         }
+      } else if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
+        const errRaw = await upstream.text().catch(() => '');
+        const errMsg = extractGeminiError(errRaw, upstream.status);
+        await recordKeyCooldown(
+          candidate.key,
+          upstream.status === 429 ? 60_000 : 900_000,
+          keyCooldownMap,
+          {
+            reason: upstream.status === 429 ? 'rate_limit' : 'invalid_key',
+            statusCode: upstream.status,
+            model,
+            message: errMsg,
+            scope: upstream.status === 429 ? 'model' : 'global',
+          }
+        );
       }
     } catch {
       // Coba key berikutnya
@@ -472,11 +498,22 @@ app.post('/api/compact', async (req, res) => {
                   disabledModels.add(targetModel);
                   break;
                 }
-                if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
+                const isBadKey =
+                  upstream.status === 401 ||
+                  upstream.status === 403 ||
+                  (upstream.status === 400 && /api.?key|expired|invalid|quota/i.test(lastErr));
+                if (upstream.status === 429 || isBadKey) {
                   await recordKeyCooldown(
                     entry.key,
-                    upstream.status === 429 ? 60_000 : 120_000,
-                    keyCooldownMap
+                    upstream.status === 429 ? 60_000 : 900_000,
+                    keyCooldownMap,
+                    {
+                      reason: upstream.status === 429 ? 'rate_limit' : 'invalid_key',
+                      statusCode: upstream.status,
+                      model: targetModel,
+                      message: lastErr,
+                      scope: upstream.status === 429 ? 'model' : 'global',
+                    }
                   );
                 }
               }
@@ -538,7 +575,8 @@ app.post('/api/transcribe', async (req, res) => {
   const sttModels = Array.from(
     new Set(['gemini-3.8-flash', model || DEFAULT_MODEL].filter(Boolean))
   );
-  const orderedKeys = buildOrderedCandidateKeys(apiKeys);
+  await hydrateKeyCooldowns(apiKeys, keyCooldownMap);
+  const orderedKeys = buildOrderedCandidateKeys(apiKeys, sttModels[0] || '');
   const cleanMime = String(mimeType).split(';')[0].trim() || 'audio/wav';
 
   const promptText = [
@@ -648,8 +686,23 @@ app.post('/api/transcribe', async (req, res) => {
             break;
           }
 
-          if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
-            await recordKeyCooldown(entry.key, 60_000, keyCooldownMap);
+          const isBadKey =
+            upstream.status === 401 ||
+            upstream.status === 403 ||
+            (upstream.status === 400 && /api.?key|expired|invalid|quota/i.test(lastError));
+          if (upstream.status === 429 || isBadKey) {
+            await recordKeyCooldown(
+              entry.key,
+              upstream.status === 429 ? 60_000 : 900_000,
+              keyCooldownMap,
+              {
+                reason: upstream.status === 429 ? 'rate_limit' : 'invalid_key',
+                statusCode: upstream.status,
+                model: sttModel,
+                message: lastError,
+                scope: upstream.status === 429 ? 'model' : 'global',
+              }
+            );
           }
           break;
         } catch (err) {
@@ -750,24 +803,26 @@ function extractGeminiError(rawText, status) {
   return msg;
 }
 
-function buildOrderedCandidateKeys(keys) {
-  const now = Date.now();
+function buildOrderedCandidateKeys(keys, targetModel = '') {
   const start = roundRobinCursor % keys.length;
   roundRobinCursor = (roundRobinCursor + 1) % keys.length;
 
   const rotated = [...keys.slice(start), ...keys.slice(0, start)];
   const ready = [];
   const cooling = [];
+  const invalid = [];
   for (const item of rotated) {
     const origIdx = keys.indexOf(item);
-    const coolUntil = keyCooldownMap.get(item) || 0;
-    if (coolUntil > now) {
+    const cd = getKeyCooldownState(item, targetModel, keyCooldownMap);
+    if (cd.isInvalid) {
+      invalid.push({ key: item, idx: origIdx });
+    } else if (cd.cooling) {
       cooling.push({ key: item, idx: origIdx });
     } else {
       ready.push({ key: item, idx: origIdx });
     }
   }
-  return [...ready, ...cooling];
+  return [...ready, ...cooling, ...invalid];
 }
 
 app.post('/api/chat', async (req, res) => {

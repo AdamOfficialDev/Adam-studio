@@ -1,5 +1,7 @@
-import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import {
+  Activity,
+  AlertTriangle,
   Brain,
   Code2,
   Database,
@@ -12,6 +14,7 @@ import {
   Layers,
   Palette,
   Radio,
+  RefreshCw,
   RotateCcw,
   Search,
   Settings,
@@ -19,8 +22,10 @@ import {
   Shuffle,
   SlidersHorizontal,
   Sparkles,
+  Trash2,
   Upload,
   Volume2,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -48,12 +53,15 @@ import {
   getIndexedDbStats,
   restoreConversationsBackup,
 } from '@/lib/db';
-import { countApiKeys, DEFAULT_SETTINGS } from '@/lib/storage';
+import { countApiKeys, DEFAULT_SETTINGS, parseUniqueApiKeys } from '@/lib/storage';
 import type {
   AppSettings,
   ContextMode,
   Conversation,
   DeviceApprovalMode,
+  KeyPoolStatusItem,
+  KeyPoolStatusResponse,
+  KeyPoolSummary,
   ServerHealth,
   ThemeSkin,
 } from '@/types/chat';
@@ -67,6 +75,7 @@ interface SettingsDialogProps {
   serverHealth: ServerHealth | null;
   onSave: (next: AppSettings) => void;
   onConversationsRestored?: (convs: Conversation[]) => void;
+  onKeyPoolSummaryChange?: (summary: KeyPoolSummary) => void;
 }
 
 const THEME_SKINS: Array<{
@@ -149,88 +158,177 @@ export const SettingsDialog = memo(function SettingsDialog({
   serverHealth,
   onSave,
   onConversationsRestored,
+  onKeyPoolSummaryChange,
 }: SettingsDialogProps) {
   const effectiveModel = activeModel || DEFAULT_MODEL_ID;
   const thinkingCaps = getModelThinkingCapabilities(effectiveModel);
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [showKey, setShowKey] = useState(false);
   const [idbStats, setIdbStats] = useState<{ count: number; usedLabel: string } | null>(null);
-  const [keyPoolStatus, setKeyPoolStatus] = useState<
-    Array<{ label: string; status: 'ready' | 'cooldown'; cooldownRemainingSec: number }>
-  >([]);
+  const [keyPoolStatus, setKeyPoolStatus] = useState<KeyPoolStatusItem[]>([]);
   const [keyPoolSource, setKeyPoolSource] = useState<'browser' | 'server' | 'none'>('none');
   const [keyPoolStore, setKeyPoolStore] = useState<'upstash-redis' | 'memory'>('memory');
   const [checkingKeyPool, setCheckingKeyPool] = useState(false);
+  const [probingKeyPool, setProbingKeyPool] = useState(false);
+  const [clearingCooldowns, setClearingCooldowns] = useState(false);
   const [showDaytonaKey, setShowDaytonaKey] = useState(false);
   const [testingDaytona, setTestingDaytona] = useState(false);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
   const latestApiKeyRef = useRef(draft.apiKey);
   latestApiKeyRef.current = draft.apiKey;
+  const onKeyPoolSummaryRef = useRef(onKeyPoolSummaryChange);
+  onKeyPoolSummaryRef.current = onKeyPoolSummaryChange;
 
-  const fetchKeyPoolStatus = async (rawKeys: string, silent = false) => {
-    if (!silent) setCheckingKeyPool(true);
-    try {
-      const normalized = rawKeys
-        .split(/[\r\n,;]+/)
-        .map((k) => k.trim())
-        .filter(Boolean)
-        .join(',');
-      const res = await fetch('/api/key-status', {
-        method: 'POST',
-        headers: normalized ? { 'x-gemini-api-keys': normalized } : {},
-      });
-      if (res.ok) {
-        const json = await res.json();
-        if (Array.isArray(json?.keys)) {
-          setKeyPoolStatus(json.keys);
+  const fetchKeyPoolStatus = useCallback(
+    async (
+      rawKeys: string,
+      opts?: {
+        silent?: boolean;
+        action?: 'status' | 'probe' | 'clear-cooldown';
+        keyIndex?: number;
+      }
+    ) => {
+      const action = opts?.action || 'status';
+      const silent = Boolean(opts?.silent);
+      if (!silent) {
+        if (action === 'probe') setProbingKeyPool(true);
+        else if (action === 'clear-cooldown') setClearingCooldowns(true);
+        else setCheckingKeyPool(true);
+      }
+
+      try {
+        const normalized = parseUniqueApiKeys(rawKeys).join(',');
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (normalized) headers['x-gemini-api-keys'] = normalized;
+
+        const res = await fetch('/api/key-status', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            action,
+            model: effectiveModel,
+            ...(typeof opts?.keyIndex === 'number' ? { keyIndex: opts.keyIndex } : {}),
+          }),
+        });
+        if (res.ok) {
+          const json = (await res.json()) as KeyPoolStatusResponse;
+          if (Array.isArray(json?.keys)) {
+            setKeyPoolStatus(json.keys);
+            const summary: KeyPoolSummary = json.summary ?? {
+              total: json.keys.length,
+              ready: json.keys.filter((k) => k.status === 'ready').length,
+              cooldown: json.keys.filter((k) => k.status === 'cooldown').length,
+              invalid: json.keys.filter((k) => k.status === 'invalid').length,
+            };
+            onKeyPoolSummaryRef.current?.(summary);
+
+            if (!silent && action === 'probe') {
+              if (summary.total === 0) {
+                toast.error('Tidak ada API Key untuk diuji');
+              } else if (summary.invalid === 0 && summary.cooldown === 0) {
+                toast.success(`Semua ${summary.ready} API Key sehat & siap dipakai!`);
+              } else {
+                toast.warning(
+                  `Hasil Uji Key: ${summary.ready} Ready • ${summary.cooldown} Cooldown • ${summary.invalid} Invalid`
+                );
+              }
+            } else if (!silent && action === 'clear-cooldown') {
+              toast.success('Cooldown & status error key pool di-reset');
+            }
+          }
+          if (json?.source === 'browser' || json?.source === 'server' || json?.source === 'none') {
+            setKeyPoolSource(json.source);
+          }
+          if (json?.sharedStore === 'upstash-redis' || json?.sharedStore === 'memory') {
+            setKeyPoolStore(json.sharedStore);
+          }
         }
-        if (json?.source === 'browser' || json?.source === 'server' || json?.source === 'none') {
-          setKeyPoolSource(json.source);
-        }
-        if (json?.sharedStore === 'upstash-redis' || json?.sharedStore === 'memory') {
-          setKeyPoolStore(json.sharedStore);
+      } catch {
+        if (!silent) toast.error('Gagal memeriksa status key pool');
+      } finally {
+        if (!silent) {
+          if (action === 'probe') setProbingKeyPool(false);
+          else if (action === 'clear-cooldown') setClearingCooldowns(false);
+          else setCheckingKeyPool(false);
         }
       }
-    } catch {
-      if (!silent) toast.error('Gagal memeriksa status cooldown key');
-    } finally {
-      if (!silent) setCheckingKeyPool(false);
-    }
-  };
+    },
+    [effectiveModel]
+  );
 
   useEffect(() => {
     if (!open) return;
     setDraft(settings);
     void getIndexedDbStats().then(setIdbStats);
     void fetchKeyPoolStatus(settings.apiKey);
-  }, [open, settings]);
+  }, [open, settings, fetchKeyPoolStatus]);
 
+  // Debounce refresh saat user mengedit daftar key di textarea
   useEffect(() => {
     if (!open) return;
+    const timer = window.setTimeout(() => {
+      void fetchKeyPoolStatus(draft.apiKey, { silent: true });
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [open, draft.apiKey, fetchKeyPoolStatus]);
+
+  const hasCoolingOrInvalidKeys = keyPoolStatus.some(
+    (k) => k.status === 'cooldown' || k.status === 'invalid'
+  );
+
+  // Smart Polling: hanya tick & poll saat dialog terbuka, tab aktif, dan masih ada key cooldown/invalid
+  useEffect(() => {
+    if (!open || !hasCoolingOrInvalidKeys) return;
+
     const tickId = window.setInterval(() => {
       setKeyPoolStatus((prev) => {
         let changed = false;
         const next = prev.map((item) => {
-          if (item.status !== 'cooldown' || item.cooldownRemainingSec <= 0) return item;
+          if (item.status === 'ready' || item.cooldownRemainingSec <= 0) return item;
           changed = true;
           const remaining = item.cooldownRemainingSec - 1;
           return remaining > 0
             ? { ...item, cooldownRemainingSec: remaining }
-            : { ...item, status: 'ready' as const, cooldownRemainingSec: 0 };
+            : {
+                ...item,
+                status: 'ready' as const,
+                cooldownRemainingSec: 0,
+                reason: undefined,
+                message: undefined,
+              };
         });
         return changed ? next : prev;
       });
     }, 1000);
 
     const pollId = window.setInterval(() => {
-      void fetchKeyPoolStatus(latestApiKeyRef.current, true);
+      if (document.hidden) return;
+      void fetchKeyPoolStatus(latestApiKeyRef.current, { silent: true });
     }, 10_000);
+
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        void fetchKeyPoolStatus(latestApiKeyRef.current, { silent: true });
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
       window.clearInterval(tickId);
       window.clearInterval(pollId);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [open]);
+  }, [open, hasCoolingOrInvalidKeys, fetchKeyPoolStatus]);
+
+  const handleRemoveBrowserKeysByIndices = (indicesToRemove: number[]) => {
+    if (keyPoolSource !== 'browser' || indicesToRemove.length === 0) return;
+    const removeSet = new Set(indicesToRemove);
+    const currentKeys = parseUniqueApiKeys(draft.apiKey);
+    const kept = currentKeys.filter((_, idx) => !removeSet.has(idx));
+    const nextApiKeyStr = kept.join('\n');
+    setDraft((prev) => ({ ...prev, apiKey: nextApiKeyStr }));
+    toast.success(`${indicesToRemove.length} key dihapus dari daftar (klik Simpan untuk permanen)`);
+  };
 
   const handleExportBackup = async () => {
     try {
@@ -464,113 +562,248 @@ export const SettingsDialog = memo(function SettingsDialog({
                     </p>
 
                     <div className="space-y-2.5 border-t border-border/60 pt-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-[11px] font-medium text-muted-foreground">
-                            Status Key Pool (
-                            {keyPoolSource === 'browser'
-                              ? 'Browser Keys'
-                              : keyPoolSource === 'server'
-                                ? 'Server Env'
-                                : 'Belum ada key'}
-                            )
-                          </span>
-                          <span className="rounded-md border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground">
-                            {keyPoolStore === 'upstash-redis' ? 'Global Redis' : 'Memory Lokal'}
-                          </span>
-                        </div>
+                      {(() => {
+                        const readyCount = keyPoolStatus.filter((k) => k.status === 'ready').length;
+                        const cooldownCount = keyPoolStatus.filter((k) => k.status === 'cooldown').length;
+                        const invalidItems = keyPoolStatus.filter((k) => k.status === 'invalid');
+                        const invalidIndices = invalidItems
+                          .map((k, fallbackIdx) => (typeof k.index === 'number' ? k.index : fallbackIdx))
+                          .filter((idx) => idx >= 0);
 
-                        <div className="flex items-center gap-1.5">
-                          {keyPoolStatus.length > 0 && (
-                            <div className="flex items-center gap-1 font-mono text-[10px]">
-                              <span className="rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 font-semibold text-emerald-400">
-                                {keyPoolStatus.filter((k) => k.status === 'ready').length} Ready
-                              </span>
-                              {keyPoolStatus.some((k) => k.status === 'cooldown') && (
-                                <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 font-semibold text-amber-400">
-                                  {keyPoolStatus.filter((k) => k.status === 'cooldown').length}{' '}
-                                  Cooldown
+                        return (
+                          <>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="text-[11px] font-medium text-muted-foreground">
+                                  Status Key Pool (
+                                  {keyPoolSource === 'browser'
+                                    ? 'Browser Keys'
+                                    : keyPoolSource === 'server'
+                                      ? 'Server Env'
+                                      : 'Belum ada key'}
+                                  )
                                 </span>
+                                <span className="rounded-md border border-border/70 bg-muted/60 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground">
+                                  {keyPoolStore === 'upstash-redis' ? 'Global Redis' : 'Shared Memory'}
+                                </span>
+                                {keyPoolStatus.length > 0 && (
+                                  <span className="rounded-md border border-border/60 bg-background/60 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground">
+                                    {hasCoolingOrInvalidKeys ? 'Auto-poll 10s' : 'Semua sehat'}
+                                  </span>
+                                )}
+                              </div>
+
+                              {keyPoolStatus.length > 0 && (
+                                <div className="flex flex-wrap items-center gap-1 font-mono text-[10px]">
+                                  <span className="rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 font-semibold text-emerald-400">
+                                    {readyCount} Ready
+                                  </span>
+                                  {cooldownCount > 0 && (
+                                    <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 font-semibold text-amber-400">
+                                      {cooldownCount} Cooldown
+                                    </span>
+                                  )}
+                                  {invalidItems.length > 0 && (
+                                    <span className="rounded-md border border-rose-500/35 bg-rose-500/10 px-1.5 py-0.5 font-semibold text-rose-400">
+                                      {invalidItems.length} Invalid
+                                    </span>
+                                  )}
+                                </div>
                               )}
                             </div>
-                          )}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={checkingKeyPool}
-                            onClick={() => void fetchKeyPoolStatus(draft.apiKey)}
-                            className="h-7 rounded-lg px-2.5 text-[10px]"
-                          >
-                            {checkingKeyPool ? 'Memeriksa...' : 'Refresh Status'}
-                          </Button>
-                        </div>
-                      </div>
 
-                      {keyPoolStatus.length === 0 ? (
-                        <p className="text-[11px] text-amber-400/90">
-                          Belum ada API Key aktif terdeteksi di Browser maupun Server Env.
-                        </p>
-                      ) : (
-                        <div
-                          className={cn(
-                            'grid grid-cols-2 gap-2 sm:grid-cols-3',
-                            keyPoolStatus.length > 6 &&
-                              'max-h-56 overflow-y-auto overscroll-contain rounded-xl border border-border/70 bg-background/50 p-2'
-                          )}
-                        >
-                          {keyPoolStatus.map((item) => {
-                            const isCooldown = item.status === 'cooldown';
-                            const match = item.label.match(/^(Key #\d+)\s*\((.+)\)$/);
-                            const keyName = match ? match[1] : item.label;
-                            const keySuffix = match ? match[2] : '';
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={checkingKeyPool || probingKeyPool}
+                                onClick={() => void fetchKeyPoolStatus(draft.apiKey)}
+                                className="h-7 gap-1 rounded-lg px-2.5 text-[10px]"
+                              >
+                                <RefreshCw className={cn('h-3 w-3', checkingKeyPool && 'animate-spin')} />
+                                <span>{checkingKeyPool ? 'Memeriksa...' : 'Refresh Status'}</span>
+                              </Button>
 
-                            return (
+                              {keyPoolStatus.length > 0 && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={probingKeyPool || checkingKeyPool}
+                                  onClick={() => void fetchKeyPoolStatus(draft.apiKey, { action: 'probe' })}
+                                  className="h-7 gap-1 rounded-lg border-primary/35 bg-primary/10 px-2.5 text-[10px] text-primary hover:bg-primary/20"
+                                  title="Tes aktif seluruh key ke Gemini API (0 output token)"
+                                >
+                                  <Activity className={cn('h-3 w-3', probingKeyPool && 'animate-pulse')} />
+                                  <span>{probingKeyPool ? 'Menguji Pool...' : 'Uji Semua Key'}</span>
+                                </Button>
+                              )}
+
+                              {hasCoolingOrInvalidKeys && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={clearingCooldowns}
+                                  onClick={() =>
+                                    void fetchKeyPoolStatus(draft.apiKey, { action: 'clear-cooldown' })
+                                  }
+                                  className="h-7 gap-1 rounded-lg px-2 text-[10px] text-muted-foreground hover:text-foreground"
+                                  title="Reset status cooldown & invalid untuk uji ulang"
+                                >
+                                  <RotateCcw className={cn('h-3 w-3', clearingCooldowns && 'animate-spin')} />
+                                  <span>Reset Cooldown</span>
+                                </Button>
+                              )}
+
+                              {keyPoolSource === 'browser' && invalidItems.length > 0 && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleRemoveBrowserKeysByIndices(invalidIndices)}
+                                  className="h-7 gap-1 rounded-lg border-rose-500/40 bg-rose-500/10 px-2.5 text-[10px] text-rose-400 hover:bg-rose-500/20"
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                  <span>Hapus Invalid ({invalidItems.length})</span>
+                                </Button>
+                              )}
+                            </div>
+
+                            {keyPoolStatus.length === 0 ? (
+                              <p className="text-[11px] text-amber-400/90">
+                                Belum ada API Key aktif terdeteksi di Browser maupun Server Env.
+                              </p>
+                            ) : (
                               <div
-                                key={item.label}
                                 className={cn(
-                                  'flex items-center justify-between gap-2 rounded-xl border px-2.5 py-2 font-mono text-[11px] transition-colors',
-                                  isCooldown
-                                    ? 'border-amber-500/40 bg-amber-500/[0.08] text-amber-400'
-                                    : 'border-emerald-500/25 bg-emerald-500/[0.06] text-emerald-400'
+                                  'grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3',
+                                  keyPoolStatus.length > 6 &&
+                                    'max-h-60 overflow-y-auto overscroll-contain rounded-xl border border-border/70 bg-background/50 p-2'
                                 )}
                               >
-                                <div className="flex min-w-0 items-center gap-2">
-                                  <span
-                                    className={cn(
-                                      'h-1.5 w-1.5 shrink-0 rounded-full',
-                                      isCooldown
-                                        ? 'animate-pulse bg-amber-400'
-                                        : 'bg-emerald-400'
-                                    )}
-                                  />
-                                  <div className="min-w-0 leading-tight">
-                                    <div className="truncate font-semibold text-foreground/90">
-                                      {keyName}
-                                    </div>
-                                    {keySuffix && (
-                                      <div className="truncate text-[10px] text-muted-foreground">
-                                        {keySuffix}
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
+                                {keyPoolStatus.map((item, fallbackIdx) => {
+                                  const isInvalid = item.status === 'invalid';
+                                  const isCooldown = item.status === 'cooldown';
+                                  const itemIndex = typeof item.index === 'number' ? item.index : fallbackIdx;
+                                  const match = item.label.match(/^(Key #\d+)\s*\((.+)\)$/);
+                                  const keyName = match ? match[1] : item.label;
+                                  const keySuffix = match ? match[2] : '';
+                                  const activeScopedModels = (item.cooldownModels || []).filter(
+                                    (m) => m.remainingSec > 0
+                                  );
 
-                                <span
-                                  className={cn(
-                                    'shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold tabular-nums',
-                                    isCooldown
-                                      ? 'bg-amber-500/15 text-amber-400'
-                                      : 'bg-emerald-500/15 text-emerald-400'
-                                  )}
-                                >
-                                  {isCooldown ? `${item.cooldownRemainingSec}s` : 'Ready'}
-                                </span>
+                                  return (
+                                    <div
+                                      key={`${item.label}-${itemIndex}`}
+                                      title={item.message || item.reason || 'Ready'}
+                                      className={cn(
+                                        'flex flex-col justify-between gap-1.5 rounded-xl border px-2.5 py-2 font-mono text-[11px] transition-colors',
+                                        isInvalid
+                                          ? 'border-rose-500/45 bg-rose-500/[0.09] text-rose-400'
+                                          : isCooldown
+                                            ? 'border-amber-500/40 bg-amber-500/[0.08] text-amber-400'
+                                            : 'border-emerald-500/25 bg-emerald-500/[0.06] text-emerald-400'
+                                      )}
+                                    >
+                                      <div className="flex items-center justify-between gap-1.5">
+                                        <div className="flex min-w-0 items-center gap-2">
+                                          {isInvalid ? (
+                                            <AlertTriangle className="h-3 w-3 shrink-0 text-rose-400" />
+                                          ) : (
+                                            <span
+                                              className={cn(
+                                                'h-1.5 w-1.5 shrink-0 rounded-full',
+                                                isCooldown
+                                                  ? 'animate-pulse bg-amber-400'
+                                                  : 'bg-emerald-400'
+                                              )}
+                                            />
+                                          )}
+                                          <div className="min-w-0 leading-tight">
+                                            <div className="truncate font-semibold text-foreground/90">
+                                              {keyName}
+                                            </div>
+                                            {keySuffix && (
+                                              <div className="truncate text-[10px] text-muted-foreground">
+                                                {keySuffix}
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+
+                                        <div className="flex shrink-0 items-center gap-1">
+                                          <span
+                                            className={cn(
+                                              'rounded-md px-1.5 py-0.5 text-[10px] font-semibold tabular-nums',
+                                              isInvalid
+                                                ? 'bg-rose-500/20 text-rose-300'
+                                                : isCooldown
+                                                  ? 'bg-amber-500/15 text-amber-400'
+                                                  : 'bg-emerald-500/15 text-emerald-400'
+                                            )}
+                                          >
+                                            {isInvalid
+                                              ? item.cooldownRemainingSec > 0
+                                                ? `Invalid ${Math.ceil(item.cooldownRemainingSec / 60)}m`
+                                                : 'Invalid'
+                                              : isCooldown
+                                                ? `${item.cooldownRemainingSec}s`
+                                                : 'Ready'}
+                                          </span>
+
+                                          {(isCooldown || isInvalid) && (
+                                            <button
+                                              type="button"
+                                              onClick={() =>
+                                                void fetchKeyPoolStatus(draft.apiKey, {
+                                                  action: 'clear-cooldown',
+                                                  keyIndex: itemIndex,
+                                                })
+                                              }
+                                              className="rounded p-0.5 text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                                              title="Reset status key ini"
+                                              aria-label={`Reset status ${keyName}`}
+                                            >
+                                              <RotateCcw className="h-3 w-3" />
+                                            </button>
+                                          )}
+
+                                          {isInvalid && keyPoolSource === 'browser' && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleRemoveBrowserKeysByIndices([itemIndex])}
+                                              className="rounded p-0.5 text-rose-400/80 hover:bg-rose-500/20 hover:text-rose-300"
+                                              title="Hapus key invalid ini"
+                                              aria-label={`Hapus ${keyName}`}
+                                            >
+                                              <X className="h-3 w-3" />
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+
+                                      {(isInvalid || isCooldown || activeScopedModels.length > 0) && (
+                                        <div className="truncate border-t border-current/15 pt-1 text-[9px] text-muted-foreground">
+                                          {isInvalid
+                                            ? `${item.statusCode || 401} • ${item.message || 'API key invalid / ditolak'}`
+                                            : activeScopedModels.length > 0
+                                              ? `${activeScopedModels
+                                                  .slice(0, 2)
+                                                  .map((m) => `${m.model.replace('gemini-', 'g-')}:${m.remainingSec}s`)
+                                                  .join(', ')}`
+                                              : `${item.statusCode || 429} • ${item.reason || 'rate_limit'}`}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
                               </div>
-                            );
-                          })}
-                        </div>
-                      )}
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
                   </div><div className="space-y-3 rounded-2xl border bg-card/60 p-4">
                     <div className="flex items-center justify-between gap-4">

@@ -3,7 +3,13 @@ import {
   buildProjectSystemSection,
   executeGitHubTool,
 } from './_github.js';
-import { hydrateKeyCooldowns, recordKeyCooldown } from './_cooldown.js';
+import {
+  getKeyCooldownState,
+  getKeyStatusSnapshot,
+  getSharedCooldownMap,
+  hydrateKeyCooldowns,
+  recordKeyCooldown,
+} from './_cooldown.js';
 import { ensureDaytonaSandbox, execDaytonaCommand, deployAndPreviewDaytona, syncFilesToDaytona, cloneGitHubIntoDaytona } from './_daytona.js';
 import {
   DEVICE_AGENT_SKILL,
@@ -577,24 +583,15 @@ const HARD_STOP_FINISH_REASONS = new Set([
 ]);
 
 let roundRobinCursor = Math.floor(Math.random() * 1000);
-const keyCooldownMap = new Map();
+const keyCooldownMap = getSharedCooldownMap();
 
-export function getKeyPoolStatus(keys = []) {
-  const now = Date.now();
-  return keys.map((key, idx) => {
-    const coolUntil = keyCooldownMap.get(key) || 0;
-    const cooldownRemainingSec = coolUntil > now ? Math.ceil((coolUntil - now) / 1000) : 0;
-    return {
-      label: maskKeyLabel(key, idx),
-      status: cooldownRemainingSec > 0 ? 'cooldown' : 'ready',
-      cooldownRemainingSec,
-    };
-  });
+export function getKeyPoolStatus(keys = [], targetModel = '') {
+  return getKeyStatusSnapshot(keys, targetModel, keyCooldownMap);
 }
 
-export async function getKeyPoolStatusAsync(keys = []) {
+export async function getKeyPoolStatusAsync(keys = [], targetModel = '') {
   await hydrateKeyCooldowns(keys, keyCooldownMap);
-  return getKeyPoolStatus(keys);
+  return getKeyStatusSnapshot(keys, targetModel, keyCooldownMap);
 }
 
 export function parseKeyPool(...sources) {
@@ -708,29 +705,32 @@ export function buildGeminiContents(messages) {
   });
 }
 
-export function buildOrderedCandidateKeys(keys, excludeKeys = new Set()) {
-  const now = Date.now();
+export function buildOrderedCandidateKeys(keys, excludeKeys = new Set(), targetModel = '') {
   const start = roundRobinCursor % keys.length;
   roundRobinCursor = (roundRobinCursor + 1) % keys.length;
 
   const rotated = [...keys.slice(start), ...keys.slice(0, start)];
   const ready = [];
   const cooling = [];
+  const invalid = [];
   const excluded = [];
 
   for (const item of rotated) {
     const origIdx = keys.indexOf(item);
-    const coolUntil = keyCooldownMap.get(item) || 0;
+    const cd = getKeyCooldownState(item, targetModel, keyCooldownMap);
     if (excludeKeys.has(item)) {
-      excluded.push({ key: item, idx: origIdx });
-    } else if (coolUntil > now) {
-      cooling.push({ key: item, idx: origIdx });
+      excluded.push({ key: item, idx: origIdx, until: cd.until });
+    } else if (cd.isInvalid) {
+      invalid.push({ key: item, idx: origIdx, until: cd.until });
+    } else if (cd.cooling) {
+      cooling.push({ key: item, idx: origIdx, until: cd.until });
     } else {
       ready.push({ key: item, idx: origIdx });
     }
   }
 
-  return [...ready, ...cooling, ...excluded];
+  cooling.sort((a, b) => a.until - b.until);
+  return [...ready, ...cooling, ...invalid, ...excluded];
 }
 
 export function extractGeminiError(rawText, status) {
@@ -911,8 +911,8 @@ async function fetchGeminiWithRotationAndRetry({
   let enableSearch = Boolean(withGoogleSearch);
   let enableUrl = Boolean(withUrlContext);
   await hydrateKeyCooldowns(apiKeys, keyCooldownMap);
-  const orderedKeys = buildOrderedCandidateKeys(apiKeys, excludeKeys);
-  const maxAttempts = orderedKeys.length > 1 ? Math.min(Math.max(orderedKeys.length, 4), 14) : 4;
+  const orderedKeys = buildOrderedCandidateKeys(apiKeys, excludeKeys, targetModel);
+  const maxAttempts = orderedKeys.length > 1 ? Math.min(Math.max(orderedKeys.length * 2, 4), 40) : 4;
 
   let keyPointer = 0;
   let lastStatus = 503;
@@ -965,7 +965,13 @@ async function fetchGeminiWithRotationAndRetry({
           ? `Koneksi jaringan terputus (${err.message})`
           : 'Gagal terhubung ke Gemini API.';
 
-      await recordKeyCooldown(current.key, 15_000, keyCooldownMap);
+      await recordKeyCooldown(current.key, 15_000, keyCooldownMap, {
+        reason: isTimeout ? 'timeout' : 'network',
+        statusCode: lastStatus,
+        model: targetModel,
+        message: lastErrorMessage,
+        scope: 'global',
+      });
 
       if (attempt + 1 < maxAttempts) {
         if (orderedKeys.length > 1) {
@@ -1087,8 +1093,21 @@ async function fetchGeminiWithRotationAndRetry({
     const isRetryable = RETRYABLE_STATUSES.has(upstream.status) || (isBadKey && canRotateToAnotherKey);
 
     if (isRetryable && attempt + 1 < maxAttempts) {
-      const coolMs = isBadKey ? 120_000 : upstream.status === 429 ? 60_000 : 12_000;
-      await recordKeyCooldown(current.key, coolMs, keyCooldownMap);
+      const retryAfterSecRaw = Number(upstream.headers.get('retry-after'));
+      const coolMs = isBadKey
+        ? 900_000
+        : upstream.status === 429
+          ? Number.isFinite(retryAfterSecRaw) && retryAfterSecRaw > 0 && retryAfterSecRaw <= 300
+            ? retryAfterSecRaw * 1000
+            : 60_000
+          : 15_000;
+      await recordKeyCooldown(current.key, coolMs, keyCooldownMap, {
+        reason: isBadKey ? 'invalid_key' : upstream.status === 429 ? 'rate_limit' : 'overload',
+        statusCode: upstream.status,
+        model: targetModel,
+        message: lastErrorMessage,
+        scope: isBadKey ? 'global' : upstream.status === 429 ? 'model' : 'global',
+      });
 
       if (canRotateToAnotherKey) {
         keyPointer += 1;
@@ -1114,6 +1133,16 @@ async function fetchGeminiWithRotationAndRetry({
       );
       await sleep(baseDelay, signal);
       continue;
+    }
+
+    if (isBadKey || upstream.status === 429) {
+      await recordKeyCooldown(current.key, isBadKey ? 900_000 : 60_000, keyCooldownMap, {
+        reason: isBadKey ? 'invalid_key' : 'rate_limit',
+        statusCode: upstream.status,
+        model: targetModel,
+        message: lastErrorMessage,
+        scope: isBadKey ? 'global' : 'model',
+      });
     }
 
     return {
@@ -1540,7 +1569,12 @@ export async function runResilientGeminiChat({
 
       if (roundOutcome.streamError || droppedWithoutFinish) {
         if (result.usedKey) {
-          await recordKeyCooldown(result.usedKey, 60_000, keyCooldownMap);
+          await recordKeyCooldown(result.usedKey, 60_000, keyCooldownMap, {
+            reason: 'overload',
+            statusCode: roundOutcome.streamError?.status || 502,
+            model: activeModel,
+            message: roundOutcome.streamError?.message || 'Stream terputus di tengah respons.',
+          });
           failedKeysThisRound.add(result.usedKey);
         }
 

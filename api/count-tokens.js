@@ -1,8 +1,16 @@
+import {
+  getKeyCooldownState,
+  getSharedCooldownMap,
+  hydrateKeyCooldowns,
+  recordKeyCooldown,
+} from './_cooldown.js';
+
 export const config = {
   runtime: 'edge',
 };
 
 let roundRobinCursor = Math.floor(Math.random() * 1000);
+const sharedCooldownMap = getSharedCooldownMap();
 
 function parseKeyPool(...sources) {
   const pool = [];
@@ -18,6 +26,22 @@ function parseKeyPool(...sources) {
     }
   }
   return pool;
+}
+
+function buildOrderedKeys(keys, targetModel) {
+  const startOffset = roundRobinCursor % keys.length;
+  roundRobinCursor = (roundRobinCursor + 1) % keys.length;
+  const rotated = [...keys.slice(startOffset), ...keys.slice(0, startOffset)];
+  const ready = [];
+  const cooling = [];
+  const invalid = [];
+  for (const k of rotated) {
+    const cd = getKeyCooldownState(k, targetModel, sharedCooldownMap);
+    if (cd.isInvalid) invalid.push(k);
+    else if (cd.cooling) cooling.push(k);
+    else ready.push(k);
+  }
+  return [...ready, ...cooling, ...invalid];
 }
 
 function buildAttachmentParts(att) {
@@ -76,11 +100,10 @@ export default async function handler(request) {
     model
   )}:countTokens`;
 
-  const startOffset = roundRobinCursor % apiKeys.length;
-  roundRobinCursor = (roundRobinCursor + 1) % apiKeys.length;
+  await hydrateKeyCooldowns(apiKeys, sharedCooldownMap);
+  const orderedKeys = buildOrderedKeys(apiKeys, model);
 
-  for (let i = 0; i < apiKeys.length; i++) {
-    const key = apiKeys[(startOffset + i) % apiKeys.length];
+  for (const key of orderedKeys) {
     try {
       const upstream = await fetch(endpoint, {
         method: 'POST',
@@ -97,6 +120,27 @@ export default async function handler(request) {
         if (typeof json?.totalTokens === 'number') {
           return Response.json({ ok: true, totalTokens: json.totalTokens });
         }
+      } else if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
+        const errText = await upstream.text().catch(() => '');
+        let errMsg = `Gemini API error (${upstream.status})`;
+        try {
+          const parsed = JSON.parse(errText);
+          if (parsed?.error?.message) errMsg = parsed.error.message;
+        } catch {
+          if (errText) errMsg = errText;
+        }
+        await recordKeyCooldown(
+          key,
+          upstream.status === 429 ? 60_000 : 900_000,
+          sharedCooldownMap,
+          {
+            reason: upstream.status === 429 ? 'rate_limit' : 'invalid_key',
+            statusCode: upstream.status,
+            model,
+            message: errMsg,
+            scope: upstream.status === 429 ? 'model' : 'global',
+          }
+        );
       }
     } catch {
       // Coba key berikutnya

@@ -1,9 +1,16 @@
+import {
+  getKeyCooldownState,
+  getSharedCooldownMap,
+  hydrateKeyCooldowns,
+  recordKeyCooldown,
+} from './_cooldown.js';
+
 export const config = {
   runtime: 'edge',
 };
 
 let roundRobinCursor = Math.floor(Math.random() * 1000);
-const keyCooldownMap = new Map();
+const keyCooldownMap = getSharedCooldownMap();
 
 function parseKeyPool(...sources) {
   const pool = [];
@@ -21,21 +28,23 @@ function parseKeyPool(...sources) {
   return pool;
 }
 
-function buildOrderedKeys(keys) {
-  const now = Date.now();
+function buildOrderedKeys(keys, targetModel = '') {
   const start = roundRobinCursor % keys.length;
   roundRobinCursor = (roundRobinCursor + 1) % keys.length;
 
   const rotated = [...keys.slice(start), ...keys.slice(0, start)];
   const ready = [];
   const cooling = [];
+  const invalid = [];
   for (let i = 0; i < rotated.length; i++) {
     const k = rotated[i];
     const origIdx = keys.indexOf(k);
-    if ((keyCooldownMap.get(k) || 0) > now) cooling.push({ key: k, idx: origIdx });
+    const cd = getKeyCooldownState(k, targetModel, keyCooldownMap);
+    if (cd.isInvalid) invalid.push({ key: k, idx: origIdx });
+    else if (cd.cooling) cooling.push({ key: k, idx: origIdx });
     else ready.push({ key: k, idx: origIdx });
   }
-  return [...ready, ...cooling];
+  return [...ready, ...cooling, ...invalid];
 }
 
 function maskKeyLabel(key, idx) {
@@ -112,7 +121,8 @@ export default async function handler(request) {
     'Output ONLY the transcribed text with natural punctuation and proper technical capitalization. Do not answer the prompt or add commentary.',
   ].join(' ');
 
-  const orderedKeys = buildOrderedKeys(apiKeys);
+  await hydrateKeyCooldowns(apiKeys, keyCooldownMap);
+  const orderedKeys = buildOrderedKeys(apiKeys, sttModels[0] || '');
   const encoder = new TextEncoder();
 
   // Kembalikan stream segera (0ms) agar Vercel Edge tidak terkena batas 25s initial response timeout
@@ -239,8 +249,23 @@ export default async function handler(request) {
                 break;
               }
 
-              if (upstream.status === 429 || upstream.status === 401 || upstream.status === 403) {
-                keyCooldownMap.set(entry.key, Date.now() + 60_000);
+              const isBadKey =
+                upstream.status === 401 ||
+                upstream.status === 403 ||
+                (upstream.status === 400 && /api.?key|expired|invalid|quota/i.test(lastError));
+              if (upstream.status === 429 || isBadKey) {
+                await recordKeyCooldown(
+                  entry.key,
+                  upstream.status === 429 ? 60_000 : 900_000,
+                  keyCooldownMap,
+                  {
+                    reason: upstream.status === 429 ? 'rate_limit' : 'invalid_key',
+                    statusCode: upstream.status,
+                    model: sttModel,
+                    message: lastError,
+                    scope: upstream.status === 429 ? 'model' : 'global',
+                  }
+                );
               }
               break;
             } catch (err) {

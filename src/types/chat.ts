@@ -299,3 +299,44 @@ export interface ServerHealth {
   hasServerGithubToken?: boolean;
   demoModeEnv: boolean;
 }
+
+export type KeyPoolStatusType = 'ready' | 'cooldown' | 'invalid';
+export type KeyCooldownReason = 'rate_limit' | 'invalid_key' | 'overload' | 'timeout' | 'network';
+
+export interface KeyCooldownModelInfo {
+  model: string;
+  remainingSec: number;
+  reason: KeyCooldownReason | string;
+  statusCode?: number;
+  message?: string;
+}
+
+export interface KeyPoolStatusItem {
+  index?: number;
+  label: string;
+  status: KeyPoolStatusType;
+  cooldownRemainingSec: number;
+  reason?: KeyCooldownReason | string;
+  statusCode?: number;
+  model?: string;
+  message?: string;
+  cooldownModels?: KeyCooldownModelInfo[];
+}
+
+export interface KeyPoolSummary {
+  total: number;
+  ready: number;
+  cooldown: number;
+  invalid: number;
+}
+
+export interface KeyPoolStatusResponse {
+  ok: boolean;
+  source: 'browser' | 'server' | 'none';
+  sharedStore: 'upstash-redis' | 'memory';
+  totalKeys: number;
+  targetModel?: string;
+  probed?: boolean;
+  summary?: KeyPoolSummary;
+  keys: KeyPoolStatusItem[];
+}

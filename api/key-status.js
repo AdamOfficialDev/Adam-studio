@@ -1,4 +1,4 @@
-import { hydrateKeyCooldowns, isSharedCooldownEnabled } from './_cooldown.js';
+import { resolveKeyStatusReport } from './_cooldown.js';
 
 export const config = {
   runtime: 'edge',
@@ -20,15 +20,29 @@ function parseKeyPool(...sources) {
   return pool;
 }
 
-function maskKeyLabel(key, idx) {
-  const tail = key.length >= 4 ? key.slice(-4) : '****';
-  return `Key #${idx + 1} (•••${tail})`;
-}
-
 export default async function handler(request) {
   if (request.method !== 'POST' && request.method !== 'GET') {
     return new Response('Method Not Allowed', { status: 405 });
   }
+
+  let body = {};
+  if (request.method === 'POST') {
+    try {
+      const text = await request.text();
+      if (text && text.trim()) body = JSON.parse(text);
+    } catch {
+      body = {};
+    }
+  }
+
+  const url = new URL(request.url);
+  const action = String(body?.action || url.searchParams.get('action') || 'status').trim();
+  const targetModel = String(body?.model || url.searchParams.get('model') || '').trim();
+  const probeModel = String(body?.probeModel || url.searchParams.get('probeModel') || '').trim();
+  const keyIndex =
+    typeof body?.keyIndex === 'number' && Number.isInteger(body.keyIndex)
+      ? body.keyIndex
+      : undefined;
 
   const headerKeys = parseKeyPool(
     request.headers.get('x-gemini-api-keys') || '',
@@ -37,31 +51,21 @@ export default async function handler(request) {
   const envKeys = parseKeyPool(process.env.GEMINI_API_KEYS, process.env.GEMINI_API_KEY);
   const usingBrowserKeys = headerKeys.length > 0;
   const activeKeys = usingBrowserKeys ? headerKeys : envKeys;
+  const source = usingBrowserKeys ? 'browser' : envKeys.length > 0 ? 'server' : 'none';
 
-  const tempMap = new Map();
-  await hydrateKeyCooldowns(activeKeys, tempMap);
-  const now = Date.now();
+  const report = await resolveKeyStatusReport({
+    keys: activeKeys,
+    source,
+    targetModel,
+    action,
+    keyIndex,
+    probeModel,
+    signal: request.signal,
+  });
 
-  return Response.json(
-    {
-      ok: true,
-      source: usingBrowserKeys ? 'browser' : envKeys.length > 0 ? 'server' : 'none',
-      sharedStore: isSharedCooldownEnabled() ? 'upstash-redis' : 'memory',
-      totalKeys: activeKeys.length,
-      keys: activeKeys.map((k, idx) => {
-        const coolUntil = tempMap.get(k) || 0;
-        const cooldownRemainingSec = coolUntil > now ? Math.ceil((coolUntil - now) / 1000) : 0;
-        return {
-          label: maskKeyLabel(k, idx),
-          status: cooldownRemainingSec > 0 ? 'cooldown' : 'ready',
-          cooldownRemainingSec,
-        };
-      }),
+  return Response.json(report, {
+    headers: {
+      'Cache-Control': 'no-store',
     },
-    {
-      headers: {
-        'Cache-Control': 'no-store',
-      },
-    }
-  );
+  });
 }

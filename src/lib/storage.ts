@@ -35,15 +35,22 @@ export const DEFAULT_SETTINGS: AppSettings = {
   deviceApprovalMode: 'high-risk',
 };
 
+export function parseUniqueApiKeys(raw: string): string[] {
+  if (!raw) return [];
+  const pool: string[] = [];
+  const seen = new Set<string>();
+  for (const part of raw.split(/[\r\n,;]+/)) {
+    const k = part.trim();
+    if (k && !seen.has(k)) {
+      seen.add(k);
+      pool.push(k);
+    }
+  }
+  return pool;
+}
+
 export function countApiKeys(raw: string): number {
-  if (!raw) return 0;
-  const unique = new Set(
-    raw
-      .split(/[\r\n,;]+/)
-      .map((k) => k.trim())
-      .filter(Boolean)
-  );
-  return unique.size;
+  return parseUniqueApiKeys(raw).length;
 }
 
 export function loadConversations(): Conversation[] {
