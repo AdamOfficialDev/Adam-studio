@@ -392,6 +392,10 @@ export const SettingsDialog = memo(function SettingsDialog({
       contextCompactBatchSize: Math.max(2, Math.min(100, Number(draft.contextCompactBatchSize) || 6)),
       contextKeepCodeBlocks: Math.max(0, Math.min(20, Number(draft.contextKeepCodeBlocks ?? 2))),
       maxHistoryMessages: Math.max(0, Math.min(1000, Number(draft.maxHistoryMessages) || 0)),
+      autoContinueMaxRetries: Math.max(
+        1,
+        Math.min(20, Number(draft.autoContinueMaxRetries) || 5)
+      ),
       thinkingLevel: resolveValidThinkingLevel(effectiveModel, draft.thinkingLevel),
       maxOutputTokens: Math.min(65536, Math.max(128, Number(draft.maxOutputTokens) || 8192)),
     });
@@ -842,6 +846,57 @@ export const SettingsDialog = memo(function SettingsDialog({
                             {m}
                           </button>
                         ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-3 rounded-2xl border bg-card/60 p-4">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2 text-sm font-semibold">
+                          <RefreshCw className="h-4 w-4 text-primary" />
+                          Auto-Continue saat Stream Error / Terputus
+                        </div>
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                          Otomatis melanjutkan pesan tanpa klik Continue secara manual setiap kali
+                          stream SSE gagal atau terputus (apapun pesan error-nya).
+                        </p>
+                      </div>
+                      <Switch
+                        checked={Boolean(draft.autoContinueOnError)}
+                        onCheckedChange={(checked) =>
+                          setDraft({ ...draft, autoContinueOnError: checked })
+                        }
+                      />
+                    </div>
+
+                    {draft.autoContinueOnError && (
+                      <div className="space-y-2 border-t border-border/60 pt-3">
+                        <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                          <span>Maksimal Auto-Continue per Pesan</span>
+                          <span className="font-mono font-semibold text-primary">
+                            {draft.autoContinueMaxRetries || 5}x
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {[3, 5, 10, 15].map((count) => (
+                            <button
+                              key={count}
+                              type="button"
+                              onClick={() =>
+                                setDraft({ ...draft, autoContinueMaxRetries: count })
+                              }
+                              className={cn(
+                                'rounded-xl border py-1.5 font-mono text-xs transition-colors',
+                                (draft.autoContinueMaxRetries || 5) === count
+                                  ? 'border-primary bg-primary/15 font-semibold text-primary'
+                                  : 'bg-background/60 hover:bg-accent'
+                              )}
+                            >
+                              {count}x
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>

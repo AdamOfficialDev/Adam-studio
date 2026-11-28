@@ -33,6 +33,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   skin: 'obsidian',
   density: 'comfortable',
   deviceApprovalMode: 'high-risk',
+  autoContinueOnError: false,
+  autoContinueMaxRetries: 5,
 };
 
 export function parseUniqueApiKeys(raw: string): string[] {
@@ -156,6 +158,17 @@ export function loadSettings(): AppSettings {
         typeof parsed.contextSmartRecall === 'boolean'
           ? parsed.contextSmartRecall
           : DEFAULT_SETTINGS.contextSmartRecall,
+      autoContinueOnError:
+        typeof parsed.autoContinueOnError === 'boolean'
+          ? parsed.autoContinueOnError
+          : DEFAULT_SETTINGS.autoContinueOnError,
+      autoContinueMaxRetries: Math.max(
+        1,
+        Math.min(
+          20,
+          Number(parsed.autoContinueMaxRetries) || DEFAULT_SETTINGS.autoContinueMaxRetries
+        )
+      ),
       thinkingLevel,
       skin,
     };
@@ -167,9 +180,14 @@ export function loadSettings(): AppSettings {
   }
 }
 
+export const SETTINGS_UPDATED_EVENT = 'adam-studio-settings-updated';
+
 export function saveSettings(settings: AppSettings): void {
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(SETTINGS_UPDATED_EVENT, { detail: settings }));
+    }
   } catch {
     // Abaikan jika storage tidak tersedia
   }

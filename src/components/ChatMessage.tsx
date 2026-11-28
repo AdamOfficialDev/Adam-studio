@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertCircle,
@@ -25,6 +25,7 @@ import {
   Star,
   User,
   Volume2,
+  X,
   Zap,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -40,8 +41,12 @@ import { MarkdownRenderer } from '@/components/MarkdownRenderer';
 import { extractArtifactsFromMarkdown } from '@/lib/artifacts';
 import { estimateCostUsd } from '@/lib/models';
 import { speakMessageAloud, stopSpeechAloud } from '@/lib/speech';
-import type { ArtifactItem, ChatMessage as ChatMessageType } from '@/types/chat';
+import { loadSettings, SETTINGS_UPDATED_EVENT } from '@/lib/storage';
+import type { AppSettings, ArtifactItem, ChatMessage as ChatMessageType } from '@/types/chat';
 import { cn, copyToClipboard } from '@/lib/utils';
+
+const autoContinueAttemptsMap = new Map<string, number>();
+const cancelledAutoContinueKeys = new Set<string>();
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -79,6 +84,121 @@ export const ChatMessage = memo(function ChatMessage({
   const [editDraft, setEditDraft] = useState(message.content);
   const [speaking, setSpeaking] = useState(false);
   const [targetCodeOpen, setTargetCodeOpen] = useState(true);
+  const [autoContinueConfig, setAutoContinueConfig] = useState(() => {
+    const s = loadSettings();
+    return {
+      enabled: Boolean(s.autoContinueOnError),
+      maxRetries: Math.max(1, Math.min(20, Number(s.autoContinueMaxRetries) || 5)),
+    };
+  });
+  const [autoCountdown, setAutoCountdown] = useState<number | null>(null);
+  const [autoCancelledTick, setAutoCancelledTick] = useState(0);
+  const onContinueRef = useRef(onContinue);
+  onContinueRef.current = onContinue;
+  const autoTimersRef = useRef<{ timeoutId: number | null; intervalId: number | null }>({
+    timeoutId: null,
+    intervalId: null,
+  });
+
+  const clearAutoTimers = () => {
+    if (autoTimersRef.current.timeoutId !== null) {
+      window.clearTimeout(autoTimersRef.current.timeoutId);
+      autoTimersRef.current.timeoutId = null;
+    }
+    if (autoTimersRef.current.intervalId !== null) {
+      window.clearInterval(autoTimersRef.current.intervalId);
+      autoTimersRef.current.intervalId = null;
+    }
+  };
+
+  useEffect(() => {
+    if (!isLastAssistant) return;
+    const syncSettings = (next?: Partial<AppSettings>) => {
+      const s = next && 'autoContinueOnError' in next ? next : loadSettings();
+      setAutoContinueConfig({
+        enabled: Boolean(s.autoContinueOnError),
+        maxRetries: Math.max(1, Math.min(20, Number(s.autoContinueMaxRetries) || 5)),
+      });
+    };
+    syncSettings();
+    const onCustom = (e: Event) => syncSettings((e as CustomEvent<AppSettings>).detail);
+    const onStorage = () => syncSettings();
+    window.addEventListener(SETTINGS_UPDATED_EVENT, onCustom);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(SETTINGS_UPDATED_EVENT, onCustom);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [isLastAssistant]);
+
+  const hasResumableState = Boolean(
+    message.content?.trim() ||
+      message.thought?.trim() ||
+      (message.toolEvents && message.toolEvents.length > 0)
+  );
+  const isIncomplete = Boolean(message.error || message.stopped);
+  const canContinue = isIncomplete && hasResumableState;
+  const autoContinueErrorKey = message.error ? `${message.id}:${message.error}` : '';
+  const currentAutoAttempts = autoContinueAttemptsMap.get(message.id) ?? 0;
+  const reachedMaxAutoContinue =
+    autoContinueConfig.enabled &&
+    Boolean(message.error) &&
+    currentAutoAttempts >= autoContinueConfig.maxRetries;
+  const isAutoCancelledForError = Boolean(
+    autoContinueErrorKey && cancelledAutoContinueKeys.has(autoContinueErrorKey)
+  );
+  const hasContinueHandler = Boolean(onContinue);
+  const shouldAutoContinue =
+    message.role === 'assistant' &&
+    isLastAssistant &&
+    hasContinueHandler &&
+    canContinue &&
+    Boolean(message.error) &&
+    !message.stopped &&
+    !message.isStreaming &&
+    autoContinueConfig.enabled &&
+    !reachedMaxAutoContinue &&
+    !isAutoCancelledForError;
+
+  useEffect(() => {
+    clearAutoTimers();
+    if (!shouldAutoContinue) {
+      setAutoCountdown(null);
+      return;
+    }
+
+    setAutoCountdown(2);
+    autoTimersRef.current.intervalId = window.setInterval(() => {
+      setAutoCountdown((prev) => (prev !== null && prev > 1 ? prev - 1 : prev));
+    }, 1000);
+
+    autoTimersRef.current.timeoutId = window.setTimeout(() => {
+      clearAutoTimers();
+      setAutoCountdown(null);
+      const prevAttempts = autoContinueAttemptsMap.get(message.id) ?? 0;
+      autoContinueAttemptsMap.set(message.id, prevAttempts + 1);
+      onContinueRef.current?.();
+    }, 2000);
+
+    return () => {
+      clearAutoTimers();
+    };
+  }, [shouldAutoContinue, message.id, message.error, autoCancelledTick]);
+
+  const handleManualContinue = () => {
+    clearAutoTimers();
+    setAutoCountdown(null);
+    onContinue?.();
+  };
+
+  const handleCancelAutoContinue = () => {
+    clearAutoTimers();
+    setAutoCountdown(null);
+    if (autoContinueErrorKey) {
+      cancelledAutoContinueKeys.add(autoContinueErrorKey);
+      setAutoCancelledTick((n) => n + 1);
+    }
+  };
 
   useEffect(() => {
     return () => {
@@ -341,13 +461,6 @@ export const ChatMessage = memo(function ChatMessage({
   }
 
   const hasAnswerStarted = Boolean(message.content && message.content.length > 0);
-  const hasResumableState = Boolean(
-    message.content?.trim() ||
-      message.thought?.trim() ||
-      (message.toolEvents && message.toolEvents.length > 0)
-  );
-  const isIncomplete = Boolean(message.error || message.stopped);
-  const canContinue = isIncomplete && hasResumableState;
   const isCapacityError = Boolean(
     message.error && /high demand|503|429|quota|rate limit|overloaded/i.test(message.error)
   );
@@ -596,6 +709,33 @@ export const ChatMessage = memo(function ChatMessage({
               </div>
             </div>
 
+            {isLastAssistant && canContinue && !message.stopped && autoCountdown !== null && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/35 bg-primary/10 px-3 py-1.5 text-[11px] text-foreground">
+                <span className="inline-flex items-center gap-2 font-medium">
+                  <RefreshCw className="h-3 w-3 animate-spin text-primary" />
+                  Auto-Continue dalam {autoCountdown}d (percobaan {currentAutoAttempts + 1}/
+                  {autoContinueConfig.maxRetries})...
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleCancelAutoContinue}
+                  className="h-6 gap-1 rounded-md px-2 text-[10px] text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-3 w-3" />
+                  Batalkan
+                </Button>
+              </div>
+            )}
+
+            {isLastAssistant && canContinue && !message.stopped && reachedMaxAutoContinue && (
+              <p className="text-[11px] text-amber-400/90">
+                Auto-Continue mencapai batas ({autoContinueConfig.maxRetries}x percobaan). Klik
+                Continue untuk lanjut manual.
+              </p>
+            )}
+
             {isLastAssistant && (
               <div className="flex flex-wrap gap-2 pt-1">
                 {onContinue && canContinue && (
@@ -603,7 +743,7 @@ export const ChatMessage = memo(function ChatMessage({
                     type="button"
                     size="sm"
                     variant="default"
-                    onClick={onContinue}
+                    onClick={handleManualContinue}
                     className="h-7 gap-1.5 rounded-lg px-2.5 text-[11px]"
                     title="Lanjutkan dari state terakhir tanpa mengulang tool/teks yang sudah berjalan"
                   >
@@ -731,7 +871,7 @@ export const ChatMessage = memo(function ChatMessage({
                   type="button"
                   variant="ghost"
                   size="sm"
-                  onClick={onContinue}
+                  onClick={handleManualContinue}
                   className="h-7 gap-1 rounded-lg bg-primary/15 px-2.5 text-xs font-medium text-primary hover:bg-primary/25 hover:text-primary"
                   title="Lanjutkan dari state terakhir tanpa mengulang dari awal"
                 >

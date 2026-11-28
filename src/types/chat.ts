@@ -289,6 +289,8 @@ export interface AppSettings {
   skin: ThemeSkin;
   density: 'comfortable' | 'compact';
   deviceApprovalMode?: DeviceApprovalMode;
+  autoContinueOnError: boolean;
+  autoContinueMaxRetries: number;
 }
 
 export interface ServerHealth {
