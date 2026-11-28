@@ -2091,6 +2091,10 @@ export default function App() {
               onCycleSkin={handleCycleSkin}
               showInstallButton={!isStandalone}
               onInstallApp={() => void handleInstallAction()}
+              keyPoolSummary={keyPoolSummary}
+              activeKeyPoolCount={activeKeyPoolCount}
+              skin={settings.skin}
+              demoMode={settings.demoMode}
             />
           )}
 

@@ -55,6 +55,14 @@ export function useIsStreamingActive(): boolean {
   );
 }
 
+export function useStreamingConvId(): string | null {
+  return useSyncExternalStore(
+    subscribeStream,
+    () => currentState?.convId ?? null,
+    () => null
+  );
+}
+
 export function useMessageStreamOverride(
   convId: string,
   msgId: string
